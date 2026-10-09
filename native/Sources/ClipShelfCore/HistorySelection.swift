@@ -43,6 +43,7 @@ public struct HistorySelectionDeleteUndo: Sendable {
 
 /// Captures the original content in the same transaction as a successful edit.
 public struct HistorySelectionEditUndo: Sendable {
+    public var committedReference: ClipboardSelectionReference { expected }
     public let original: ClipboardRecord
     let expected: ClipboardSelectionReference
     let storeIdentity: UUID

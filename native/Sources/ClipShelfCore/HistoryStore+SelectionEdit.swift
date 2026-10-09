@@ -6,21 +6,24 @@ extension HistoryStore {
     public func editSelectionRecord(_ record: ClipboardRecord) throws -> HistorySelectionEditUndo {
         try validate(record)
         return try synchronized {
-            try transaction {
-                let reference = ClipboardSelectionReference(id: record.id, revision: record.revision)
-                let items = try selectionItems([reference])
-                try requireEditableSelection(items)
-                try preflightSelectionPayload([reference], maximumBytes: 512 * 1_024 * 1_024)
-                guard let original = try itemWithoutLock(id: record.id) else { throw HistoryStoreError.recordNotFound }
-                let sync = try syncConfigurationWithoutLock(), sharing = try sharingConfigurationWithoutLock()
-                let bindings = try ownedFileBindingsWithoutLock(recordID: record.id)
-                let updated = try updateWithoutLock(record: record, current: original)
-                return HistorySelectionEditUndo(original: original,
-                                                expected: ClipboardSelectionReference(id: updated.id, revision: updated.revision),
-                                                storeIdentity: selectionStoreIdentity,
-                                                syncConfiguration: sync, sharingConfiguration: sharing, ownedFileBindings: bindings)
-            }
+            try transaction { try editSelectionRecordWithoutLock(record) }
         }
+    }
+
+    /// Caller owns the write transaction and any more specific consent/namespace checks.
+    func editSelectionRecordWithoutLock(_ record: ClipboardRecord) throws -> HistorySelectionEditUndo {
+        let reference = ClipboardSelectionReference(id: record.id, revision: record.revision)
+        let items = try selectionItems([reference])
+        try requireEditableSelection(items)
+        try preflightSelectionPayload([reference], maximumBytes: 512 * 1_024 * 1_024)
+        guard let original = try itemWithoutLock(id: record.id) else { throw HistoryStoreError.recordNotFound }
+        let sync = try syncConfigurationWithoutLock(), sharing = try sharingConfigurationWithoutLock()
+        let bindings = try ownedFileBindingsWithoutLock(recordID: record.id)
+        let updated = try updateWithoutLock(record: record, current: original)
+        return HistorySelectionEditUndo(original: original,
+                                        expected: ClipboardSelectionReference(id: updated.id, revision: updated.revision),
+                                        storeIdentity: selectionStoreIdentity,
+                                        syncConfiguration: sync, sharingConfiguration: sharing, ownedFileBindings: bindings)
     }
 
     @discardableResult

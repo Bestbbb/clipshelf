@@ -90,7 +90,7 @@ private final class ClipboardCollectionItem: NSCollectionViewItem {
 
 /// Presents history without activating ClipShelf or performing clipboard side effects.
 @MainActor
-final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate, NSWindowDelegate, NSPopoverDelegate, NSCollectionViewDataSource, NSMenuItemValidation, @preconcurrency QLPreviewPanelDataSource {
+final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate, NSWindowDelegate, NSPopoverDelegate, NSCollectionViewDataSource, NSMenuItemValidation {
     var onPaste: ((ClipboardRecord, Bool) -> Void)?
     var onPasteRecords: (([ClipboardRecord], Bool) -> Void)?
     var onCopy: ((ClipboardRecord) -> Void)?
@@ -107,6 +107,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     var onSelectionSnapshot: ((HistoryQuery, @escaping (Result<HistorySelectionSnapshot, Error>) -> Void) -> Void)?
     var onValidateSelection: (([ClipboardSelectionReference], @escaping (Result<Void, Error>) -> Void) -> Void)?
     var resolveSelection: (([ClipboardSelectionReference], @escaping (Result<[ClipboardRecord], Error>) -> Void) -> Void)?
+    /// Output also validates managed-file projections. Management/repair reads must remain possible when output is unavailable.
+    var resolveOutputSelection: (([ClipboardSelectionReference], @escaping (Result<[ClipboardRecord], Error>) -> Void) -> Void)?
     var onMoveSelection: (([ClipboardSelectionReference], UUID?, @escaping (Result<[ClipboardSelectionReference], Error>) -> Void) -> Void)?
     var onReorderSelection: (([ClipboardSelectionReference], UUID, ClipboardSelectionReference?, @escaping (Result<[ClipboardSelectionReference], Error>) -> Void) -> Void)?
     var onStepSelection: (([ClipboardSelectionReference], UUID, Bool, @escaping (Result<[ClipboardSelectionReference], Error>) -> Void) -> Void)?
@@ -120,6 +122,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     var onRotateImage: ((ClipboardRecord) -> Void)?
     var onExtractText: ((ClipboardRecord) -> Void)?
     var onOpenRecord: ((ClipboardRecord) -> Void)?
+    var onFileSnapshot: ((ClipboardSelectionReference, @escaping (Result<ClipboardFileRepairSnapshot, Error>) -> Void) -> Void)?
+    var onRelocateFile: ((ClipboardFileRepairSnapshot, ClipboardFileReference, URL, @escaping (Result<ClipboardFileRepairSnapshot, Error>) -> Void) -> Void)?
+    var onRestoreOwnedFile: ((ClipboardFileRepairSnapshot, ClipboardFileReference, @escaping (Result<ClipboardFileRepairSnapshot, Error>) -> Void) -> Void)?
+    /// Injectable presenter for unshown-window tests; production uses the native file window.
+    var makeFilePreview: ((ClipboardRecord, Bool) -> FileReferencePreviewController)?
     var onSettings: (() -> Void)?
     var onUndo: (() -> Void)?
     var onDropItems: (([NSPasteboardItem], UUID?) -> Void)?
@@ -246,13 +253,13 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private var detailWindow: NSPanel?
     private var linkPreview: LinkPreviewController?
     private var imagePreview: ImagePreviewController?
+    private var filePreview: FileReferencePreviewController?
     private var detailPDFView: PDFView?
     private var pdfPageObserver: NSObjectProtocol?
     private var pdfLoadTask: Task<Void, Never>?
     private var detailRecord: ClipboardRecord?
     private var detailEditor: NSTextView?
     private var initialDetailContents: NSAttributedString?
-    private var previewFileURLs: [URL] = []
     private var inlineRecords: [UUID: ClipboardRecord] = [:]
     private var recordOriginDevices: [UUID: UUID] = [:]
     private var viewGeneration = UUID()
@@ -297,6 +304,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func present(_ contents: [ClipboardCardContent], on screen: NSScreen?, status: String?) {
+        filePreview?.dismiss()
         cancelBoundaryNavigation()
         closeAllFilters(restoreFocus: false)
         viewGeneration = UUID()
@@ -500,6 +508,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         requestedThumbnails.removeAll()
         linkPreview?.dismiss()
         imagePreview?.dismiss()
+        filePreview?.dismiss()
         filterPopover?.close()
         filterPopover = nil
         insertionLine.isHidden = true
@@ -821,7 +830,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             guard let self, !self.isComposing else { return }
             self.select(record.id, focusResults: true)
             let plain = ShortcutChord.normalizedModifiers(modifiers).contains(self.shortcutConfiguration.plainText.eventFlags)
-            self.resolve(record) { self.onPaste?($0, self.outputPlainText([$0], requested: plain)) }
+            self.resolve(record, forOutput: true) { self.onPaste?($0, self.outputPlainText([$0], requested: plain)) }
         }
         if manualOrder {
             card.toolTip = "拖动以调整分组内顺序；按住 ⌥ 拖动原始内容到其他 App。"
@@ -839,7 +848,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             } else {
                 card.preparePayloadDrag(originID: self.viewGeneration, scopeID: self.scopeGeneration,
                                         selectionID: self.selection.generation)
-                self.resolveReferences(refs) { [weak card] records in
+                self.resolveReferences(refs, forOutput: true) { [weak card] records in
                     card?.providePreparedPayload(records: records, gestureID: gestureID)
                 }
             }
@@ -847,7 +856,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         card.onDragError = { [weak self] error in self?.statusLabel.stringValue = "无法拖出内容：\(error.localizedDescription)" }
         if record.kind == .image { requestThumbnail(record, for: card) }
         let menu = NSMenu()
-        for (title, action) in [("粘贴", #selector(pasteFromMenu(_:))), ("以纯文本粘贴", #selector(pastePlainFromMenu(_:))), ("复制", #selector(copyFromMenu(_:))), ("预览此项", #selector(previewFromMenu(_:))), ("打开此项", #selector(openFromMenu(_:))), ("编辑此项", #selector(editFromMenu(_:))), ("重命名此项", #selector(renameFromMenu(_:))), ("删除", #selector(deleteFromMenu(_:)))] {
+        for (title, action) in [("粘贴", #selector(pasteFromMenu(_:))), ("以纯文本粘贴", #selector(pastePlainFromMenu(_:))), ("复制", #selector(copyFromMenu(_:))), (record.kind == .file ? "文件与位置…" : "预览此项", #selector(previewFromMenu(_:))), (record.kind == .file ? "查看文件后打开…" : "打开此项", #selector(openFromMenu(_:))), (record.kind == .file ? "管理文件位置…" : "编辑此项", #selector(editFromMenu(_:))), ("重命名此项", #selector(renameFromMenu(_:))), ("删除", #selector(deleteFromMenu(_:)))] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             item.representedObject = record.id
@@ -865,6 +874,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             }
         }
         card.menu = menu
+        if record.kind == .file {
+            let relocate = NSMenuItem(title: "重新定位文件…", action: #selector(relocateFileFromMenu(_:)), keyEquivalent: "")
+            relocate.target = self; relocate.representedObject = record.id
+            menu.insertItem(relocate, at: 4)
+        }
         let shareItem = NSMenuItem(title: "分享此项…", action: #selector(shareFromMenu(_:)), keyEquivalent: "")
         shareItem.target = self
         shareItem.representedObject = record.id
@@ -1457,17 +1471,17 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         }
     }
 
-    private func resolve(_ content: ClipboardCardContent, action: @escaping (ClipboardRecord) -> Void) {
-        resolve([content]) { if let record = $0.first { action(record) } }
+    private func resolve(_ content: ClipboardCardContent, forOutput: Bool = false, action: @escaping (ClipboardRecord) -> Void) {
+        resolve([content], forOutput: forOutput) { if let record = $0.first { action(record) } }
     }
 
-    private func resolve(_ contents: [ClipboardCardContent], action: @escaping ([ClipboardRecord]) -> Void) {
-        resolveReferences(contents.map(reference), action: action)
+    private func resolve(_ contents: [ClipboardCardContent], forOutput: Bool = false, action: @escaping ([ClipboardRecord]) -> Void) {
+        resolveReferences(contents.map(reference), forOutput: forOutput, action: action)
     }
 
     /// The whole captured set is validated before exposing any payload to an output callback.
-    private func resolveReferences(_ references: [ClipboardSelectionReference], action: @escaping ([ClipboardRecord]) -> Void) {
-        guard !references.isEmpty, isVisible, !queryPending, boundaryNavigationID == nil, pageMatchesQuery,
+    private func resolveReferences(_ references: [ClipboardSelectionReference], forOutput: Bool = false, action: @escaping ([ClipboardRecord]) -> Void) {
+        guard !references.isEmpty, isVisible, filePreview == nil, !queryPending, boundaryNavigationID == nil, pageMatchesQuery,
               !selection.isInvalid, selectionRequestID == nil else { return }
         let actionID = UUID(), session = viewGeneration, scope = scopeGeneration
         let generation = selection.generation, page = queryGeneration
@@ -1483,9 +1497,14 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                     throw PanelSelectionState.SelectionError.staleSelection
                 }
                 action(records)
-            } catch { selectionFailed(error) }
+            } catch {
+                // A missing/unsafe file must still allow preview, repair, rename and
+                // deletion. Every future output revalidates the complete captured set.
+                if forOutput { statusLabel.stringValue = "无法输出内容：\(error.localizedDescription)" }
+                else { selectionFailed(error) }
+            }
         }
-        if let resolveSelection { resolveSelection(references, finish); return }
+        if let resolver = forOutput ? (resolveOutputSelection ?? resolveSelection) : resolveSelection { resolver(references, finish); return }
         // Legacy/demo fallback has no global reader. It still rejects the entire output on mismatch.
         var result: [ClipboardRecord] = []
         result.reserveCapacity(references.count)
@@ -1556,7 +1575,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func pasteSelection(plain: Bool) {
-        resolveReferences(selection.references) { [weak self] records in
+        resolveReferences(selection.references, forOutput: true) { [weak self] records in
             guard let self else { return }
             let outputPlain = self.outputPlainText(records, requested: plain)
             if records.count == 1, let record = records.first { self.onPaste?(record, outputPlain) }
@@ -1565,7 +1584,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func copySelection() {
-        resolveReferences(selection.references) { [weak self] records in
+        resolveReferences(selection.references, forOutput: true) { [weak self] records in
             if records.count == 1, let record = records.first { self?.onCopy?(record) }
             else if records.count > 1 { self?.onCopyRecords?(records) }
         }
@@ -1590,6 +1609,13 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     func handleKey(_ event: NSEvent) -> Bool {
         guard event.type == .keyDown else { return false }
+        if let filePreview {
+            // Child windows and their sheets retain native text/button handling. A key
+            // accidentally delivered to history while the file window is open cannot paste.
+            guard event.window === window else { return false }
+            if event.keyCode == 53, !event.isARepeat { filePreview.dismiss() }
+            return true
+        }
         // Mouse/Tab focus changes can enter an editor without passing through Cmd-F.
         if isEditingSearch || window?.firstResponder is NSTextView { cancelBoundaryNavigation() }
         guard !isComposing, !(window?.firstResponder is ShortcutRecorderView) else { return false }
@@ -1641,7 +1667,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             if let index = numbers[event.keyCode], flags == quick || flags == quick.union(plainFlags) {
                 if !event.isARepeat, filteredRecords.indices.contains(index) {
                     let plain = flags == quick.union(plainFlags)
-                    resolve(filteredRecords[index]) { [weak self] in
+                    resolve(filteredRecords[index], forOutput: true) { [weak self] in
                         guard let self else { return }
                         self.onPaste?($0, self.outputPlainText([$0], requested: plain))
                     }
@@ -1718,6 +1744,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                             replaceSelectionOnFocus: Bool = false, boundaryNavigation: PanelBoundaryNavigation? = nil) {
         if boundaryNavigation == nil { cancelBoundaryNavigation() }
         if resetLimit {
+            filePreview?.dismiss()
             closeAllFilters(restoreFocus: false)
             scopeGeneration = UUID()
             selectionRequestID = nil
@@ -2010,6 +2037,13 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private func showDetail(_ record: ClipboardRecord, editing: Bool) {
         linkPreview?.dismiss()
         imagePreview?.dismiss()
+        filePreview?.dismiss()
+        // A file may also contain an embedded PDF; its reference-management entry
+        // must remain reachable regardless of the other representations.
+        if record.kind == .file || record.parts.flatMap(\.representations).contains(where: { ClipboardFileAccess.isFileURLType($0.typeIdentifier) }) {
+            showFileReferences(record)
+            return
+        }
         if record.kind == .image {
             detailWindow?.close()
             let session = viewGeneration
@@ -2030,7 +2064,6 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             showPDFPreview(record, data: pdf.data)
             return
         }
-        if record.kind == .file { showFilePreview(record); return }
         detailWindow?.close()
         if !editing, record.kind == .link, let url = URL(string: record.text.trimmingCharacters(in: .whitespacesAndNewlines)), LinkPreviewController.allows(url) {
             let session = viewGeneration
@@ -2225,34 +2258,76 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         detail.makeKeyAndOrderFront(nil); detail.makeFirstResponder(pdf)
     }
 
-    private func showFilePreview(_ record: ClipboardRecord) {
-        previewFileURLs = record.parts.flatMap(\.representations).compactMap { representation in
-            guard UTType(representation.typeIdentifier)?.conforms(to: .fileURL) == true,
-                  let value = String(data: representation.data, encoding: .utf8),
-                  let url = URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines)), url.isFileURL,
-                  FileManager.default.fileExists(atPath: url.path) else { return nil }
-            return url
+    func showFileReferences(_ record: ClipboardRecord, preferUnavailable: Bool = false) {
+        guard isVisible else { return }
+        cancelBoundaryNavigation(); pendingActionID = nil
+        linkPreview?.dismiss(); imagePreview?.dismiss(); detailWindow?.close(); filePreview?.dismiss()
+        let preview = makeFilePreview?(record, preferUnavailable) ?? FileReferencePreviewController(record: record, preferUnavailable: preferUnavailable)
+        let session = viewGeneration, scope = scopeGeneration
+        filePreview = preview
+        let current: () -> Bool = { [weak self, weak preview] in
+            guard let self, let preview else { return false }
+            return self.isVisible && self.viewGeneration == session && self.scopeGeneration == scope && self.filePreview === preview
         }
-        guard !previewFileURLs.isEmpty else { statusLabel.stringValue = "原文件已移动、删除或暂时无权访问；历史中仅保存文件引用。"; return }
-        window?.makeFirstResponder(resultsView)
-        let preview = QLPreviewPanel.shared()
-        preview?.updateController()
-        preview?.makeKeyAndOrderFront(nil)
+        preview.isContextCurrent = current
+        preview.onSnapshot = { [weak self] ref, reply in
+            guard current(), let callback = self?.onFileSnapshot else { reply(.failure(ClipboardFileRepairError.invalidReference)); return }
+            callback(ref, reply)
+        }
+        preview.onRelocate = { [weak self] snapshot, file, url, reply in
+            guard current(), let self, let callback = self.onRelocateFile else { reply(.failure(ClipboardFileRepairError.invalidReference)); return }
+            callback(snapshot, file, url) { [weak self] result in
+                guard current() else { return }
+                if case .success(let updated) = result { self?.adoptFileRepair(from: snapshot, to: updated) }
+                reply(result)
+            }
+        }
+        preview.onRestoreOwned = { [weak self] snapshot, file, reply in
+            guard current(), let self, let callback = self.onRestoreOwnedFile else { reply(.failure(ClipboardFileRepairError.invalidReference)); return }
+            callback(snapshot, file) { result in guard current() else { return }; reply(result) }
+        }
+        // Callback availability controls buttons; do not show an enabled mutation
+        // that can only fail because the host does not support it.
+        if onRelocateFile == nil { preview.onRelocate = nil }
+        if onRestoreOwnedFile == nil { preview.onRestoreOwned = nil }
+        preview.onDismiss = { [weak self, weak preview] in
+            guard let self, self.filePreview === preview else { return }
+            self.filePreview = nil
+            if self.isVisible, self.viewGeneration == session, self.scopeGeneration == scope {
+                self.window?.makeKey(); self.window?.makeFirstResponder(self.resultsView)
+            }
+        }
+        preview.present(relativeTo: window)
     }
 
-    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { !previewFileURLs.isEmpty && isVisible }
-    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) { panel.dataSource = self; panel.reloadData() }
-    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) { if panel.dataSource === self { panel.dataSource = nil } }
+    private func adoptFileRepair(from old: ClipboardFileRepairSnapshot, to updated: ClipboardFileRepairSnapshot) {
+        guard updated.record.id == old.record.id,
+              selection.references.first(where: { $0.id == old.record.id })?.revision == old.record.revision else { return }
+        let refs = selection.references.map { $0.id == updated.record.id ? ClipboardSelectionReference(id: $0.id, revision: updated.record.revision) : $0 }
+        do { try selection.adoptCommitted(refs); selectionStatus = nil; updateSelectionAppearance() }
+        catch { selectionFailed(error) }
+    }
 
-    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int { previewFileURLs.count }
-    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> (any QLPreviewItem)! {
-        guard previewFileURLs.indices.contains(index) else { return nil }
-        return previewFileURLs[index] as NSURL
+    func ownsWindow(_ candidate: NSWindow?) -> Bool {
+        guard let candidate else { return false }
+        if filePreview?.ownsWindow(candidate) == true { return true }
+        var current: NSWindow? = candidate
+        while let next = current {
+            if next === window || next === detailWindow || next === linkPreview?.window || next === imagePreview?.window { return true }
+            current = next.sheetParent ?? next.parent
+        }
+        return false
+    }
+
+    func contains(screenPoint: NSPoint) -> Bool {
+        [window, detailWindow, linkPreview?.window, imagePreview?.window].compactMap { $0 }
+            .contains { $0.isVisible && $0.frame.contains(screenPoint) } || filePreview?.contains(screenPoint: screenPoint) == true
     }
 
     func windowWillClose(_ notification: Notification) {
         guard let closing = notification.object as? NSWindow else { return }
         if closing === window {
+            filePreview?.dismiss()
             cardViews.forEach { $0.cancelPendingDrag() }
             pageRequestID = nil
             queryPending = false
@@ -2335,9 +2410,10 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     @objc private func openFromMenu(_ sender: NSMenuItem) { if let record = recordFromMenu(sender) { resolve(record) { [weak self] in self?.onOpenRecord?($0) } } }
     @objc private func deleteFromMenu(_ sender: NSMenuItem) { if selectContextItemIfNeeded(sender) { deleteSelection() } }
     @objc private func previewFromMenu(_ sender: NSMenuItem) { if let record = recordFromMenu(sender) { resolve(record) { [weak self] in self?.showDetail($0, editing: false) } } }
+    @objc private func relocateFileFromMenu(_ sender: NSMenuItem) { if let record = recordFromMenu(sender) { resolve(record) { [weak self] in self?.showFileReferences($0, preferUnavailable: true) } } }
     @objc private func editFromMenu(_ sender: NSMenuItem) { if let record = recordFromMenu(sender) { resolve(record) { [weak self] in self?.showDetail($0, editing: true) } } }
     @objc private func renameFromMenu(_ sender: NSMenuItem) { if let record = recordFromMenu(sender) { resolve(record) { [weak self] in self?.rename($0) } } }
-    @objc private func shareFromMenu(_ sender: NSMenuItem) { if let record = recordFromMenu(sender) { resolve(record) { [weak self] in self?.onShareRecord?($0) } } }
+    @objc private func shareFromMenu(_ sender: NSMenuItem) { if let record = recordFromMenu(sender) { resolve(record, forOutput: true) { [weak self] in self?.onShareRecord?($0) } } }
     @objc private func copyImageFileFromMenu(_ sender: NSMenuItem) { if let record = recordFromMenu(sender) { resolve(record) { [weak self] in self?.onCopyImageFile?($0) } } }
     @objc private func togglePause() { onPauseToggle?() }
     @objc private func openPermissions() { onPermissions?() }

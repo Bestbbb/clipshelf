@@ -7,7 +7,7 @@ enum ClipboardCodecError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .tooLarge: return "内容超过本次采集的 64 MB 上限。"
-        case .unavailableFile: return "原文件已移动或不可访问，请重新选择文件。"
+        case .unavailableFile: return "文件已移动或不可访问，请在“文件与位置…”中查看并重新定位。"
         case .noContent: return "没有可用的剪贴板表示。"
         }
     }
@@ -90,10 +90,9 @@ enum ClipboardCodec {
                     let item = NSPasteboardItem()
                     for representation in part.representations {
                         let type = NSPasteboard.PasteboardType(representation.typeIdentifier)
-                        if type == .fileURL {
-                            guard let string = String(data: representation.data, encoding: .utf8),
-                                  let url = URL(string: string), url.isFileURL,
-                                  FileManager.default.fileExists(atPath: url.path) else { throw ClipboardCodecError.unavailableFile }
+                        if ClipboardFileAccess.isFileURLType(representation.typeIdentifier) {
+                            guard let url = ClipboardFileAccess.url(from: representation.data),
+                                  ClipboardFileAccess.availability(of: url) == .available else { throw ClipboardCodecError.unavailableFile }
                         }
                         item.setData(representation.data, forType: type)
                     }

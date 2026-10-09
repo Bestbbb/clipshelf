@@ -39,23 +39,28 @@ extension HistoryStore {
         guard maximumPayloadBytes >= 0 else { throw HistoryStoreError.invalidSelection }
         return try synchronized {
             try selectionReadTransaction {
-                _ = try selectionItems(references)
-                try preflightSelectionPayload(references, maximumBytes: maximumPayloadBytes)
-                let statement = try prepare("SELECT \(Self.columns) FROM clipboard_records WHERE id = ?")
-                defer { sqlite3_finalize(statement) }
-                var records: [ClipboardRecord] = []
-                records.reserveCapacity(references.count)
-                for reference in references {
-                    sqlite3_reset(statement); sqlite3_clear_bindings(statement)
-                    try bind(reference.id.uuidString, at: 1, to: statement)
-                    let status = sqlite3_step(statement)
-                    guard status != SQLITE_DONE else { throw HistoryStoreError.recordNotFound }
-                    try check(status, allowingRow: true)
-                    records.append(try decode(statement))
-                }
-                return records
+                try resolveSelectionWithoutLock(references, maximumPayloadBytes: maximumPayloadBytes)
             }
         }
+    }
+
+    /// Caller owns a read snapshot (or a write transaction).
+    func resolveSelectionWithoutLock(_ references: [ClipboardSelectionReference], maximumPayloadBytes: Int) throws -> [ClipboardRecord] {
+        _ = try selectionItems(references)
+        try preflightSelectionPayload(references, maximumBytes: maximumPayloadBytes)
+        let statement = try prepare("SELECT \(Self.columns) FROM clipboard_records WHERE id = ?")
+        defer { sqlite3_finalize(statement) }
+        var records: [ClipboardRecord] = []
+        records.reserveCapacity(references.count)
+        for reference in references {
+            sqlite3_reset(statement); sqlite3_clear_bindings(statement)
+            try bind(reference.id.uuidString, at: 1, to: statement)
+            let status = sqlite3_step(statement)
+            guard status != SQLITE_DONE else { throw HistoryStoreError.recordNotFound }
+            try check(status, allowingRow: true)
+            records.append(try decode(statement))
+        }
+        return records
     }
 
     /// Validates the entire selection and all shared-board permissions before the first deletion.

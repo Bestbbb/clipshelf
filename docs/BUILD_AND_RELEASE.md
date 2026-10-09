@@ -270,8 +270,31 @@ failed shared drafts keep their dependencies. There is no automatic asset garbag
 collection yet; deleting a history entry is not a secure erasure of those bytes.
 Local originals, projections, migration snapshots, and recovery backups are
 unencrypted. Cloud operations still carry file URLs; portable backup does not
-implement owned-file byte synchronization. Missing external-file relocation and
-Paste's file-retention semantics remain pending validation.
+implement owned-file byte synchronization. Paste's file-retention semantics remain
+pending baseline validation.
+
+File records now open a complete file/location list, including unavailable slots.
+Explicit external-file relocation uses a native one-item file/folder picker and
+stores a reference only. The affected part is rebuilt with file-URL representations
+so old opaque/preview formats cannot keep pointing at the previous file; other
+parts are preserved. Strict edit Undo restores the original representations and
+never moves or deletes the user's files. A repair snapshot is bound to the store,
+record revision, slot bytes, and both account generations. Read-only shared items
+cannot be relocated.
+
+Missing owned projections can be rebuilt from the checked immutable original.
+The operation publishes a complete file without overwriting existing projections,
+including externally edited ones. This local maintenance does not change record
+revisions, Undo, or cloud operations; revoked or stale accounts cannot invoke it.
+Preview/open is explicit, checks current availability, and cannot establish that
+another receiving app will retain access. Native picker/Quick Look focus, real
+cross-app transfers, and sandboxed distribution access remain acceptance gates.
+History copy, paste, payload drag, and system sharing validate owned projections
+through the store before output. Stack keeps captured occurrences across history
+coalescing and separately checks references to registered projections. Ordinary
+external symlinks remain external references; unsafe owned projections are rejected.
+Filesystem availability can still change after validation or after another app
+receives a URL; this is not a file-access lease.
 
 MCP access and refresh credentials are held in the local Keychain. Developer
 signing material and runtime history must never be included in a release archive.

@@ -341,6 +341,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             panel.resolveSelection = { [weak self] references, completion in
                 self?.readSelection({ try $0.resolveSelection(references) }, completion: completion)
             }
+            panel.resolveOutputSelection = { [weak self] references, completion in
+                self?.readSelection({ try $0.resolveSelectionForOutput(references) }, completion: completion)
+            }
             panel.onMoveSelection = { [weak self] references, boardID, completion in
                 self?.moveSelection({ try $0.moveSelection(references, to: boardID) }, completion: completion)
             }
@@ -391,6 +394,18 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         panel.onExtractText = { [weak self] record in self?.extractText(record) }
         panel.onRotateImage = { [weak self] record in self?.rotateImage(record) }
         panel.onOpenRecord = { [weak self] record in self?.openRecord(record) }
+        panel.onFileSnapshot = { [weak self] reference, completion in
+            guard let self else { completion(.failure(HistoryStoreError.recordNotFound)); return }
+            self.loadFileRepairSnapshot(reference, completion: completion)
+        }
+        panel.onRelocateFile = { [weak self] snapshot, file, url, completion in
+            guard let self else { completion(.failure(HistoryStoreError.recordNotFound)); return }
+            self.relocateFile(snapshot, file: file, to: url, completion: completion)
+        }
+        panel.onRestoreOwnedFile = { [weak self] snapshot, file, completion in
+            guard let self else { completion(.failure(HistoryStoreError.recordNotFound)); return }
+            self.restoreOwnedFile(snapshot, file: file, completion: completion)
+        }
         panel.onSettings = { [weak self] in self?.showSettings() }
         panel.onUndo = { [weak self] in
             guard let self, !self.selectionMutationInProgress else { return }
@@ -425,7 +440,10 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             }
         }
         outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            MainActor.assumeIsolated { self?.paste.cancel(); self?.panel.dismiss(); self?.cancelSuggestions() }
+            MainActor.assumeIsolated {
+                guard let self, !self.panel.contains(screenPoint: NSEvent.mouseLocation) else { return }
+                self.paste.cancel(); self.panel.dismiss(); self.cancelSuggestions()
+            }
         }
         for (notification, reason, suspended) in [
             (NSWorkspace.sessionDidResignActiveNotification, "session", true),
@@ -878,6 +896,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             guard let self, let record = self.stack.peek() else { return }
             let occurrence = self.stack.nextOccurrenceID
             let target = self.paste.captureTarget()
+            do {
+                guard let store = self.store else { throw HistoryStoreError.recordNotFound }
+                // Stack keeps copy occurrences even after history coalesces their revisions.
+                try store.validateCapturedFileOutput([record])
+            } catch { self.setStatus(error.localizedDescription); return }
             self.paste.paste([record], plainText: false, target: target, dismiss: {}) { [weak self] in
                 _ = self?.stack.markDispatched(expectedOccurrenceID: occurrence)
             }
@@ -1003,15 +1026,84 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
 
     private func openRecord(_ record: ClipboardRecord) {
         if record.kind == .file {
-            for part in record.parts {
-                guard let data = part.representations.first(where: { $0.typeIdentifier == "public.file-url" })?.data,
-                      let string = String(data: data, encoding: .utf8), let url = URL(string: string), url.isFileURL,
-                      FileManager.default.fileExists(atPath: url.path) else { setStatus("原文件已移动或不可用。"); continue }
-                NSWorkspace.shared.open(url)
-            }
+            panel.showFileReferences(record)
         } else if let url = URL(string: record.text.trimmingCharacters(in: .whitespacesAndNewlines)),
                   ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func loadFileRepairSnapshot(_ reference: ClipboardSelectionReference,
+                                        completion: @escaping (Result<ClipboardFileRepairSnapshot, Error>) -> Void) {
+        guard !demo, let store else { completion(.failure(HistoryStoreError.recordNotFound)); return }
+        Task { @MainActor in
+            do {
+                let snapshot = try await Task.detached(priority: .userInitiated) {
+                    try store.fileRepairSnapshot(reference)
+                }.value
+                completion(.success(snapshot))
+            } catch { completion(.failure(error)) }
+        }
+    }
+
+    private func relocateFile(_ snapshot: ClipboardFileRepairSnapshot, file: ClipboardFileReference, to url: URL,
+                              completion: @escaping (Result<ClipboardFileRepairSnapshot, Error>) -> Void) {
+        guard !demo, let store else { completion(.failure(HistoryStoreError.recordNotFound)); return }
+        guard mutationIsAvailable() else { completion(.failure(SelectionOperationError.busy)); return }
+        selectionMutationInProgress = true
+        Task { @MainActor in
+            defer { selectionMutationInProgress = false }
+            do {
+                let undo = try await Task.detached(priority: .userInitiated) {
+                    try store.relocateExternalFile(snapshot, file: file, to: url)
+                }.value
+                selectionUndoHistory.register(.edit(undo)) { [weak self] in self?.undoSelection($0, store: store) }
+                do {
+                    let updated = try await Task.detached(priority: .userInitiated) {
+                        try store.fileRepairSnapshot(undo.committedReference)
+                    }.value
+                    // Let the panel adopt the committed version before validating its selection on reload.
+                    completion(.success(updated))
+                    setStatus("已更新文件位置，可撤销；外部文件未移动。")
+                } catch { completion(.failure(FileRepairApplicationError.savedNeedsRefresh)) }
+                reload()
+            } catch { completion(.failure(error)) }
+        }
+    }
+
+    private func restoreOwnedFile(_ snapshot: ClipboardFileRepairSnapshot, file: ClipboardFileReference,
+                                  completion: @escaping (Result<ClipboardFileRepairSnapshot, Error>) -> Void) {
+        guard !demo, let store else { completion(.failure(HistoryStoreError.recordNotFound)); return }
+        guard mutationIsAvailable() else { completion(.failure(SelectionOperationError.busy)); return }
+        selectionMutationInProgress = true
+        Task { @MainActor in
+            defer { selectionMutationInProgress = false }
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try store.restoreMissingOwnedProjection(snapshot, file: file)
+                }.value
+                do {
+                    let updated = try await Task.detached(priority: .userInitiated) {
+                        try store.fileRepairSnapshot(ClipboardSelectionReference(id: snapshot.record.id, revision: snapshot.record.revision))
+                    }.value
+                    completion(.success(updated))
+                    switch result {
+                    case .restored: setStatus("已从保存的原件恢复打开副本。")
+                    case .alreadyPresent: setStatus("打开副本已存在，保留现有内容。")
+                    }
+                } catch { completion(.failure(FileRepairApplicationError.restoredNeedsRefresh)) }
+                reload()
+            } catch { completion(.failure(error)) }
+        }
+    }
+
+    private enum FileRepairApplicationError: LocalizedError {
+        case savedNeedsRefresh, restoredNeedsRefresh
+        var errorDescription: String? {
+            switch self {
+            case .savedNeedsRefresh: return "文件位置已更新且可撤销；条目随后发生变化，请关闭后重新打开。"
+            case .restoredNeedsRefresh: return "文件副本已处理；条目随后发生变化，请关闭后重新打开。"
+            }
         }
     }
 
@@ -1149,10 +1241,18 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             guard let self, let store = self.store else { return }
             let generation = self.suggestionGeneration
             Task { @MainActor [weak self] in
-                guard let record = try? await Task.detached(priority: .userInitiated, operation: { try store.item(id: id) }).value,
-                      let self, self.suggestionGeneration == generation else { return }
-                self.paste.paste(record, plainText: self.outputAsPlainText([record], requested: false), target: target) {
-                    self.suggestionsPanel.dismiss()
+                do {
+                    let record = try await Task.detached(priority: .userInitiated) {
+                        guard let current = try store.item(id: id) else { throw HistoryStoreError.recordNotFound }
+                        return try store.resolveSelectionForOutput([.init(id: id, revision: current.revision)])[0]
+                    }.value
+                    guard let self, self.suggestionGeneration == generation else { return }
+                    self.paste.paste(record, plainText: self.outputAsPlainText([record], requested: false), target: target) {
+                        self.suggestionsPanel.dismiss()
+                    }
+                } catch {
+                    guard let self, self.suggestionGeneration == generation else { return }
+                    self.suggestionsPanel.showError(message: error.localizedDescription)
                 }
             }
         }
