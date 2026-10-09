@@ -64,5 +64,9 @@ jobs:
           assert (app / 'Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle').is_file()
           assert (app / 'Contents/Resources/Sparkle-LICENSE.txt').read_bytes() == Path('native/Sources/ClipShelf/Sparkle-LICENSE.txt').read_bytes()
           linked = subprocess.check_output(['otool', '-L', str(app / 'Contents/MacOS/ClipShelf')], text=True)
+          if '@rpath/ClipShelf.debug.dylib' in linked:
+              debug = app / 'Contents/MacOS/ClipShelf.debug.dylib'
+              assert debug.is_file()
+              linked = subprocess.check_output(['otool', '-L', str(debug)], text=True)
           assert '@rpath/Sparkle.framework/' in linked
           PY
