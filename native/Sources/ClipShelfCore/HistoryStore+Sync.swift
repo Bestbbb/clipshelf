@@ -129,22 +129,29 @@ extension HistoryStore {
         try synchronized { try requireSyncAccount(accountID); return try syncIsDeleted(accountID: accountID, kind: kind, id: entityID) }
     }
 
-    public func metadataSources() throws -> [String: String] {
-        try synchronized {
-            let stamp = try metadataCacheStamp()
-            if let stamp, let cached = sourceMetadataCache, cached.stamp == stamp { return cached.value }
-            let statement = try prepare("SELECT source_bundle_id, max(coalesce(source_app, source_bundle_id)) FROM clipboard_records WHERE source_bundle_id IS NOT NULL AND (is_in_history = 1 OR pinboard_id IS NOT NULL) GROUP BY source_bundle_id")
-            defer { sqlite3_finalize(statement) }
-            var sources: [String: String] = [:]
-            while true {
-                let status = sqlite3_step(statement)
-                if status == SQLITE_DONE { break }
-                try check(status, allowingRow: true)
-                if let id = textColumn(statement, 0), let name = textColumn(statement, 1) { sources[id] = name }
+    public func metadataSources(cancellation: HistoryReadCancellation? = nil) throws -> [String: String] {
+        try synchronizedRead(cancellation: cancellation) {
+            try withReadCancellation(cancellation) {
+                let stamp = try metadataCacheStamp()
+                if let stamp, let cached = sourceMetadataCache, cached.stamp == stamp { return cached.value }
+                let statement = try prepare("SELECT source_bundle_id, max(coalesce(source_app, source_bundle_id)) FROM clipboard_records WHERE source_bundle_id IS NOT NULL AND (is_in_history = 1 OR pinboard_id IS NOT NULL) GROUP BY source_bundle_id")
+                defer { sqlite3_finalize(statement) }
+                var sources: [String: String] = [:]
+                while true {
+                    try cancellation?.checkCancellation()
+                    let status = sqlite3_step(statement)
+                    if status == SQLITE_DONE { break }
+                    try check(status, allowingRow: true)
+                    try cancellation?.checkCancellation()
+                    if let id = textColumn(statement, 0), let name = textColumn(statement, 1) { sources[id] = name }
+                }
+                // A concurrent writer may have committed during aggregation. Cache only a stable snapshot.
+                if let stamp, try metadataCacheStamp() == stamp {
+                    try cancellation?.checkCancellation()
+                    sourceMetadataCache = MetadataCacheEntry(stamp: stamp, value: sources)
+                }
+                return sources
             }
-            // A concurrent writer may have committed during aggregation. Cache only a stable snapshot.
-            if let stamp, try metadataCacheStamp() == stamp { sourceMetadataCache = MetadataCacheEntry(stamp: stamp, value: sources) }
-            return sources
         }
     }
 

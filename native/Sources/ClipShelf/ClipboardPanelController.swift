@@ -202,6 +202,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private let searchField = NSSearchField()
     private let statusLabel = NSTextField(labelWithString: "")
+    private var baseStatus = ""
     private let countLabel = NSTextField(labelWithString: "")
     private let emptyTitle = NSTextField(labelWithString: L10n.text("复制一点内容，从这里开始"))
     private let emptyDescription = NSTextField(labelWithString: L10n.text("在其他 App 中复制文本，再按 ⌘⇧V 打开 ClipShelf。"))
@@ -209,6 +210,17 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private let pauseButton = NSButton(title: L10n.text("暂停记录"), target: nil, action: nil)
     private let compactButton = NSButton(title: L10n.text("紧凑"), target: nil, action: nil)
     private var compactMode = false
+    private var preferredNormalHeight: CGFloat = 430
+    private var preferredCompactHeight: CGFloat = 338
+    private var applyingPresentationGeometry = false
+    private var presentedVisibleFrame: NSRect?
+    /// The application persists preferences in its own profile; isolated controllers never write defaults.
+    var onPreferredHeightChange: ((Bool, CGFloat) -> Void)?
+    /// Tests provide synthetic screens without changing the system display configuration.
+    var resolveVisibleScreenFrame: ((NSScreen?) -> NSRect)?
+    private enum ResultPresentation: Equatable { case ready, loading, failed }
+    private var resultPresentation = ResultPresentation.ready
+    private let retryLoadingButton = NSButton(title: L10n.text("重试读取"), target: nil, action: nil)
     private let boardPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let multiBoardButton = NSButton(title: L10n.text("多板筛选…"), target: nil, action: nil)
     private let clearFiltersButton = NSButton(title: L10n.text("清除条件"), target: nil, action: nil)
@@ -350,9 +362,26 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private func present(_ contents: [ClipboardCardContent], on screen: NSScreen?, status: String?) {
         if hasPreservedDraft, let detailWindow {
             detailHidden = false
+            if usesRemoteQuery {
+                resultPresentation = .loading
+                updateResultPresentation()
+            }
+            positionShelf(on: screen)
+            if let visible = presentedVisibleFrame {
+                let frame = PanelPresentationGeometry.detail(size: detailWindow.frame.size, in: visible)
+                detailWindow.minSize = NSSize(width: min(440, frame.width), height: min(320, frame.height))
+                detailWindow.setFrame(frame, display: false)
+            }
             window?.makeKeyAndOrderFront(nil); installEventMonitor()
             presentDetail(detailWindow)
             detailWindow.makeFirstResponder(detailEditor)
+            // Suspension retires the old read without a completion. Reload the
+            // preserved scope explicitly; do not leave the draft's parent list
+            // waiting for a request that the application has cancelled.
+            if usesRemoteQuery {
+                if onPageRequest != nil, pageMatchesQuery { refreshPage() }
+                else { issueQuery(resetLimit: !pageMatchesQuery) }
+            }
             return
         }
         if detailWindow != nil {
@@ -392,11 +421,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         scopeGeneration = UUID()
         selectionRequestID = nil
         validationRequestID = nil
-        statusLabel.stringValue = status ?? L10n.text("本机保存 · 随时取用")
+        baseStatus = status ?? L10n.text("本机保存 · 随时取用")
+        statusLabel.stringValue = baseStatus
+        resultPresentation = usesRemoteQuery ? .loading : .ready
         reloadResults(resetScroll: true)
-        let visible = (screen ?? NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
-        let width = max(520, min(1180, visible.width - 40))
-        window?.setFrame(NSRect(x: visible.midX - width / 2, y: visible.minY + 18, width: width, height: compactMode ? 338 : 430), display: false)
+        positionShelf(on: screen)
         window?.makeKeyAndOrderFront(nil)
         window?.makeFirstResponder(searchField)
         installEventMonitor()
@@ -420,7 +449,10 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         updateContents(metadata.map(ClipboardCardContent.init), status: status)
     }
 
-    func updateStatus(_ status: String) { statusLabel.stringValue = selectionStatus ?? pageStatus ?? reorderStatus ?? status }
+    func updateStatus(_ status: String) {
+        baseStatus = status
+        statusLabel.stringValue = selectionStatus ?? pageStatus ?? reorderStatus ?? status
+    }
 
     /// Refresh the current window after storage changes without rereading a growing prefix.
     func refreshPage(status: String? = nil) {
@@ -441,6 +473,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func updateContents(_ contents: [ClipboardCardContent], status: String?) {
         queryPending = false
+        resultPresentation = .ready
         self.records = Array(contents.prefix(resultLimit))
         if let status { statusLabel.stringValue = reorderStatus ?? status }
         reloadResults()
@@ -464,15 +497,37 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     func edit(_ record: ClipboardRecord) { showDetail(record, editing: true) }
 
+    func setPreferredHeights(normal: CGFloat, compact: CGFloat) {
+        preferredNormalHeight = PanelPresentationGeometry.preferredHeight(normal, compact: false)
+        preferredCompactHeight = PanelPresentationGeometry.preferredHeight(compact, compact: true)
+        if isVisible { positionShelf(on: window?.screen) }
+    }
+
     func setCompactMode(_ compact: Bool) {
         compactMode = compact
         compactButton.state = compact ? .on : .off
         compactButton.toolTip = compact ? L10n.text("切换为大卡片") : L10n.text("切换为紧凑卡片")
+        positionShelf(on: window?.screen)
+    }
+
+    private func positionShelf(on screen: NSScreen?) {
         guard let window else { return }
-        var frame = window.frame
-        frame.size.height = compact ? 338 : 430
-        window.setFrame(frame, display: true)
+        let visible = PanelPresentationGeometry.usable(visibleFrame(on: screen))
+        presentedVisibleFrame = visible
+        let frame = PanelPresentationGeometry.shelf(in: visible,
+            preferredHeight: compactMode ? preferredCompactHeight : preferredNormalHeight)
+        applyingPresentationGeometry = true
+        defer { applyingPresentationGeometry = false }
+        window.minSize = NSSize(width: min(720, frame.width), height: min(338, frame.height))
+        window.maxSize = NSSize(width: visible.width, height: visible.height)
+        window.setFrame(frame, display: isVisible)
         updateCardLayout()
+    }
+
+    private func visibleFrame(on screen: NSScreen?) -> NSRect {
+        resolveVisibleScreenFrame?(screen)
+            ?? (screen ?? NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
+            ?? PanelPresentationGeometry.defaultVisibleFrame
     }
 
     func setPinboards(_ pinboards: [Pinboard]) {
@@ -596,6 +651,12 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     /// is acquired and no output is performed as a side effect of showing it again.
     func hidePreservingDraft() {
         guard detailIsDirty || detailSaveID != nil else { dismiss(); return }
+        // Keep the editor's parent session and frozen selection, but retire all
+        // page callbacks before onDismiss cancels the database coordinator.
+        pageRequestID = nil
+        queryGeneration = UUID()
+        queryPending = false
+        refreshAfterPageLoad = false
         cancelBoundaryNavigation(); closeAllFilters(restoreFocus: false)
         cardViews.forEach { $0.cancelPendingDrag() }; invalidateOutputContext()
         retireDiscardPrompt()
@@ -798,7 +859,12 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         hints.font = .systemFont(ofSize: 10)
         hints.textColor = .tertiaryLabelColor
         hints.setContentHuggingPriority(.required, for: .horizontal)
-        let footer = NSStackView(views: [statusLabel, countLabel, hints])
+        retryLoadingButton.target = self
+        retryLoadingButton.action = #selector(retryPageLoading)
+        retryLoadingButton.bezelStyle = .inline
+        retryLoadingButton.controlSize = .small
+        retryLoadingButton.isHidden = true
+        let footer = NSStackView(views: [statusLabel, retryLoadingButton, countLabel, hints])
         footer.orientation = .horizontal
         footer.alignment = .centerY
         footer.spacing = 16
@@ -873,14 +939,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             selection.selectSingle(reference(first))
         }
         resultsView.reloadData()
-        emptyStack.isHidden = !filteredRecords.isEmpty
-        if query.isEmpty && !hasFilters {
-            emptyTitle.stringValue = L10n.text("复制一点内容，从这里开始")
-            emptyDescription.stringValue = L10n.text("在其他 App 中复制文本，再按 \(shortcutConfiguration.activation.displayName) 打开 ClipShelf。")
-        } else {
-            emptyTitle.stringValue = L10n.text("没有找到相关内容")
-            emptyDescription.stringValue = L10n.text("试试更短的关键词，或点击“清除条件”重新搜索全部内容。")
-        }
+        updateResultPresentation()
         updateSelectionCount()
         updateFilterControls()
         updatePageControls()
@@ -891,6 +950,35 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             : min(previousOrigin.x, maximumX)
         scrollView.contentView.scroll(to: NSPoint(x: originX, y: 0))
         scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    private func updateResultPresentation() {
+        emptyStack.isHidden = !filteredRecords.isEmpty
+        retryLoadingButton.isHidden = resultPresentation != .failed
+        retryLoadingButton.isEnabled = !queryPending
+        switch resultPresentation {
+        case .loading:
+            emptyTitle.stringValue = L10n.text("正在读取条目…")
+            emptyDescription.stringValue = ""
+        case .failed:
+            emptyTitle.stringValue = L10n.text("读取未完成，原因见下方。")
+            emptyDescription.stringValue = ""
+        case .ready:
+            if !hasFilters {
+                emptyTitle.stringValue = L10n.text("复制一点内容，从这里开始")
+                emptyDescription.stringValue = L10n.text("在其他 App 中复制文本，再按 \(shortcutConfiguration.activation.displayName) 打开 ClipShelf。")
+            } else {
+                emptyTitle.stringValue = L10n.text("没有找到相关内容")
+                emptyDescription.stringValue = L10n.text("试试更短的关键词，或点击“清除条件”重新搜索全部内容。")
+            }
+        }
+        emptyDescription.isHidden = emptyDescription.stringValue.isEmpty
+        updateSelectionCount()
+    }
+
+    @objc private func retryPageLoading() {
+        guard isVisible, !queryPending, resultPresentation == .failed else { return }
+        issueQuery(resetLimit: !pageMatchesQuery)
     }
 
     func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int { filteredRecords.count }
@@ -1201,6 +1289,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             pageRequestID = nil
             queryGeneration = UUID()
             queryPending = false
+            resultPresentation = .ready
+            updateResultPresentation()
         }
         boundaryPageRequestID = nil
         let needsRefresh = refreshAfterPageLoad
@@ -1273,6 +1363,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func updateSelectionCount() {
         orderingActions.isEnabled = canReorderItems && !selectedIDs.isEmpty
+        if resultPresentation == .loading {
+            countLabel.stringValue = L10n.text("正在读取条目…")
+            return
+        }
+        if resultPresentation == .failed && filteredRecords.isEmpty { countLabel.stringValue = ""; return }
         let count = onPageRequest != nil ? pageWindow.rangeDescription : L10n.text("\(filteredRecords.count) 条")
         let selected = selection.references.count
         countLabel.stringValue = selected > 1 || selection.isInvalid ? L10n.text("\(count) · 已选 \(selected) 条\(selection.isInvalid ? L10n.text("（已变化）") : "")") : count
@@ -1927,12 +2022,17 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         queryGeneration = UUID()
         pendingActionID = nil
         cardViews.forEach { $0.cancelPendingDrag() }
-        if !preserveStatus { reorderStatus = nil; pageStatus = nil }
+        if !preserveStatus {
+            if resultPresentation == .failed { statusLabel.stringValue = baseStatus }
+            reorderStatus = nil; pageStatus = nil
+        }
         if !preserveReveal { pendingRevealID = nil }
         if resetLimit || onPageRequest != nil { resultLimit = PanelPageWindow.size }
         queryPending = usesRemoteQuery
+        resultPresentation = usesRemoteQuery ? .loading : .ready
         if onPageRequest != nil, resetLimit { pageMatchesQuery = false }
         updateFilterControls()
+        updateResultPresentation()
         let query = currentQuery
         if let onPageRequest {
             let requestedAnchor = anchor ?? (preserveReveal ? pendingRevealID.map { PanelPageAnchor(recordID: $0, displacement: 0) } : nil)
@@ -1958,6 +2058,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                 @MainActor func finish() {
                     self.pageRequestID = nil
                     self.queryPending = false
+                    if self.resultPresentation == .loading { self.resultPresentation = .ready }
+                    self.updateResultPresentation()
                     if boundaryNavigation != nil { self.boundaryNavigationID = nil; self.boundaryPageRequestID = nil }
                     self.updateFilterControls()
                     if self.refreshAfterPageLoad {
@@ -1982,6 +2084,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                         let changedWindow = page.offset != self.pageWindow.offset || resetLimit
                         self.pageWindow.update(offset: page.offset, count: page.records.count, hasMore: page.hasMore)
                         self.pageMatchesQuery = true
+                        self.resultPresentation = .ready
                         self.pageStatus = nil
                         self.inlineRecords.removeAll()
                         self.recordOriginDevices = Dictionary(uniqueKeysWithValues: page.records.compactMap { record in
@@ -2047,6 +2150,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         refreshAfterPageLoad = false
         pageStatus = L10n.text("内容已变化或暂时无法读取；保留当前页，请重试。")
         statusLabel.stringValue = pageStatus!
+        resultPresentation = .failed
+        updateResultPresentation()
         updateFilterControls()
     }
 
@@ -2548,6 +2653,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     func windowDidResize(_ notification: Notification) {
         guard let resized = notification.object as? NSWindow, resized === window else { return }
+        if isVisible, !applyingPresentationGeometry {
+            let height = PanelPresentationGeometry.preferredHeight(resized.frame.height, compact: compactMode)
+            if compactMode { preferredCompactHeight = height } else { preferredNormalHeight = height }
+            onPreferredHeightChange?(compactMode, height)
+        }
         updateCardLayout()
     }
 

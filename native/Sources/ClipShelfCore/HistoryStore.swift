@@ -394,24 +394,28 @@ public final class HistoryStore: @unchecked Sendable {
         return next
     }
 
-    public func pinboards() throws -> [Pinboard] {
-        try synchronized { try orderedPinboardsWithoutLock() }
+    public func pinboards(cancellation: HistoryReadCancellation? = nil) throws -> [Pinboard] {
+        try synchronizedRead(cancellation: cancellation) {
+            try withReadCancellation(cancellation) { try orderedPinboardsWithoutLock(cancellation: cancellation) }
+        }
     }
 
-    func orderedPinboardsWithoutLock() throws -> [Pinboard] {
-        let boards = try pinboardsWithoutLock()
+    func orderedPinboardsWithoutLock(cancellation: HistoryReadCancellation? = nil) throws -> [Pinboard] {
+        let boards = try pinboardsWithoutLock(cancellation: cancellation)
         let statement = try prepare("SELECT board_id, position FROM pinboard_local_order")
         defer { sqlite3_finalize(statement) }
         var positions: [UUID: Int] = [:]
         while true {
+            try cancellation?.checkCancellation()
             let status = sqlite3_step(statement)
             if status == SQLITE_DONE { break }
             try check(status, allowingRow: true)
             guard let id = textColumn(statement, 0).flatMap(UUID.init(uuidString:)) else { throw HistoryStoreError.invalidStoredRecord }
             positions[id] = Int(sqlite3_column_int64(statement, 1))
         }
-        return boards.enumerated().sorted { lhs, rhs in
-            (positions[lhs.element.id] ?? Int.max, lhs.offset) < (positions[rhs.element.id] ?? Int.max, rhs.offset)
+        return try boards.enumerated().sorted { lhs, rhs in
+            try cancellation?.checkCancellation()
+            return (positions[lhs.element.id] ?? Int.max, lhs.offset) < (positions[rhs.element.id] ?? Int.max, rhs.offset)
         }.map(\.element)
     }
 
@@ -636,11 +640,12 @@ public final class HistoryStore: @unchecked Sendable {
         }
     }
 
-    func pinboardsWithoutLock() throws -> [Pinboard] {
+    func pinboardsWithoutLock(cancellation: HistoryReadCancellation? = nil) throws -> [Pinboard] {
         let statement = try prepare("SELECT id, name, color, sort_order FROM pinboards ORDER BY sort_order, rowid")
         defer { sqlite3_finalize(statement) }
         var boards: [Pinboard] = []
         while true {
+            try cancellation?.checkCancellation()
             let status = sqlite3_step(statement)
             if status == SQLITE_DONE { return boards }
             try check(status, allowingRow: true)
@@ -924,6 +929,19 @@ public final class HistoryStore: @unchecked Sendable {
     func synchronized<T>(_ operation: () throws -> T) rethrows -> T {
         lock.lock()
         defer { lock.unlock() }
+        return try operation()
+    }
+
+    /// Waiting readers may retire without waiting for a different operation to release the
+    /// connection. Cancellation never reaches into that operation or its SQLite transaction.
+    func synchronizedRead<T>(cancellation: HistoryReadCancellation?, _ operation: () throws -> T) throws -> T {
+        guard let cancellation else { return try synchronized(operation) }
+        try cancellation.checkCancellation()
+        while !lock.lock(before: Date().addingTimeInterval(0.025)) {
+            try cancellation.checkCancellation()
+        }
+        defer { lock.unlock() }
+        try cancellation.checkCancellation()
         return try operation()
     }
 }

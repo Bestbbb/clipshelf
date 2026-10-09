@@ -59,8 +59,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     private var suggestionTask: Task<Void, Never>?
     private var suggestionGeneration: UInt64 = 0
     private var suggestionTargetPID: pid_t?
-    private var queryGeneration: UInt64 = 0
-    private var queryTask: Task<Void, Never>?
+    private let pageQueries = HistoryPageQueryCoordinator<HistoryPanelReadResult>()
     private var ocrCleanupTask: Task<Void, Never>?
     private var ocrCleanupRequested = false
     private var pausedUntil: Date?
@@ -393,6 +392,12 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         panel.onImageFileOutput = { [weak self] records, directlyPaste in
             self?.outputImageFiles(records, directlyPaste: directlyPaste)
         }
+        panel.setPreferredHeights(normal: CGFloat(demo ? 0 : preferences.double(forKey: "normalPanelHeight")),
+                                  compact: CGFloat(demo ? 0 : preferences.double(forKey: "compactPanelHeight")))
+        panel.onPreferredHeightChange = { [weak self] compact, height in
+            guard let self, !self.demo, !self.validation else { return }
+            self.preferences.set(Double(height), forKey: compact ? "compactPanelHeight" : "normalPanelHeight")
+        }
         panel.setCompactMode(!demo && preferences.bool(forKey: "compactPanel"))
         panel.onCompactModeChange = { [weak self] compact in
             guard let self, !self.demo else { return }
@@ -422,7 +427,10 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         }
         panel.onPauseToggle = { [weak self] in self?.toggleRecording() }
         panel.onPermissions = { [weak self] in self?.enableDirectPaste() }
-        panel.onDismiss = { [weak self] in self?.target = nil }
+        panel.onDismiss = { [weak self] in
+            self?.target = nil
+            self?.pageQueries.cancel()
+        }
         panel.onPasteRecords = { [weak self] selected, plain in
             guard let self, !self.demo, self.interactionLifecycle.isAllowed else { return }
             self.paste.paste(selected, plainText: self.outputAsPlainText(selected, requested: plain), target: self.target) { self.panel.dismiss() }
@@ -697,33 +705,41 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     private func loadPage(_ request: PanelPageRequest,
                           completion: @escaping (Result<PanelHistoryPage, Error>) -> Void) {
         guard let store else { completion(.failure(HistoryStoreError.recordNotFound)); return }
-        queryTask?.cancel()
-        queryGeneration &+= 1
-        let generation = queryGeneration
-        queryTask = Task { @MainActor [weak self] in
-            do {
-                let result = try await Task.detached(priority: .userInitiated) {
-                    var query = request.query
-                    query.limit = PanelPageWindow.size
-                    let page = try store.metadataPage(query, offset: request.offset,
-                        anchorID: request.anchor?.recordID, displacement: request.anchor?.displacement ?? 0,
-                        boundary: request.boundary)
-                    return (page, try store.pinboards(), try store.metadataSources(),
-                            try store.metadataDevices(), try store.localDeviceIdentity())
-                }.value
-                guard let self, !Task.isCancelled, generation == self.queryGeneration else { return }
-                self.metadata = result.0.records
-                self.panel.setPinboards(result.1)
-                self.panel.setSources(result.2)
-                self.panel.setDevices(result.3, localDeviceID: result.4.id)
-                completion(.success(PanelHistoryPage(records: result.0.records, offset: result.0.offset,
-                    hasMore: result.0.hasMore, focusID: result.0.focusID)))
+        pageQueries.submit(read: { cancellation in
+            func checkCancellation() throws {
+                try Task.checkCancellation()
+                guard !cancellation.isCancelled else { throw CancellationError() }
+            }
+            var query = request.query
+            query.limit = PanelPageWindow.size
+            let page = try store.metadataPage(query, offset: request.offset,
+                anchorID: request.anchor?.recordID, displacement: request.anchor?.displacement ?? 0,
+                boundary: request.boundary, cancellation: cancellation)
+            try checkCancellation()
+            let boards = try store.pinboards(cancellation: cancellation)
+            try checkCancellation()
+            let sources = try store.metadataSources(cancellation: cancellation)
+            try checkCancellation()
+            let devices = try store.metadataDevices(cancellation: cancellation)
+            try checkCancellation()
+            let localDevice = try store.localDeviceIdentity(cancellation: cancellation)
+            return HistoryPanelReadResult(page: page, pinboards: boards, sources: sources,
+                                          devices: devices, localDeviceID: localDevice.id)
+        }, completion: { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let result):
+                self.metadata = result.page.records
+                self.panel.setPinboards(result.pinboards)
+                self.panel.setSources(result.sources)
+                self.panel.setDevices(result.devices, localDeviceID: result.localDeviceID)
+                completion(.success(PanelHistoryPage(records: result.page.records, offset: result.page.offset,
+                    hasMore: result.page.hasMore, focusID: result.page.focusID)))
                 self.refresh()
-            } catch {
-                guard let self, !Task.isCancelled, generation == self.queryGeneration else { return }
+            case .failure(let error):
                 completion(.failure(error))
             }
-        }
+        })
     }
 
     private func readSelection<Value: Sendable>(
@@ -2091,7 +2107,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             DistributedNotificationCenter.default().removeObserver(shortcutInputSourceObserver)
             self.shortcutInputSourceObserver = nil
         }
-        queryTask?.cancel(); pauseTimer?.invalidate(); retentionTimer?.invalidate()
+        pageQueries.cancel(); pauseTimer?.invalidate(); retentionTimer?.invalidate()
         ocrCleanupTask?.cancel()
         shareInboxTask?.cancel(); shareInboxTimer?.invalidate()
         intelligence.cancelRecognition(); intelligence.cancelSuggestions()

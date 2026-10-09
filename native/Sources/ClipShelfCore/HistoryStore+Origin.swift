@@ -3,30 +3,40 @@ import Foundation
 
 extension HistoryStore {
     /// An installation identifier stored outside logical backups. It is not an authenticated device identity.
-    public func localDeviceIdentity() throws -> ClipboardOriginDevice {
-        try synchronized { try localDeviceIdentityWithoutLock() }
+    public func localDeviceIdentity(cancellation: HistoryReadCancellation? = nil) throws -> ClipboardOriginDevice {
+        try synchronizedRead(cancellation: cancellation) {
+            // Schema migration creates the identity; this path only reads the existing row.
+            try withReadCancellation(cancellation) { try localDeviceIdentityWithoutLock() }
+        }
     }
 
-    public func metadataDevices() throws -> [ClipboardOriginDevice] {
-        try synchronized {
-            let stamp = try metadataCacheStamp()
-            if let stamp, let cached = deviceMetadataCache, cached.stamp == stamp { return cached.value }
-            let statement = try prepare("""
-                SELECT origin_device_id, min(coalesce(origin_device_name, 'Mac')) FROM clipboard_records
-                WHERE (is_in_history = 1 OR pinboard_id IS NOT NULL) AND origin_device_id IS NOT NULL AND origin_device_conflict = 0
-                GROUP BY origin_device_id ORDER BY min(coalesce(origin_device_name, 'Mac')), origin_device_id
-                """)
-            defer { sqlite3_finalize(statement) }
-            var devices: [ClipboardOriginDevice] = []
-            while true {
-                let status = sqlite3_step(statement)
-                if status == SQLITE_DONE { break }
-                try check(status, allowingRow: true)
-                guard let id = textColumn(statement, 0).flatMap(UUID.init(uuidString:)) else { throw HistoryStoreError.invalidStoredRecord }
-                devices.append(ClipboardOriginDevice(id: id, name: textColumn(statement, 1) ?? "Mac"))
+    public func metadataDevices(cancellation: HistoryReadCancellation? = nil) throws -> [ClipboardOriginDevice] {
+        try synchronizedRead(cancellation: cancellation) {
+            try withReadCancellation(cancellation) {
+                let stamp = try metadataCacheStamp()
+                if let stamp, let cached = deviceMetadataCache, cached.stamp == stamp { return cached.value }
+                let statement = try prepare("""
+                    SELECT origin_device_id, min(coalesce(origin_device_name, 'Mac')) FROM clipboard_records
+                    WHERE (is_in_history = 1 OR pinboard_id IS NOT NULL) AND origin_device_id IS NOT NULL AND origin_device_conflict = 0
+                    GROUP BY origin_device_id ORDER BY min(coalesce(origin_device_name, 'Mac')), origin_device_id
+                    """)
+                defer { sqlite3_finalize(statement) }
+                var devices: [ClipboardOriginDevice] = []
+                while true {
+                    try cancellation?.checkCancellation()
+                    let status = sqlite3_step(statement)
+                    if status == SQLITE_DONE { break }
+                    try check(status, allowingRow: true)
+                    try cancellation?.checkCancellation()
+                    guard let id = textColumn(statement, 0).flatMap(UUID.init(uuidString:)) else { throw HistoryStoreError.invalidStoredRecord }
+                    devices.append(ClipboardOriginDevice(id: id, name: textColumn(statement, 1) ?? "Mac"))
+                }
+                if let stamp, try metadataCacheStamp() == stamp {
+                    try cancellation?.checkCancellation()
+                    deviceMetadataCache = MetadataCacheEntry(stamp: stamp, value: devices)
+                }
+                return devices
             }
-            if let stamp, try metadataCacheStamp() == stamp { deviceMetadataCache = MetadataCacheEntry(stamp: stamp, value: devices) }
-            return devices
         }
     }
 
