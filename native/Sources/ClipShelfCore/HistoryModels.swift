@@ -1,4 +1,5 @@
 import Foundation
+import ClipShelfLocalization
 
 public struct Pinboard: Identifiable, Equatable, Codable, Sendable {
     public var id: UUID
@@ -35,7 +36,7 @@ public struct ClipboardRecordMetadata: Identifiable, Equatable, Codable, Sendabl
     public var title: String {
         if let renamedTitle, !renamedTitle.isEmpty { return renamedTitle }
         let first = text.split(whereSeparator: { $0.isNewline }).first.map(String.init) ?? text
-        if first.isEmpty { return kind == .image ? "Image" : kind == .file ? "Files" : "Clipboard item" }
+        if first.isEmpty { return kind == .image ? L10n.text("Image") : kind == .file ? L10n.text("Files") : L10n.text("Clipboard item") }
         return String(first.prefix(120))
     }
     public var preview: String { String(text.prefix(1_000)) }

@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 import AppIntents
 import CloudKit
 import PDFKit
+import ClipShelfLocalization
 
 @MainActor
 final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemValidation {
@@ -20,10 +21,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     private var storageSettings: StorageSettingsController?
     private var appUpdates: AppUpdateCoordinator?
     private var updateSettings: UpdateSettingsController?
+    private var languageSettings: LanguageSettingsController?
     private var updateCheckItems: [NSMenuItem] = []
     private var ownedPublications: OwnedFilePublicationCoordinator?
     private var shareInbox: ShareInboxService?
-    private var shareInboxUnavailableReason = "此构建未配置系统分享扩展。"
+    private var shareInboxUnavailableReason = L10n.text("此构建未配置系统分享扩展。")
     private var shareInboxTask: Task<Void, Never>?
     private var shareInboxTimer: Timer?
     private let panel = ClipboardPanelController()
@@ -113,7 +115,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         if demo {
             installShortcutInputSourceObserver()
             records = Self.demoRecords
-            statusMessage = "演示模式 · 合成内容 · 不读取或写入系统剪贴板"
+            statusMessage = L10n.text("演示模式 · 合成内容 · 不读取或写入系统剪贴板")
             refresh()
             panel.show(records: records, on: NSScreen.main, status: statusText)
             return
@@ -152,7 +154,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             storageSettings?.requestAutomaticReclamation()
             reload()
         } catch {
-            statusMessage = "无法打开历史数据库，记录已停止。"
+            statusMessage = L10n.text("无法打开历史数据库，记录已停止。")
         }
         let excluded = preferences.stringArray(forKey: "excludedBundleIDs") ?? defaultExclusions
         systemIntegration.onImport = { [weak self] record in
@@ -180,7 +182,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                 self.scheduleOCR(for: stored)
             } catch {
                 self.capture.stop()
-                self.statusMessage = "保存失败，已暂停记录；现有历史仍可使用。\n\(error.localizedDescription)"
+                self.statusMessage = L10n.text("保存失败，已暂停记录；现有历史仍可使用。\n\(error.localizedDescription)")
                 self.refresh()
             }
         }
@@ -212,63 +214,64 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         }
         refresh()
         if store != nil, !preferences.bool(forKey: "hasSeenWelcome") {
-            setStatus("欢迎使用 ClipShelf · 打开历史或选择开始记录以完成设置。")
+            setStatus(L10n.text("欢迎使用 ClipShelf · 打开历史或选择开始记录以完成设置。"))
         }
     }
 
     private func configureMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "clipboard", accessibilityDescription: "ClipShelf 剪贴板")
+        statusItem.button?.image = NSImage(systemSymbolName: "clipboard", accessibilityDescription: L10n.text("ClipShelf 剪贴板"))
         let menu = NSMenu()
         menu.autoenablesItems = !validation
-        let title = NSMenuItem(title: validation ? "ClipShelf · 隔离验收" : (profile.isReleaseDistribution ? "ClipShelf" : "ClipShelf · 开发预览"), action: nil, keyEquivalent: "")
+        let title = NSMenuItem(title: validation ? L10n.text("ClipShelf · 隔离验收") : (profile.isReleaseDistribution ? "ClipShelf" : L10n.text("ClipShelf · 开发预览")), action: nil, keyEquivalent: "")
         menu.addItem(title)
-        stateItem = NSMenuItem(title: "记录已暂停", action: nil, keyEquivalent: "")
+        stateItem = NSMenuItem(title: L10n.text("记录已暂停"), action: nil, keyEquivalent: "")
         menu.addItem(stateItem)
         menu.addItem(.separator())
-        activationItem = item("打开剪贴板    \(shortcutConfiguration.activation.displayName)", #selector(openFromMenu))
+        activationItem = item(L10n.text("打开剪贴板    \(shortcutConfiguration.activation.displayName)"), #selector(openFromMenu))
         menu.addItem(activationItem)
-        recordingItem = item("开始记录", #selector(toggleRecording))
+        recordingItem = item(L10n.text("开始记录"), #selector(toggleRecording))
         menu.addItem(recordingItem)
-        permissionItem = item("开启直接粘贴…", #selector(enableDirectPaste))
+        permissionItem = item(L10n.text("开启直接粘贴…"), #selector(enableDirectPaste))
         menu.addItem(permissionItem)
-        menu.addItem(item("排除应用…", #selector(editExclusions)))
-        let pauseMenuItem = NSMenuItem(title: "定时暂停", action: nil, keyEquivalent: "")
+        menu.addItem(item(L10n.text("排除应用…"), #selector(editExclusions)))
+        let pauseMenuItem = NSMenuItem(title: L10n.text("定时暂停"), action: nil, keyEquivalent: "")
         let pauseMenu = NSMenu()
-        for (label, minutes) in [("暂停 5 分钟", 5), ("暂停 30 分钟", 30), ("暂停 1 小时", 60)] {
+        for (label, minutes) in [(L10n.text("暂停 5 分钟"), 5), (L10n.text("暂停 30 分钟"), 30), (L10n.text("暂停 1 小时"), 60)] {
             let action = item(label, #selector(pauseFor(_:))); action.tag = minutes; pauseMenu.addItem(action)
         }
         pauseMenuItem.submenu = pauseMenu; menu.addItem(pauseMenuItem)
-        stackActivationItem = item("顺序粘贴 Stack    \(shortcutConfiguration.stack.displayName)", #selector(toggleStack))
+        stackActivationItem = item(L10n.text("顺序粘贴 Stack    \(shortcutConfiguration.stack.displayName)"), #selector(toggleStack))
         menu.addItem(stackActivationItem)
         menu.addItem(.separator())
-        menu.addItem(item("新建文本…", #selector(newText)))
-        menu.addItem(item("从 iPhone 或 iPad 导入…", #selector(importFromCamera)))
-        menu.addItem(item("系统分享收件箱…", #selector(checkShareInbox)))
-        menu.addItem(item("允许快捷指令访问…", #selector(configureShortcuts)))
-        menu.addItem(item("导出备份…", #selector(exportBackup)))
-        menu.addItem(item("恢复备份…", #selector(restoreBackup)))
-        let retentionRoot = NSMenuItem(title: "历史保留期限", action: nil, keyEquivalent: "")
+        menu.addItem(item(L10n.text("新建文本…"), #selector(newText)))
+        menu.addItem(item(L10n.text("从 iPhone 或 iPad 导入…"), #selector(importFromCamera)))
+        menu.addItem(item(L10n.text("系统分享收件箱…"), #selector(checkShareInbox)))
+        menu.addItem(item(L10n.text("允许快捷指令访问…"), #selector(configureShortcuts)))
+        menu.addItem(item(L10n.text("导出备份…"), #selector(exportBackup)))
+        menu.addItem(item(L10n.text("恢复备份…"), #selector(restoreBackup)))
+        let retentionRoot = NSMenuItem(title: L10n.text("历史保留期限"), action: nil, keyEquivalent: "")
         let retentionMenu = NSMenu()
         self.retentionMenu = retentionMenu
-        for (label, days) in [("1 天", 1), ("1 周", 7), ("1 月", 30), ("1 年", 365), ("永久", 0)] {
+        for (label, days) in [(L10n.text("1 天"), 1), (L10n.text("1 周"), 7), (L10n.text("1 月"), 30), (L10n.text("1 年"), 365), (L10n.text("永久"), 0)] {
             let entry = item(label, #selector(changeRetention(_:))); entry.tag = days; retentionMenu.addItem(entry)
         }
         retentionRoot.submenu = retentionMenu; menu.addItem(retentionRoot)
-        menu.addItem(item("清空历史…", #selector(clearHistory)))
-        menu.addItem(item("存储管理…", #selector(showStorageSettings)))
-        menu.addItem(item("打开数据文件夹", #selector(revealData)))
-        menu.addItem(item("登录时启动…", #selector(toggleLoginItem)))
-        menu.addItem(item("设置…", #selector(showSettings)))
-        menu.addItem(item("MCP 与 AI 工具…", #selector(showMCPSettings)))
-        menu.addItem(item("智能建议…", #selector(showSuggestions)))
-        menu.addItem(item("iCloud 同步…", #selector(showCloudSettings)))
-        menu.addItem(item("共享板…", #selector(showSharingSettings)))
-        let checkUpdate = item("检查更新…", #selector(checkAppUpdates))
+        menu.addItem(item(L10n.text("清空历史…"), #selector(clearHistory)))
+        menu.addItem(item(L10n.text("存储管理…"), #selector(showStorageSettings)))
+        menu.addItem(item(L10n.text("打开数据文件夹"), #selector(revealData)))
+        menu.addItem(item(L10n.text("登录时启动…"), #selector(toggleLoginItem)))
+        menu.addItem(item(L10n.text("设置…"), #selector(showSettings)))
+        menu.addItem(item(L10n.text("语言 / Language…"), #selector(showLanguageSettings)))
+        menu.addItem(item(L10n.text("MCP 与 AI 工具…"), #selector(showMCPSettings)))
+        menu.addItem(item(L10n.text("智能建议…"), #selector(showSuggestions)))
+        menu.addItem(item(L10n.text("iCloud 同步…"), #selector(showCloudSettings)))
+        menu.addItem(item(L10n.text("共享板…"), #selector(showSharingSettings)))
+        let checkUpdate = item(L10n.text("检查更新…"), #selector(checkAppUpdates))
         menu.addItem(checkUpdate); updateCheckItems.append(checkUpdate)
-        menu.addItem(item("更新设置…", #selector(showUpdateSettings)))
+        menu.addItem(item(L10n.text("更新设置…"), #selector(showUpdateSettings)))
         menu.addItem(.separator())
-        let quit = item("退出 ClipShelf", #selector(quitApplication))
+        let quit = item(L10n.text("退出 ClipShelf"), #selector(quitApplication))
         quit.keyEquivalent = "q"
         menu.addItem(quit)
         statusItem.menu = menu
@@ -276,27 +279,28 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         let main = NSMenu()
         let appRoot = NSMenuItem()
         let appMenu = NSMenu()
-        let appCheckUpdate = item("检查更新…", #selector(checkAppUpdates))
+        let appCheckUpdate = item(L10n.text("检查更新…"), #selector(checkAppUpdates))
         appMenu.addItem(appCheckUpdate); updateCheckItems.append(appCheckUpdate)
-        appMenu.addItem(item("更新设置…", #selector(showUpdateSettings)))
-        let appQuit = NSMenuItem(title: "退出 ClipShelf", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(item(L10n.text("更新设置…"), #selector(showUpdateSettings)))
+        appMenu.addItem(item(L10n.text("语言 / Language…"), #selector(showLanguageSettings)))
+        let appQuit = NSMenuItem(title: L10n.text("退出 ClipShelf"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appMenu.addItem(appQuit)
         appRoot.submenu = appMenu
         main.addItem(appRoot)
-        let editRoot = NSMenuItem(title: "编辑", action: nil, keyEquivalent: "")
-        let edit = NSMenu(title: "编辑")
+        let editRoot = NSMenuItem(title: L10n.text("编辑"), action: nil, keyEquivalent: "")
+        let edit = NSMenu(title: L10n.text("编辑"))
         for (title, selector, key) in [
-            ("剪切", #selector(NSText.cut(_:)), "x"),
-            ("复制", #selector(NSText.copy(_:)), "c"),
-            ("粘贴", #selector(NSText.paste(_:)), "v"),
-            ("全选", #selector(NSText.selectAll(_:)), "a")
+            (L10n.text("剪切"), #selector(NSText.cut(_:)), "x"),
+            (L10n.text("复制"), #selector(NSText.copy(_:)), "c"),
+            (L10n.text("粘贴"), #selector(NSText.paste(_:)), "v"),
+            (L10n.text("全选"), #selector(NSText.selectAll(_:)), "a")
         ] { edit.addItem(NSMenuItem(title: title, action: selector, keyEquivalent: key)) }
         editRoot.submenu = edit
         main.addItem(editRoot)
-        let servicesRoot = NSMenuItem(title: "服务", action: nil, keyEquivalent: "")
-        let services = NSMenu(title: "服务"); servicesRoot.submenu = services
+        let servicesRoot = NSMenuItem(title: L10n.text("服务"), action: nil, keyEquivalent: "")
+        let services = NSMenu(title: L10n.text("服务")); servicesRoot.submenu = services
         appMenu.addItem(servicesRoot); NSApp.servicesMenu = services
-        let camera = NSMenuItem(title: "从设备导入", action: nil, keyEquivalent: "")
+        let camera = NSMenuItem(title: L10n.text("从设备导入"), action: nil, keyEquivalent: "")
         camera.identifier = NSMenuItem.importFromDeviceIdentifier; edit.addItem(camera)
         NSApp.mainMenu = main
     }
@@ -306,7 +310,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         panel.onShareRecord = { [weak self] record in
             guard let self, !self.demo, let view = self.panel.window?.contentView else { return }
             do { try self.systemIntegration.share(record, from: view) }
-            catch { self.setStatus("该内容当前无法分享，请检查原文件是否可用。") }
+            catch { self.setStatus(L10n.text("该内容当前无法分享，请检查原文件是否可用。")) }
         }
         panel.onImageFileOutput = { [weak self] records, directlyPaste in
             self?.outputImageFiles(records, directlyPaste: directlyPaste)
@@ -327,13 +331,13 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         }
         panel.onPaste = { [weak self] record, plain in
             guard let self else { return }
-            if self.demo { self.setStatus("演示：已选择「\(record.title)」；不会写入剪贴板。"); return }
+            if self.demo { self.setStatus(L10n.text("演示：已选择「\(record.title)」；不会写入剪贴板。")); return }
             self.paste.paste(record, plainText: self.outputAsPlainText([record], requested: plain), target: self.target) { self.panel.dismiss() }
         }
         panel.onCopy = { [weak self] record in
             guard let self else { return }
-            if self.demo { self.setStatus("演示模式不会写入系统剪贴板。"); return }
-            if self.paste.copy(record) { self.setStatus("内容已复制，可在目标应用按 ⌘V。") }
+            if self.demo { self.setStatus(L10n.text("演示模式不会写入系统剪贴板。")); return }
+            if self.paste.copy(record) { self.setStatus(L10n.text("内容已复制，可在目标应用按 ⌘V。")) }
         }
         panel.onDelete = { [weak self] record in
             self?.deleteSelection([record])
@@ -347,7 +351,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         }
         panel.onCopyRecords = { [weak self] selected in
             guard let self, !self.demo else { return }
-            if self.paste.copy(selected) { self.setStatus("已复制 \(selected.count) 项。") }
+            if self.paste.copy(selected) { self.setStatus(L10n.text("已复制 \(selected.count) 项。")) }
         }
         panel.onDeleteRecords = { [weak self] selected in
             self?.deleteSelection(selected)
@@ -395,17 +399,17 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         panel.onCreatePinboard = { [weak self] name, color in
             guard let self, !self.demo, self.mutationIsAvailable() else { return }
             do { _ = try self.store?.createPinboard(name: name, color: color); self.reload() }
-            catch { self.setStatus("无法创建分组，请检查名称与颜色。") }
+            catch { self.setStatus(L10n.text("无法创建分组，请检查名称与颜色。")) }
         }
         panel.onUpdatePinboard = { [weak self] board in
             guard let self, !self.demo, self.mutationIsAvailable() else { return }
             do { try self.store?.updatePinboard(board); self.reload() }
-            catch { self.setStatus("无法更新分组，请重试。") }
+            catch { self.setStatus(L10n.text("无法更新分组，请重试。")) }
         }
         panel.onReorderPinboards = { [weak self] ids in
             guard let self, !self.demo, self.mutationIsAvailable() else { return }
             do { try self.store?.reorderPinboards(ids: ids); self.reload() }
-            catch { self.setStatus("分组列表已改变，顺序未保存；请刷新后重试。"); self.reload() }
+            catch { self.setStatus(L10n.text("分组列表已改变，顺序未保存；请刷新后重试。")); self.reload() }
         }
         panel.onReorderRecords = { [weak self] boardID, ids, beforeID, revisions, completion in
             guard let self, !self.demo else {
@@ -426,7 +430,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             guard let self, !self.demo else { return }
             let references = selected.map { ClipboardSelectionReference(id: $0.id, revision: $0.revision) }
             self.moveSelection({ try $0.moveSelection(references, to: boardID) }) { [weak self] result in
-                if case .failure = result { self?.setStatus("内容已改变或无法移动，本次移动未保存；请刷新后重试。") }
+                if case .failure = result { self?.setStatus(L10n.text("内容已改变或无法移动，本次移动未保存；请刷新后重试。")) }
             }
         }
         panel.onExtractText = { [weak self] record in self?.extractText(record) }
@@ -451,13 +455,13 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         panel.onDropItems = { [weak self] items, boardID in
             guard let self, !self.demo, self.mutationIsAvailable() else { return }
             do {
-                if var record = try ClipboardCodec.record(from: items, sourceApp: "拖入", sourceBundleID: nil) {
+                if var record = try ClipboardCodec.record(from: items, sourceApp: L10n.text("拖入"), sourceBundleID: nil) {
                     record.pinboardID = boardID
                     let stored = try self.store?.create(record)
                     self.reload()
                     if let stored { self.scheduleOCR(for: stored) }
                 }
-            } catch { self.setStatus("拖入失败，原有内容未改变。") }
+            } catch { self.setStatus(L10n.text("拖入失败，原有内容未改变。")) }
         }
     }
 
@@ -500,6 +504,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         if sessionSuspended {
             historyCleanup?.cancelPending()
             storageSettings?.suspend()
+            languageSettings?.suspend()
             cancelSuggestions(); capture.stop(); paste.cancel(); panel.hideForSuspension(); stackKeys.stop()
             if let shareInbox { Task { try? await shareInbox.publishDestinations(allowImports: false) } }
         } else {
@@ -531,15 +536,15 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     private func processShareInbox(retryUncertain: Bool = false, userInitiated: Bool = false) {
         guard !demo, !isTerminating else { return }
         guard !sessionSuspended else {
-            if userInitiated { setStatus("会话恢复后才能导入系统分享。") }
+            if userInitiated { setStatus(L10n.text("会话恢复后才能导入系统分享。")) }
             return
         }
         guard let shareInbox else {
-            if userInitiated { showError("系统分享暂不可用", detail: shareInboxUnavailableReason) }
+            if userInitiated { showError(L10n.text("系统分享暂不可用"), detail: shareInboxUnavailableReason) }
             return
         }
         guard shareInboxTask == nil else {
-            if userInitiated { setStatus("正在检查系统分享收件箱，请稍候。") }
+            if userInitiated { setStatus(L10n.text("正在检查系统分享收件箱，请稍候。")) }
             return
         }
         shareInboxTask = Task { @MainActor [weak self] in
@@ -551,17 +556,17 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                 guard !Task.isCancelled, !self.isTerminating else { return }
                 if result.imported > 0 { self.reload() }
                 if !result.failures.isEmpty {
-                    self.setStatus("已导入 \(result.imported) 条系统分享；\(result.failures.count) 项尚未导入，内容保留在收件箱。")
+                    self.setStatus(L10n.text("已导入 \(result.imported) 条系统分享；\(result.failures.count) 项尚未导入，内容保留在收件箱。"))
                     if userInitiated {
-                        self.showError("部分分享尚未导入", detail: result.failures.prefix(3).map(\.message).joined(separator: "\n"))
+                        self.showError(L10n.text("部分分享尚未导入"), detail: result.failures.prefix(3).map(\.message).joined(separator: "\n"))
                     }
                 } else if result.imported > 0 || userInitiated {
-                    self.setStatus(result.imported > 0 ? "已导入 \(result.imported) 条系统分享。" : "系统分享收件箱已检查，没有待导入内容。")
+                    self.setStatus(result.imported > 0 ? L10n.text("已导入 \(result.imported) 条系统分享。") : L10n.text("系统分享收件箱已检查，没有待导入内容。"))
                 }
             } catch {
                 guard let self, !Task.isCancelled else { return }
-                self.setStatus("系统分享导入未完成，内容保留在收件箱。")
-                if userInitiated { self.showError("系统分享导入未完成", detail: error.localizedDescription) }
+                self.setStatus(L10n.text("系统分享导入未完成，内容保留在收件箱。"))
+                if userInitiated { self.showError(L10n.text("系统分享导入未完成"), detail: error.localizedDescription) }
             }
         }
     }
@@ -575,9 +580,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         guard !demo else { return }
         cancelSuggestions()
         guard shareInbox != nil else { processShareInbox(userInitiated: true); return }
-        let alert = NSAlert(); alert.messageText = "系统分享收件箱"
-        alert.informativeText = "通过其他应用的分享菜单保存的内容会自动导入。如果上次导入因退出而中断，可以重试未确认项；请先检查历史，避免重复保存已手动恢复的内容。"
-        alert.addButton(withTitle: "检查收件箱"); alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "重试中断项")
+        let alert = NSAlert(); alert.messageText = L10n.text("系统分享收件箱")
+        alert.informativeText = L10n.text("通过其他应用的分享菜单保存的内容会自动导入。如果上次导入因退出而中断，可以重试未确认项；请先检查历史，避免重复保存已手动恢复的内容。")
+        alert.addButton(withTitle: L10n.text("检查收件箱")); alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("重试中断项"))
         let choice = alert.runModal()
         guard choice != .alertSecondButtonReturn else { return }
         processShareInbox(retryUncertain: choice == .alertThirdButtonReturn, userInitiated: true)
@@ -594,11 +599,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     }
 
     private var statusText: String {
-        if let statusMessage { return validation ? "隔离验收 · \(statusMessage)" : statusMessage }
-        if validation { return "隔离验收 · 合成内容 · 记录关闭 · \(paste.hasPermission ? "直接粘贴可用" : "辅助功能未授权，仅复制")" }
-        let recording = capture.isRunning ? "记录中" : "记录已暂停"
-        let mode = paste.hasPermission ? "直接粘贴可用" : "复制模式 · 授权后可直接粘贴"
-        return "\(recording) · \(demo ? records.count : metadata.count) 条结果 · \(mode)"
+        if let statusMessage { return validation ? L10n.text("隔离验收 · \(statusMessage)") : statusMessage }
+        if validation { return L10n.text("隔离验收 · 合成内容 · 记录关闭 · \(paste.hasPermission ? L10n.text("直接粘贴可用") : L10n.text("辅助功能未授权，仅复制"))") }
+        let recording = capture.isRunning ? L10n.text("记录中") : L10n.text("记录已暂停")
+        let mode = paste.hasPermission ? L10n.text("直接粘贴可用") : L10n.text("复制模式 · 授权后可直接粘贴")
+        return L10n.text("\(recording) · \(demo ? records.count : metadata.count) 条结果 · \(mode)")
     }
 
     private func reload() {
@@ -680,7 +685,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         guard let store else { return }
         guard !isDataMutationInProgress else { setStatus(SelectionOperationError.busy.localizedDescription); return }
         guard SelectionUndoTicket.payloadSize(selected) <= selectionUndoHistory.maximumPayloadBytes else {
-            setStatus("所选内容过大，无法保留整批撤销；请缩小选择后重试。")
+            setStatus(L10n.text("所选内容过大，无法保留整批撤销；请缩小选择后重试。"))
             return
         }
         selectionMutationInProgress = true
@@ -692,7 +697,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                 selectionUndoHistory.register(.deletion(selected, undo)) { [weak self] in self?.undoSelection($0, store: store) }
                 reload()
             } catch {
-                setStatus("所选内容已改变或不可删除；本次整批删除未保存。")
+                setStatus(L10n.text("所选内容已改变或不可删除；本次整批删除未保存。"))
                 reload()
             }
         }
@@ -714,12 +719,12 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                 }.value
                 selectionUndoHistory.remove(ticket)
                 if selectionUndoHistory.rebaseActions(using: store, receipt: receipt) > 0 {
-                    setStatus("已撤销；部分更早的撤销记录已失效。")
+                    setStatus(L10n.text("已撤销；部分更早的撤销记录已失效。"))
                 }
                 reload()
             } catch {
                 selectionUndoHistory.remove(ticket)
-                setStatus("本次撤销已失效，相关内容、分组或同步状态已改变；没有部分恢复。")
+                setStatus(L10n.text("本次撤销已失效，相关内容、分组或同步状态已改变；没有部分恢复。"))
                 reload()
             }
         }
@@ -727,7 +732,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
 
     private enum SelectionOperationError: Error, LocalizedError {
         case busy
-        var errorDescription: String? { "正在完成修改、撤销或历史清理，请稍后再试。" }
+        var errorDescription: String? { L10n.text("正在完成修改、撤销或历史清理，请稍后再试。") }
     }
 
     private func mutationIsAvailable() -> Bool {
@@ -751,14 +756,14 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
 
     private func refresh() {
         appUpdates?.refreshAvailability()
-        stateItem?.title = demo ? "演示模式 · 记录关闭" : (capture.isRunning ? "正在记录" : "记录已暂停")
-        recordingItem?.title = capture.isRunning ? "暂停记录" : "开始记录"
+        stateItem?.title = demo ? L10n.text("演示模式 · 记录关闭") : (capture.isRunning ? L10n.text("正在记录") : L10n.text("记录已暂停"))
+        recordingItem?.title = capture.isRunning ? L10n.text("暂停记录") : L10n.text("开始记录")
         recordingItem?.isEnabled = !demo && !validation && store != nil
         permissionItem?.isEnabled = !demo
-        permissionItem?.title = paste.hasPermission ? "检查直接粘贴权限…" : "开启直接粘贴…"
-        statusItem?.button?.toolTip = "ClipShelf · \(capture.isRunning ? "记录中" : "已暂停")"
-        activationItem?.title = "打开剪贴板    \(shortcutConfiguration.activation.displayName)"
-        stackActivationItem?.title = "顺序粘贴 Stack    \(shortcutConfiguration.stack.displayName)"
+        permissionItem?.title = paste.hasPermission ? L10n.text("检查直接粘贴权限…") : L10n.text("开启直接粘贴…")
+        statusItem?.button?.toolTip = "ClipShelf · \(capture.isRunning ? L10n.text("记录中") : L10n.text("已暂停"))"
+        activationItem?.title = L10n.text("打开剪贴板    \(shortcutConfiguration.activation.displayName)")
+        stackActivationItem?.title = L10n.text("顺序粘贴 Stack    \(shortcutConfiguration.stack.displayName)")
         for entry in retentionMenu?.items ?? [] {
             entry.state = entry.tag == preferences.integer(forKey: "retentionDays") ? .on : .off
         }
@@ -784,12 +789,12 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         }
         if panel.isVisible { panel.dismiss(); paste.cancel(); return }
         if !demo, store == nil {
-            showError("历史数据库未能打开", detail: "原有文件会保留。请检查本机磁盘和数据目录权限后重新启动。")
+            showError(L10n.text("历史数据库未能打开"), detail: L10n.text("原有文件会保留。请检查本机磁盘和数据目录权限后重新启动。"))
             return
         }
         target = paste.captureTarget()
-        if !demo, !preferences.bool(forKey: "hasSeenWelcome") { showWelcome() }
-        statusMessage = demo ? "演示模式 · 合成内容 · 不读取或写入系统剪贴板" : nil
+        if !demo, !preferences.bool(forKey: "hasSeenWelcome"), !showWelcome() { return }
+        statusMessage = demo ? L10n.text("演示模式 · 合成内容 · 不读取或写入系统剪贴板") : nil
         let pointer = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(pointer, $0.frame, false) } ?? NSScreen.main
         if demo { panel.show(records: records, on: screen, status: statusText) }
@@ -824,7 +829,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
         }
-        setStatus("在系统设置中允许 ClipShelf 使用辅助功能，然后重新打开面板。")
+        setStatus(L10n.text("在系统设置中允许 ClipShelf 使用辅助功能，然后重新打开面板。"))
     }
 
     @objc private func editExclusions() {
@@ -836,16 +841,16 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         guard !demo else { return }
         cancelSuggestions()
         let alert = NSAlert()
-        alert.messageText = "排除应用"
-        alert.informativeText = "这些应用中之后复制的内容不会记录。填写应用的 Bundle ID，用逗号或换行分隔；已有历史不会自动删除。"
+        alert.messageText = L10n.text("排除应用")
+        alert.informativeText = L10n.text("这些应用中之后复制的内容不会记录。填写应用的 Bundle ID，用逗号或换行分隔；已有历史不会自动删除。")
         let field = NSTextField(wrappingLabelWithString: "")
         field.isEditable = true; field.isSelectable = true; field.isBordered = true
         field.drawsBackground = true
         field.frame = NSRect(x: 0, y: 0, width: 420, height: 95)
         field.stringValue = capture.excludedBundleIDs.sorted().joined(separator: ", ")
         alert.accessoryView = field
-        alert.addButton(withTitle: "保存")
-        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: L10n.text("保存"))
+        alert.addButton(withTitle: L10n.text("取消"))
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
             let values = field.stringValue.components(separatedBy: CharacterSet(charactersIn: ",\n"))
@@ -864,8 +869,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         guard !demo, store != nil, mutationIsAvailable() else { return }
         cancelSuggestions()
         let alert = NSAlert()
-        alert.messageText = "新建文本"
-        alert.informativeText = "保存到本地历史，可从面板搜索和粘贴。"
+        alert.messageText = L10n.text("新建文本")
+        alert.informativeText = L10n.text("保存到本地历史，可从面板搜索和粘贴。")
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 420, height: 150))
         let text = NSTextView(frame: scroll.bounds)
         text.isRichText = false
@@ -873,14 +878,14 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         scroll.hasVerticalScroller = true
         scroll.documentView = text
         alert.accessoryView = scroll
-        alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: L10n.text("保存")); alert.addButton(withTitle: L10n.text("取消"))
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn, !text.string.isEmpty, mutationIsAvailable() {
             do {
                 _ = try store?.create(ClipboardRecord(text: text.string, sourceApp: "ClipShelf",
                                                       sourceBundleID: Bundle.main.bundleIdentifier))
                 reload()
-            } catch { showError("保存失败", detail: "原有历史未改变，请检查本机磁盘空间。") }
+            } catch { showError(L10n.text("保存失败"), detail: L10n.text("原有历史未改变，请检查本机磁盘空间。")) }
         }
     }
 
@@ -892,7 +897,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     private func performClearHistory() {
         guard !demo, store != nil, !sessionSuspended, !isTerminating, !terminationDecisionPending else { return }
         if historyCleanup?.start(.clearHistory) == .ignored {
-            setStatus("请先完成或取消当前历史清理。")
+            setStatus(L10n.text("请先完成或取消当前历史清理。"))
             cleanupConfirmation?.window?.makeKeyAndOrderFront(nil)
         }
     }
@@ -902,19 +907,26 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         if let directory = try? profile.dataDirectory() { NSWorkspace.shared.open(directory) }
     }
 
-    private func showWelcome() {
-        guard !isTerminating, !validation else { return }
+    @discardableResult
+    private func showWelcome() -> Bool {
+        guard !isTerminating, !validation else { return false }
         let alert = NSAlert()
-        alert.messageText = "欢迎使用 ClipShelf"
-        alert.informativeText = "ClipShelf 在本机保存之后复制的文字、图片和文件引用。使用 \(shortcutConfiguration.activation.displayName) 打开历史，\(shortcutConfiguration.stack.displayName) 使用顺序粘贴；可在设置中更改快捷键。\n\n你可以随时从菜单栏暂停记录或排除应用。直接粘贴需要单独授予辅助功能权限；未授权仍可复制后手动粘贴。"
-        alert.addButton(withTitle: "开始记录"); alert.addButton(withTitle: "稍后")
+        alert.messageText = L10n.text("欢迎使用 ClipShelf")
+        alert.informativeText = L10n.text("ClipShelf 在本机保存之后复制的文字、图片和文件引用。使用 \(shortcutConfiguration.activation.displayName) 打开历史，\(shortcutConfiguration.stack.displayName) 使用顺序粘贴；可在设置中更改快捷键。\n\n你可以随时从菜单栏暂停记录或排除应用。直接粘贴需要单独授予辅助功能权限；未授权仍可复制后手动粘贴。")
+        alert.addButton(withTitle: L10n.text("开始记录")); alert.addButton(withTitle: L10n.text("稍后"))
+        alert.addButton(withTitle: L10n.text("语言 / Language…"))
         NSApp.activate(ignoringOtherApps: true)
         let choice = alert.runModal()
+        if choice == .alertThirdButtonReturn {
+            showLanguageSettings()
+            return false
+        }
         preferences.set(true, forKey: "hasSeenWelcome")
         if choice == .alertFirstButtonReturn, store != nil {
             capture.start(); preferences.set(true, forKey: "recordingEnabled")
         }
         refresh()
+        return true
     }
 
     private func prepareEditor(_ reference: ClipboardSelectionReference,
@@ -967,12 +979,12 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         case unavailable, changed, removed, tooLarge, accountChanged, failed
         var errorDescription: String? {
             switch self {
-            case .unavailable: return "资料库暂不可用，请稍后重试。"
-            case .changed: return "原条目或资料库已变化，未覆盖现有内容。草稿仍保留，可复制所需内容后重新打开条目。"
-            case .removed: return "原条目已被删除，未保存修改。草稿仍保留。"
-            case .tooLarge: return "内容过大，无法保留完整撤销，本次修改未保存。"
-            case .accountChanged: return "同步账号已变化，旧草稿不能保存到当前账号。草稿仍保留。"
-            case .failed: return "保存失败，请稍后重试。草稿仍保留。"
+            case .unavailable: return L10n.text("资料库暂不可用，请稍后重试。")
+            case .changed: return L10n.text("原条目或资料库已变化，未覆盖现有内容。草稿仍保留，可复制所需内容后重新打开条目。")
+            case .removed: return L10n.text("原条目已被删除，未保存修改。草稿仍保留。")
+            case .tooLarge: return L10n.text("内容过大，无法保留完整撤销，本次修改未保存。")
+            case .accountChanged: return L10n.text("同步账号已变化，旧草稿不能保存到当前账号。草稿仍保留。")
+            case .failed: return L10n.text("保存失败，请稍后重试。草稿仍保留。")
             }
         }
         static func wrapping(_ error: Error) -> Error {
@@ -990,17 +1002,17 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
 
     private func deletePinboard(_ board: Pinboard) {
         guard !demo, mutationIsAvailable() else { return }
-        let alert = NSAlert(); alert.messageText = "删除「\(board.name)」？"
-        alert.informativeText = "可以仅移除分组并把内容保留在历史中，也可以删除分组及其全部内容。后者不可撤销。"
-        alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "仅移除分组，保留内容")
-        alert.addButton(withTitle: "删除分组及全部内容")
+        let alert = NSAlert(); alert.messageText = L10n.text("删除「\(board.name)」？")
+        alert.informativeText = L10n.text("可以仅移除分组并把内容保留在历史中，也可以删除分组及其全部内容。后者不可撤销。")
+        alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("仅移除分组，保留内容"))
+        alert.addButton(withTitle: L10n.text("删除分组及全部内容"))
         let choice = alert.runModal()
         guard choice != .alertFirstButtonReturn, mutationIsAvailable() else { return }
         do {
             try store?.deletePinboard(id: board.id, deleteItems: choice == .alertThirdButtonReturn); reload()
             if choice == .alertThirdButtonReturn { Task { try? await ocrCache.clear() } }
         }
-        catch { setStatus("分组删除失败，请重试。") }
+        catch { setStatus(L10n.text("分组删除失败，请重试。")) }
     }
 
     private func configureStack() {
@@ -1014,7 +1026,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         stackPanel.onRemove = { [weak self] index in _ = self?.stack.remove(at: index) }
         stackKeys.shouldHandlePaste = { [weak self] in self?.stack.peek() != nil }
         stackKeys.onUnavailable = { [weak self] in
-            self?.setStatus("顺序粘贴的键盘访问已停止，队列仍保留。请检查辅助功能权限。")
+            self?.setStatus(L10n.text("顺序粘贴的键盘访问已停止，队列仍保留。请检查辅助功能权限。"))
         }
         stackKeys.onPaste = { [weak self] in
             guard let self, let record = self.stack.peek() else { return }
@@ -1033,7 +1045,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             guard let self else { return }
             self.stackPanel.update(self.stack)
             if self.stack.peek() != nil, !self.stackKeys.isMonitoring {
-                if !self.stackKeys.start() { self.setStatus("顺序粘贴需要辅助功能权限；队列已保留。") }
+                if !self.stackKeys.start() { self.setStatus(L10n.text("顺序粘贴需要辅助功能权限；队列已保留。")) }
             } else if self.stack.peek() == nil { self.stackKeys.stop() }
         }
     }
@@ -1041,9 +1053,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     @objc private func toggleStack() {
         guard !demo else { return }
         if stack.isActive { stack.end(); return }
-        guard paste.hasPermission else { setStatus("请先开启辅助功能权限，再使用顺序粘贴。"); return }
+        guard paste.hasPermission else { setStatus(L10n.text("请先开启辅助功能权限，再使用顺序粘贴。")); return }
         stack.activate()
-        if !capture.isRunning { setStatus("顺序队列已开启；开始记录后，新的复制才会加入队列。") }
+        if !capture.isRunning { setStatus(L10n.text("顺序队列已开启；开始记录后，新的复制才会加入队列。")) }
     }
 
     private func imageData(_ record: ClipboardRecord) -> Data? {
@@ -1069,7 +1081,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
 
     private func extractText(_ record: ClipboardRecord) {
         guard let image = imageData(record) else { return }
-        setStatus("正在本机识别图片文字…")
+        setStatus(L10n.text("正在本机识别图片文字…"))
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
@@ -1081,16 +1093,16 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                 }
                 if !self.demo {
                     guard let latest = try self.store?.item(id: record.id), latest.revision == record.revision else {
-                        self.setStatus("原图已改变或删除，请重新打开图片后提取文字。"); return
+                        self.setStatus(L10n.text("原图已改变或删除，请重新打开图片后提取文字。")); return
                     }
                     try? await self.ocrCache.store(result, for: latest, imageData: image, sourceStore: self.store)
                 }
-                guard !result.text.isEmpty else { self.setStatus("未识别到可用文字。"); return }
+                guard !result.text.isEmpty else { self.setStatus(L10n.text("未识别到可用文字。")); return }
                 let text = ClipboardRecord(text: result.text, sourceApp: "ClipShelf OCR", sourceBundleID: Bundle.main.bundleIdentifier)
                 if self.demo { self.records.insert(text, at: 0); self.refresh() }
                 else { _ = try self.store?.record(text); self.reload() }
-                self.setStatus("已提取文字为新记录，原图保留。")
-            } catch { self.setStatus("文字识别未完成：\(error.localizedDescription)") }
+                self.setStatus(L10n.text("已提取文字为新记录，原图保留。"))
+            } catch { self.setStatus(L10n.text("文字识别未完成：\(error.localizedDescription)")) }
         }
     }
 
@@ -1101,7 +1113,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         let until = Date().addingTimeInterval(Double(sender.tag) * 60)
         preferences.set(true, forKey: "recordingEnabled")
         scheduleResume(at: until)
-        setStatus("已暂停记录，\(sender.tag) 分钟后恢复。")
+        setStatus(L10n.text("已暂停记录，\(sender.tag) 分钟后恢复。"))
     }
 
     private func scheduleResume(at until: Date) {
@@ -1122,12 +1134,12 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     private func configureOwnedLifetimes(store: HistoryStore) {
         let publications = OwnedFilePublicationCoordinator(store: store)
         ownedPublications = publications
-        publications.onError = { [weak self] error in self?.setStatus("文件使用保护未完成：\(error.localizedDescription)") }
+        publications.onError = { [weak self] error in self?.setStatus(L10n.text("文件使用保护未完成：\(error.localizedDescription)")) }
         paste.publications = publications
         systemIntegration.publications = publications
         panel.publications = publications
         stack.retainer = { try store.retainCapturedOwnedFiles($0, purpose: .stack) }
-        stack.onRetentionError = { [weak self] error in self?.setStatus("Stack 未加入文件：\(error.localizedDescription)") }
+        stack.onRetentionError = { [weak self] error in self?.setStatus(L10n.text("Stack 未加入文件：\(error.localizedDescription)")) }
         if profile.allowsBackgroundIntegrations { publications.startObserving() }
     }
 
@@ -1153,7 +1165,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     }
 
     @objc private func showStorageSettings() {
-        guard !demo else { setStatus("演示模式没有持久保存的托管文件。"); return }
+        guard !demo else { setStatus(L10n.text("演示模式没有持久保存的托管文件。")); return }
         cancelSuggestions()
         panel.dismissForAction { [weak self] in self?.storageSettings?.present() }
     }
@@ -1175,7 +1187,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             case .retention(let days), .automatic(let days):
                 cutoff = Date().addingTimeInterval(-Double(days) * 86_400)
             }
-            if !request.isAutomatic { self.setStatus("正在统计历史清理范围…") }
+            if !request.isAutomatic { self.setStatus(L10n.text("正在统计历史清理范围…")) }
             self.readSelection({ try $0.prepareHistoryCleanup(before: cutoff) }, completion: completion)
         }
         coordinator.confirm = { [weak self] summary, request, completion in
@@ -1221,21 +1233,21 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             self.storageSettings?.requestAutomaticReclamation()
             if result.summary.affectedCount > 0 { self.reload() }
             if !request.isAutomatic || result.summary.affectedCount > 0 {
-                var message = "历史清理完成：删除 \(result.summary.deletedCount) 条，\(result.summary.preservedPinnedCount) 条移出历史并保留在分组。"
-                if case .retention(let days) = request { message = "已改为保留 \(days) 天。" + message }
+                var message = L10n.text("历史清理完成：删除 \(result.summary.deletedCount) 条，\(result.summary.preservedPinnedCount) 条移出历史并保留在分组。")
+                if case .retention(let days) = request { message = L10n.text("已改为保留 \(days) 天。") + message }
                 if result.summary.excludedCount > 0 {
-                    message += "另有 \(result.summary.excludedCount) 条因账号或权限限制保留。"
+                    message += L10n.text("另有 \(result.summary.excludedCount) 条因账号或权限限制保留。")
                 }
                 self.setStatus(message)
             } else { self.refresh() }
         }
         coordinator.onFailure = { [weak self] error, request in
             guard let self else { return }
-            let prefix = request.isAutomatic ? "自动清理未完成。" : "历史清理未完成，保留期限未更改。"
+            let prefix = request.isAutomatic ? L10n.text("自动清理未完成。") : L10n.text("历史清理未完成，保留期限未更改。")
             self.setStatus(prefix + error.localizedDescription)
         }
         coordinator.onCancelled = { [weak self] request in
-            if !request.isAutomatic { self?.setStatus("已取消历史清理；内容和保留期限未改变。") }
+            if !request.isAutomatic { self?.setStatus(L10n.text("已取消历史清理；内容和保留期限未改变。")) }
         }
     }
 
@@ -1249,11 +1261,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         guard !demo, let store else { return }
         let lease: OwnedAssetLease
         do { lease = try store.retainCapturedOwnedFiles(records, purpose: .output) }
-        catch { setStatus("文件使用保护未完成：\(error.localizedDescription)"); return }
+        catch { setStatus(L10n.text("文件使用保护未完成：\(error.localizedDescription)")); return }
         let isCurrent = panel.captureOutputContext(), originalTarget = target
         let directory = profile.validationDirectory?.appendingPathComponent("ImageExports", isDirectory: true)
         let references = records.map { ClipboardSelectionReference(id: $0.id, revision: $0.revision) }
-        let operationID = UUID(), progress = "正在生成图片文件…"
+        let operationID = UUID(), progress = L10n.text("正在生成图片文件…")
         imageOutputOperationID = operationID
         setStatus(progress)
         Task { @MainActor [weak self, lease] in
@@ -1283,11 +1295,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                                      dismiss: { self.panel.dismiss() }, onCopied: { copied = true })
                     if !copied { exported.discardUnpublished() }
                 } else if self.paste.copy(exported.records) {
-                    self.setStatus("图片已复制为 PNG 文件，可在目标应用粘贴。")
+                    self.setStatus(L10n.text("图片已复制为 PNG 文件，可在目标应用粘贴。"))
                 } else { exported.discardUnpublished() }
             } catch {
                 guard let self, isCurrent() else { return }
-                self.setStatus("图片文件未输出：\(error.localizedDescription)")
+                self.setStatus(L10n.text("图片文件未输出：\(error.localizedDescription)"))
             }
         }
     }
@@ -1332,7 +1344,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                     }.value
                     // Let the panel adopt the committed version before validating its selection on reload.
                     completion(.success(updated))
-                    setStatus("已更新文件位置，可撤销；外部文件未移动。")
+                    setStatus(L10n.text("已更新文件位置，可撤销；外部文件未移动。"))
                 } catch { completion(.failure(FileRepairApplicationError.savedNeedsRefresh)) }
                 reload()
             } catch { completion(.failure(error)) }
@@ -1356,8 +1368,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                     }.value
                     completion(.success(updated))
                     switch result {
-                    case .restored: setStatus("已从保存的原件恢复打开副本。")
-                    case .alreadyPresent: setStatus("打开副本已存在，保留现有内容。")
+                    case .restored: setStatus(L10n.text("已从保存的原件恢复打开副本。"))
+                    case .alreadyPresent: setStatus(L10n.text("打开副本已存在，保留现有内容。"))
                     }
                 } catch { completion(.failure(FileRepairApplicationError.restoredNeedsRefresh)) }
                 reload()
@@ -1369,8 +1381,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         case savedNeedsRefresh, restoredNeedsRefresh
         var errorDescription: String? {
             switch self {
-            case .savedNeedsRefresh: return "文件位置已更新且可撤销；条目随后发生变化，请关闭后重新打开。"
-            case .restoredNeedsRefresh: return "文件副本已处理；条目随后发生变化，请关闭后重新打开。"
+            case .savedNeedsRefresh: return L10n.text("文件位置已更新且可撤销；条目随后发生变化，请关闭后重新打开。")
+            case .restoredNeedsRefresh: return L10n.text("文件副本已处理；条目随后发生变化，请关闭后重新打开。")
             }
         }
     }
@@ -1378,6 +1390,26 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     @objc private func showSettings() {
         cancelSuggestions()
         panel.dismissForAction { [weak self] in self?.performShowSettings() }
+    }
+
+    @objc private func showLanguageSettings() {
+        guard !sessionSuspended, !isTerminating, !terminationDecisionPending else { return }
+        if languageSettings == nil {
+            let allowsChanges = profile.mode == .standard
+            let languagePreferences = LanguagePreferences(
+                preferences: preferences, allowsChanges: allowsChanges,
+                sharedPreferences: LanguagePreferences.configuredSharedPreferences(allowsChanges: allowsChanges))
+            let controller = LanguageSettingsController(preferences: languagePreferences)
+            controller.isPresentationAllowed = { [weak self] in
+                guard let self else { return false }
+                return !self.sessionSuspended && !self.isTerminating && !self.terminationDecisionPending
+            }
+            controller.onPreparePresentation = { [weak self] in
+                self?.cancelSuggestions(); self?.paste.cancel(); self?.panel.hidePreservingDraft()
+            }
+            languageSettings = controller
+        }
+        languageSettings?.present()
     }
 
     private func configureAppUpdates() {
@@ -1448,7 +1480,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                     self.shortcutLayoutWarning = nil
                     self.shortcutRegistrationFailures = []
                     self.panel.applyShortcuts(configuration, alwaysPlainText: alwaysPlain)
-                    self.setStatus("快捷键与粘贴设置已保存。")
+                    self.setStatus(L10n.text("快捷键与粘贴设置已保存。"))
                     return .success(())
                 } catch { return .failure(error) }
             }
@@ -1475,7 +1507,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                 guard let self, !self.isTerminating else { return }
                 let previousMessage = self.shortcutRegistrationMessage
                 do { try self.shortcutConfiguration.validate(); self.shortcutLayoutWarning = nil }
-                catch { self.shortcutLayoutWarning = "键盘布局改变，请在快捷键设置中检查：\(error.localizedDescription)" }
+                catch { self.shortcutLayoutWarning = L10n.text("键盘布局改变，请在快捷键设置中检查：\(error.localizedDescription)") }
                 if !self.demo {
                     self.shortcutRegistrationFailures = self.globalShortcuts.reconcileAfterInputSourceChange(self.shortcutConfiguration)
                 }
@@ -1494,7 +1526,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         cancelSuggestions(); paste.cancel(); target = nil
         let pointer = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(pointer, $0.frame, false) } ?? NSScreen.main
-        let message = "快捷键试用 · 可在设置中录制组合；按 Esc 关闭面板。"
+        let message = L10n.text("快捷键试用 · 可在设置中录制组合；按 Esc 关闭面板。")
         if demo { panel.show(records: records, on: screen, status: message) }
         else { panel.show(metadata: [], on: screen, status: message) }
     }
@@ -1503,8 +1535,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         case demo, unavailable
         var errorDescription: String? {
             switch self {
-            case .demo: return "演示模式不保存设置或注册全局快捷键。"
-            case .unavailable: return "设置暂时不可用，请重新打开。"
+            case .demo: return L10n.text("演示模式不保存设置或注册全局快捷键。")
+            case .unavailable: return L10n.text("设置暂时不可用，请重新打开。")
             }
         }
     }
@@ -1524,7 +1556,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                 mcpSettings?.onCredentialCopied = { [weak self] in self?.capture.noteSelfWrite() }
             }
             mcpSettings?.present()
-        } catch { showError("MCP 设置不可用", detail: "无法读取本机钥匙串授权。已有历史不受影响。") }
+        } catch { showError(L10n.text("MCP 设置不可用"), detail: L10n.text("无法读取本机钥匙串授权。已有历史不受影响。")) }
     }
 
     @objc private func showCloudSettings() {
@@ -1573,7 +1605,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         }
         suggestionsPanel.onRequestScreenPermission = { [weak self] in
             _ = ContextSuggestionService.requestScreenRecordingPermission()
-            self?.suggestionsPanel.showError(message: "请在系统设置确认屏幕权限，然后回到原应用重新打开智能建议。")
+            self?.suggestionsPanel.showError(message: L10n.text("请在系统设置确认屏幕权限，然后回到原应用重新打开智能建议。"))
         }
         suggestionsPanel.onPaste = { [weak self] id, target in
             guard let self, let store = self.store else { return }
@@ -1602,7 +1634,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     @objc private func showSuggestions() {
         guard profile.allowsBackgroundIntegrations, store != nil else { return }
         let originalTarget = panel.isVisible ? target : paste.captureTarget()
-        guard let originalTarget else { setStatus("请回到需要粘贴的应用后再打开智能建议。"); return }
+        guard let originalTarget else { setStatus(L10n.text("请回到需要粘贴的应用后再打开智能建议。")); return }
         cancelSuggestions()
         panel.dismissForAction { [weak self] in self?.startSuggestions(target: originalTarget) }
     }
@@ -1641,12 +1673,12 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
 
     @objc private func configureShortcuts() {
         guard profile.allowsBackgroundIntegrations else { return }
-        let alert = NSAlert(); alert.messageText = "快捷指令访问"
-        alert.informativeText = "允许后，你运行的快捷指令可新增文本，并读取本地内容、当前同步账号及仍可读取的共享板；旧账号缓存和已撤销共享不会提供。快捷指令后续动作可能把内容发送给其他应用或网络服务。关闭后，这些动作会返回无权访问。"
-        let allow = NSButton(checkboxWithTitle: "允许快捷指令新增和读取 ClipShelf 内容", target: nil, action: nil)
+        let alert = NSAlert(); alert.messageText = L10n.text("快捷指令访问")
+        alert.informativeText = L10n.text("允许后，你运行的快捷指令可新增文本，并读取本地内容、当前同步账号及仍可读取的共享板；旧账号缓存和已撤销共享不会提供。快捷指令后续动作可能把内容发送给其他应用或网络服务。关闭后，这些动作会返回无权访问。")
+        let allow = NSButton(checkboxWithTitle: L10n.text("允许快捷指令新增和读取 ClipShelf 内容"), target: nil, action: nil)
         allow.state = preferences.bool(forKey: "shortcutsEnabled") ? .on : .off
         allow.frame = NSRect(x: 0, y: 0, width: 420, height: 32); alert.accessoryView = allow
-        alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("保存"))
         if alert.runModal() == .alertSecondButtonReturn {
             preferences.set(allow.state == .on, forKey: "shortcutsEnabled")
             ClipboardIntentRuntime.shared.enabled = allow.state == .on
@@ -1661,25 +1693,25 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     private func performExportBackup() {
         guard !demo, let store, mutationIsAvailable() else { return }
         cancelSuggestions()
-        let options = NSAlert(); options.messageText = "导出备份"
-        options.informativeText = "备份包含剪贴板正文和附件。加密密码不会保存，遗忘后无法恢复。"
-        let encrypt = NSButton(checkboxWithTitle: "使用密码加密备份", target: nil, action: nil); encrypt.state = .on
-        let password = NSSecureTextField(); password.placeholderString = "密码（至少 8 个字符）"
-        let repeatPassword = NSSecureTextField(); repeatPassword.placeholderString = "再次输入密码"
+        let options = NSAlert(); options.messageText = L10n.text("导出备份")
+        options.informativeText = L10n.text("备份包含剪贴板正文和附件。加密密码不会保存，遗忘后无法恢复。")
+        let encrypt = NSButton(checkboxWithTitle: L10n.text("使用密码加密备份"), target: nil, action: nil); encrypt.state = .on
+        let password = NSSecureTextField(); password.placeholderString = L10n.text("密码（至少 8 个字符）")
+        let repeatPassword = NSSecureTextField(); repeatPassword.placeholderString = L10n.text("再次输入密码")
         let fields = NSStackView(views: [encrypt, password, repeatPassword]); fields.orientation = .vertical
         fields.alignment = .leading; fields.spacing = 10; fields.frame = NSRect(x: 0, y: 0, width: 420, height: 100)
         password.widthAnchor.constraint(equalToConstant: 420).isActive = true
         repeatPassword.widthAnchor.constraint(equalToConstant: 420).isActive = true
-        options.accessoryView = fields; options.addButton(withTitle: "取消"); options.addButton(withTitle: "继续")
+        options.accessoryView = fields; options.addButton(withTitle: L10n.text("取消")); options.addButton(withTitle: L10n.text("继续"))
         guard options.runModal() == .alertSecondButtonReturn else { return }
         let secret: String? = encrypt.state == .on ? password.stringValue : nil
         if let secret, secret.count < 8 || secret.utf8.count > 1024 || secret != repeatPassword.stringValue {
-            showError("密码未通过检查", detail: "请使用至少 8 个字符、最多 1024 字节的密码，并确保两次输入一致。")
+            showError(L10n.text("密码未通过检查"), detail: L10n.text("请使用至少 8 个字符、最多 1024 字节的密码，并确保两次输入一致。"))
             return
         }
         password.stringValue = ""; repeatPassword.stringValue = ""
         let save = NSSavePanel(); save.nameFieldStringValue = "ClipShelf-backup.clipshelf"
-        save.title = "导出本地备份"; save.message = secret == nil ? "将导出未加密文件，请妥善保存。" : "将导出密码加密文件。"
+        save.title = L10n.text("导出本地备份"); save.message = secret == nil ? L10n.text("将导出未加密文件，请妥善保存。") : L10n.text("将导出密码加密文件。")
         guard save.runModal() == .OK, let url = save.url, mutationIsAvailable() else { return }
         selectionMutationInProgress = true
         Task { @MainActor [weak self] in
@@ -1696,9 +1728,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                     if let secret { try EncryptedBackupService.export(store: store, to: url, password: secret) }
                     else { try store.exportBackup(to: url) }
                 }.value
-                self.setStatus("备份已导出。\(migration.snapshotNotice)")
+                self.setStatus(L10n.text("备份已导出。\(migration.snapshotNotice)"))
             }
-            catch { self.showError("导出失败", detail: error.localizedDescription) }
+            catch { self.showError(L10n.text("导出失败"), detail: error.localizedDescription) }
         }
     }
 
@@ -1711,22 +1743,22 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         guard !demo, let store, mutationIsAvailable() else { return }
         cancelSuggestions()
         let open = NSOpenPanel(); open.allowsMultipleSelection = false; open.canChooseDirectories = false
-        open.title = "选择 ClipShelf 备份"
+        open.title = L10n.text("选择 ClipShelf 备份")
         guard open.runModal() == .OK, let url = open.url else { return }
         let encrypted: Bool
         do { encrypted = try EncryptedBackupService.isEncrypted(url) }
-        catch { showError("无法读取备份", detail: "请检查文件是否仍存在，以及是否有读取权限。"); return }
+        catch { showError(L10n.text("无法读取备份"), detail: L10n.text("请检查文件是否仍存在，以及是否有读取权限。")); return }
         var secret: String?
         if encrypted {
-            let prompt = NSAlert(); prompt.messageText = "输入备份密码"
+            let prompt = NSAlert(); prompt.messageText = L10n.text("输入备份密码")
             let password = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 26))
-            prompt.accessoryView = password; prompt.addButton(withTitle: "取消"); prompt.addButton(withTitle: "继续")
+            prompt.accessoryView = password; prompt.addButton(withTitle: L10n.text("取消")); prompt.addButton(withTitle: L10n.text("继续"))
             guard prompt.runModal() == .alertSecondButtonReturn else { return }
             secret = password.stringValue; password.stringValue = ""
         }
-        let alert = NSAlert(); alert.messageText = "如何恢复备份？"
-        alert.informativeText = "合并会保留现有内容，并将备份导入为独立本地内容；不会自动上传或传播云端删除。有关联同步数据的档案只允许合并。纯本地档案可替换；执行前会在本机数据目录保存未加密恢复副本。"
-        alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "合并"); alert.addButton(withTitle: "替换")
+        let alert = NSAlert(); alert.messageText = L10n.text("如何恢复备份？")
+        alert.informativeText = L10n.text("合并会保留现有内容，并将备份导入为独立本地内容；不会自动上传或传播云端删除。有关联同步数据的档案只允许合并。纯本地档案可替换；执行前会在本机数据目录保存未加密恢复副本。")
+        alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("合并")); alert.addButton(withTitle: L10n.text("替换"))
         let choice = alert.runModal(); guard choice != .alertFirstButtonReturn, mutationIsAvailable() else { return }
         let mode: BackupRestoreMode = choice == .alertSecondButtonReturn ? .merge : .replace
         let password = secret
@@ -1747,10 +1779,10 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                 try migration.requireComplete()
                 let result = try await Task.detached { try store.restoreBackup(prepared) }.value
                 self.selectionUndoHistory.removeAll()
-                let scope = result.restoredAsLocalOnly ? "恢复内容仅保存在本机，尚未上传。" : ""
+                let scope = result.restoredAsLocalOnly ? L10n.text("恢复内容仅保存在本机，尚未上传。") : ""
                 try? await self.ocrCache.clear()
-                self.reload(); self.setStatus("已恢复 \(result.importedRecords) 条内容。\(scope)恢复前副本保存在本机数据目录。\(migration.snapshotNotice)")
-            } catch { self.showError("恢复失败", detail: "\(error.localizedDescription)\n现有数据保留。") }
+                self.reload(); self.setStatus(L10n.text("已恢复 \(result.importedRecords) 条内容。\(scope)恢复前副本保存在本机数据目录。\(migration.snapshotNotice)"))
+            } catch { self.showError(L10n.text("恢复失败"), detail: L10n.text("\(error.localizedDescription)\n现有数据保留。")) }
         }
     }
 
@@ -1770,9 +1802,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             historyCleanup?.cancelPending()
             historyCleanup?.start(.automatic(days: 0))
             preferences.set(0, forKey: "retentionDays")
-            setStatus("历史保留期限：永久。")
+            setStatus(L10n.text("历史保留期限：永久。"))
         } else if historyCleanup?.start(.retention(days: days)) == .ignored {
-            setStatus("请先完成或取消当前历史清理；保留期限尚未更改。")
+            setStatus(L10n.text("请先完成或取消当前历史清理；保留期限尚未更改。"))
             cleanupConfirmation?.window?.makeKeyAndOrderFront(nil)
         }
     }
@@ -1780,9 +1812,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     @objc private func toggleLoginItem() {
         guard profile.allowsBackgroundIntegrations else { return }
         do {
-            if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister(); setStatus("已关闭登录启动。") }
-            else { try SMAppService.mainApp.register(); setStatus("已请求登录启动，可在系统设置中管理。") }
-        } catch { showError("无法更改登录启动", detail: "请将应用安装到 Applications，并在系统设置的登录项中检查状态。") }
+            if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister(); setStatus(L10n.text("已关闭登录启动。")) }
+            else { try SMAppService.mainApp.register(); setStatus(L10n.text("已请求登录启动，可在系统设置中管理。")) }
+        } catch { showError(L10n.text("无法更改登录启动"), detail: L10n.text("请将应用安装到 Applications，并在系统设置的登录项中检查状态。")) }
     }
 
     private func showError(_ title: String, detail: String) {
@@ -1797,7 +1829,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminationDecisionPending else { return .terminateLater }
         guard !selectionMutationInProgress, historyCleanup?.isCommitting != true, storageSettings?.isCommitting != true else {
-            setStatus("正在保存、撤销或清理，请完成后再退出。")
+            setStatus(L10n.text("正在保存、撤销或清理，请完成后再退出。"))
             return .terminateCancel
         }
         terminationDecisionPending = true
@@ -1820,7 +1852,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             sender.reply(toApplicationShouldTerminate: true)
         } else {
             terminationDecisionPending = false
-            if accepted { setStatus("资料库修改尚未完成，请完成后再退出。") }
+            if accepted { setStatus(L10n.text("资料库修改尚未完成，请完成后再退出。")) }
             sender.reply(toApplicationShouldTerminate: false)
             historyCleanup?.resumeDeferred()
             storageSettings?.resumeDeferred()

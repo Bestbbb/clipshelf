@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import ClipShelfCore
 import Darwin
 import Foundation
@@ -160,8 +161,8 @@ actor OCRDerivedCache {
         case invalidResult, sourceChanged
         var errorDescription: String? {
             switch self {
-            case .invalidResult: return "识别结果与原图不匹配，未保存派生缓存。"
-            case .sourceChanged: return "原图已改变或删除，请重新打开图片。"
+            case .invalidResult: return L10n.text("识别结果与原图不匹配，未保存派生缓存。")
+            case .sourceChanged: return L10n.text("原图已改变或删除，请重新打开图片。")
             }
         }
     }

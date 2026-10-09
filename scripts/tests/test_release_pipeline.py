@@ -6,6 +6,7 @@ directory when SwiftPM's default native/.build artifact location is not used.
 """
 import base64
 import importlib.util
+import json
 import os
 from pathlib import Path
 import plistlib
@@ -296,6 +297,65 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
         self.assertEqual(run.call_args.args[0], ["git", "status", "--porcelain", "--untracked-files=all"])
         self.assertFalse(output.exists())
+
+    def testLocalizationGateRunsAfterSignedExportAndStopsNotaryOnFailure(self):
+        class StopBeforeNotarization(Exception):
+            pass
+
+        key = self.root / "PUBLIC_LOCALIZATION_TEST_SEED"
+        write_test_key(key)
+        environment = {"CLIPSHELF_NOTARY_KEYCHAIN_PROFILE": "fixture-never-accessed",
+                       "SPARKLE_SIGNING_KEY_FILE": str(key), "CLIPSHELF_UPDATE_DOWNLOAD_URL_PREFIX": self.prefix,
+                       "CLIPSHELF_UPDATE_FEED_URL": self.manifest["updateFeedURL"]}
+        actual_run = release.run
+        for failed in (False, True):
+            with self.subTest(localization_failure=failed):
+                output = self.root / ("release failure" if failed else "release success")
+                exported_app = output / "export/ClipShelf.app"
+                calls = []
+
+                def simulate_build(argv, label, log=None):
+                    calls.append(label)
+                    if label == "Prepare release manifests":
+                        directory = output / "configuration"
+                        directory.mkdir()
+                        (directory / "manifest.json").write_text(json.dumps(self.manifest))
+                    if label == "Verify delivered app and Share Extension localizations":
+                        self.assertEqual(argv, [sys.executable, ROOT / "scripts/verify-localization.py",
+                                                "--app", exported_app, "--share-extension", "--runtime"])
+                        # Exercise run()'s real nonzero-exit gate with a mocked
+                        # subprocess. No app, signing or notarization is run.
+                        return actual_run(argv, label, log)
+                    if label == "Package notarization submission":
+                        raise StopBeforeNotarization()
+                    stdout = b"fixture-commit\n" if label == "Record source commit" else b""
+                    return subprocess.CompletedProcess(argv, 0, stdout, b"")
+
+                def verify_export(app, manifest, log):
+                    self.assertEqual(app, exported_app)
+                    self.assertEqual(manifest, self.manifest)
+                    calls.append("Verify signed exported bundle")
+
+                child_result = subprocess.CompletedProcess([], 1 if failed else 0,
+                                                           b"synthetic localization result", b"fixture validation failure" if failed else b"")
+                with mock.patch.dict(os.environ, environment, clear=True), \
+                     mock.patch.object(sys, "argv", ["release-macos.py", "--output", str(output)]), \
+                     mock.patch.object(release, "run", side_effect=simulate_build), \
+                     mock.patch.object(release, "verify_bundle", side_effect=verify_export), \
+                     mock.patch.object(release.subprocess, "run", return_value=child_result) as child:
+                    if failed:
+                        with self.assertRaisesRegex(ValueError, "localizations failed"):
+                            release.main()
+                    else:
+                        with self.assertRaises(StopBeforeNotarization):
+                            release.main()
+                child.assert_called_once()
+                gate = calls.index("Verify delivered app and Share Extension localizations")
+                self.assertLess(calls.index("Export Developer ID app"), calls.index("Verify signed exported bundle"))
+                self.assertEqual(calls[gate - 1], "Verify signed exported bundle")
+                self.assertEqual(calls[gate + 1:], [] if failed else ["Package notarization submission"])
+                self.assertFalse((output / "notary-submission.zip").exists())
+                self.assertFalse((output / "assets").exists())
 
 
 @unittest.skipUnless(sys.platform == "darwin", "CryptoKit and the official Sparkle tools require macOS")

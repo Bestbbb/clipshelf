@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import ClipShelfCore
 import CloudKit
 import CryptoKit
@@ -38,13 +39,13 @@ actor CloudSyncService: SyncOwnedFileTransport {
 
     func configurationStatus() -> CloudSyncAvailability {
         guard let identifier = configuration.containerIdentifier, !identifier.isEmpty else {
-            return .unavailable("CloudKit 容器尚未配置。需要开发者配置自己的容器并签名后才能启用 iCloud 同步。")
+            return .unavailable(L10n.text("CloudKit 容器尚未配置。需要开发者配置自己的容器并签名后才能启用 iCloud 同步。"))
         }
         guard identifier.hasPrefix("iCloud."), !configuration.zoneName.isEmpty else {
-            return .unavailable("CloudKit 容器或记录区域配置无效。")
+            return .unavailable(L10n.text("CloudKit 容器或记录区域配置无效。"))
         }
         guard Self.hasCloudKitEntitlement(containerIdentifier: identifier) else {
-            return .unavailable("此构建尚未签署所配置容器的 CloudKit 权限；本地历史仍可正常使用。")
+            return .unavailable(L10n.text("此构建尚未签署所配置容器的 CloudKit 权限；本地历史仍可正常使用。"))
         }
         return enabledAccount.map { .available(accountID: $0) } ?? .disabled
     }
@@ -148,7 +149,7 @@ actor CloudSyncService: SyncOwnedFileTransport {
         let scope = blobScope(accountID: accountID)
         for deletion in result.deletions {
             guard CloudOwnedBlobCodec.isBlobDeletion(id: deletion.recordID, type: deletion.recordType, scope: scope) else {
-                throw SyncError.unavailable("云端同步日志有缺失记录。为避免把缺失数据解释为删除，已停止并保留本地历史。")
+                throw SyncError.unavailable(L10n.text("云端同步日志有缺失记录。为避免把缺失数据解释为删除，已停止并保留本地历史。"))
             }
         }
         var operations: [SyncOperation] = []
@@ -274,7 +275,7 @@ actor CloudSyncService: SyncOwnedFileTransport {
 
     private func resolveAccount(_ container: CKContainer) async throws -> String {
         guard try await container.accountStatus() == .available else {
-            throw SyncError.unavailable("iCloud 账号当前不可用，请在系统设置中检查账号后重试。")
+            throw SyncError.unavailable(L10n.text("iCloud 账号当前不可用，请在系统设置中检查账号后重试。"))
         }
         let user = try await container.userRecordID()
         return (configuration.containerIdentifier ?? "") + ":" + user.recordName

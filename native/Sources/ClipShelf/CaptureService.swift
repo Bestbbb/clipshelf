@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 import ClipShelfCore
 
@@ -85,6 +86,6 @@ final class CaptureService {
             let record = try ClipboardCodec.record(from: pasteboard, sourceApp: source.name, sourceBundleID: source.bundleID)
             guard pasteboard.changeCount == count, sourceProvider().bundleID == source.bundleID else { return }
             if let record { onCapture?(record) }
-        } catch { onStatus?("这条内容未能记录：\(error.localizedDescription)") }
+        } catch { onStatus?(L10n.text("这条内容未能记录：\(error.localizedDescription)")) }
     }
 }

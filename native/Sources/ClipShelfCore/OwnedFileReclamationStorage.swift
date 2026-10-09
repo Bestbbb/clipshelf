@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import CryptoKit
 import Darwin
 import Foundation
@@ -68,9 +69,9 @@ enum OwnedFileReclamationError: Error, LocalizedError {
     case changed, unsafeLayout, io(Int32)
     var errorDescription: String? {
         switch self {
-        case .changed: return "文件或隔离目录已改变，未继续回收。请重新检查存储状态。"
-        case .unsafeLayout: return "文件包含外部修改、异常目录或不安全引用，已保留。"
-        case .io(let code): return "文件回收未完成：" + NSError(domain: NSPOSIXErrorDomain, code: Int(code)).localizedDescription
+        case .changed: return L10n.text("文件或隔离目录已改变，未继续回收。请重新检查存储状态。")
+        case .unsafeLayout: return L10n.text("文件包含外部修改、异常目录或不安全引用，已保留。")
+        case .io(let code): return L10n.text("文件回收未完成：") + NSError(domain: NSPOSIXErrorDomain, code: Int(code)).localizedDescription
         }
     }
 }

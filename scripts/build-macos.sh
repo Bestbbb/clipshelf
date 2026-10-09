@@ -25,6 +25,15 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$BIN_DIR/ClipShelf" "$APP_DIR/Contents/MacOS/ClipShelf"
 cp "$PROJECT_ROOT/native/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$PROJECT_ROOT/native/Sources/ClipShelf/Sparkle-LICENSE.txt" "$APP_DIR/Contents/Resources/Sparkle-LICENSE.txt"
+LOCALIZATION_BUNDLE="ClipShelf_ClipShelfLocalization.bundle"
+test -d "$BIN_DIR/$LOCALIZATION_BUNDLE"
+# The CLI SwiftPM build leaves package resources next to its executable. The
+# delivered app resolves this bundle from its own Resources directory.
+ditto "$BIN_DIR/$LOCALIZATION_BUNDLE" "$APP_DIR/Contents/Resources/$LOCALIZATION_BUNDLE"
+for LANGUAGE in en zh-Hans zh-Hant; do
+    ditto "$PROJECT_ROOT/native/Sources/ClipShelf/Resources/$LANGUAGE.lproj" \
+        "$APP_DIR/Contents/Resources/$LANGUAGE.lproj"
+done
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${BUNDLE_IDENTIFIER:-io.github.bestbbb.clipshelf.dev}" "$APP_DIR/Contents/Info.plist"
 if [[ "$DISTRIBUTION" == "release" ]]; then
     python3 "$PROJECT_ROOT/scripts/configure-release.py" --plist "$APP_DIR/Contents/Info.plist"
@@ -38,6 +47,7 @@ elif [[ -f "$APP_DIR/Contents/embedded.provisionprofile" ]]; then
     rm "$APP_DIR/Contents/embedded.provisionprofile"
 fi
 bash "$PROJECT_ROOT/scripts/build-app-intents.sh" "$BIN_DIR" "$APP_DIR/Contents/Resources"
+python3 "$PROJECT_ROOT/scripts/verify-localization.py" --app "$APP_DIR"
 bash "$PROJECT_ROOT/scripts/embed-sparkle.sh" "$BIN_DIR/Sparkle.framework" "$APP_DIR" "${CODESIGN_IDENTITY:--}"
 /usr/bin/plutil -lint "$APP_DIR/Contents/Info.plist"
 SIGNING_ARGS=(--force --sign "${CODESIGN_IDENTITY:--}")

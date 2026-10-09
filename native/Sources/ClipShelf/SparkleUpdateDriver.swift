@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import Foundation
 import Sparkle
 
@@ -17,7 +18,7 @@ final class SparkleUpdateDriver: NSObject, AppUpdateDriver, SPUUpdaterDelegate {
         // The standard controller targets Bundle.main. A fixture or another
         // bundle must never accidentally authorize an unconfigured host app.
         guard try UpdateConfiguration.read(bundle: .main, allowsBackgroundIntegrations: true) == configuration else {
-            throw UpdateConfiguration.Unavailable.invalidReleaseConfiguration("更新配置与当前应用不匹配。")
+            throw UpdateConfiguration.Unavailable.invalidReleaseConfiguration(L10n.text("更新配置与当前应用不匹配。"))
         }
         self.configuration = configuration
         super.init()
@@ -53,7 +54,7 @@ final class SparkleUpdateDriver: NSObject, AppUpdateDriver, SPUUpdaterDelegate {
     func allowedSystemProfileKeys(for updater: SPUUpdater) -> [String]? { [] }
     func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
         guard mayCheck?() == true else {
-            throw NSError(domain: "ClipShelf.Update", code: 1, userInfo: [NSLocalizedDescriptionKey: "当前操作尚未完成，请稍后检查更新。"])
+            throw NSError(domain: "ClipShelf.Update", code: 1, userInfo: [NSLocalizedDescriptionKey: L10n.text("当前操作尚未完成，请稍后检查更新。")])
         }
         onEvent?(.checking)
     }

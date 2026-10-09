@@ -311,17 +311,59 @@ signatures and linkage, submits notarization, staples and validates the ticket,
 and checks Gatekeeper assessment. It then packages the stapled app, generates an
 Ed25519-signed archive and signed appcast, independently verifies the archive
 against the embedded public key, and records artifact hashes. The output remains
-local: the script neither publishes a GitHub release/feed nor installs or launches
-the app. Its implemented checks do not constitute a completed real release run.
+local: the script neither publishes a GitHub release/feed nor installs the app or
+starts its regular UI. It does execute the isolated localization diagnostic CLI
+from a relocated copy of the exported app. Its implemented checks do not
+constitute a completed real release run.
 
 Use [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) for exact configuration inputs,
 commands, artifact review and still-open acceptance steps. Do not put illustrative
 feed addresses or synthetic keys into a shipping bundle. Developer ID and Sparkle
 signatures serve different purposes; Sparkle documents the required archive/feed
 signing process in [Publishing an update](https://sparkle-project.org/documentation/publishing/).
-The current application strings are largely hardcoded Simplified Chinese;
-language selection/localization remains missing within F13, even though the updater
-framework has its own localized UI.
+
+## Interface languages and delivered-resource verification
+
+The app now supports English, Simplified Chinese and Traditional Chinese, plus
+Follow System. The welcome dialog, status menu and application menu provide a
+Language entry. Saving applies on the next launch without an automatic restart;
+opening settings preserves an unfinished editor, and saving does not rebuild sync
+or update services. Clipboard content, user titles and pinboard names are unchanged.
+Explicit choices set `AppleLanguages` only in the app's preference domain; Follow
+System removes that override. Demo and validation runs cannot save language changes.
+An authorized App Group receives the shared selection for the Share Extension.
+
+Dynamic messages use JSON catalogs with separate interpolation arguments; argument
+contents are never reparsed as templates or format strings. Static App Intents and
+Shortcuts metadata use `.strings` tables, as do system-facing bundle and Services
+menu resources. The app and Share Extension each carry their own localization
+resource bundle; the extension uses its own bundle and authorized group preferences.
+Neither packaged process may silently depend on an absolute development resource path.
+
+Run these checks from the repository root after building the indicated artifact:
+
+```sh
+python3 scripts/localization-audit.py
+python3 scripts/verify-localization.py --app build/ClipShelf.app --runtime
+# Full exported distribution, including its separately packaged Share Extension:
+python3 scripts/verify-localization.py \
+  --app "$RELEASE_OUTPUT_DIR/export/ClipShelf.app" --share-extension --runtime
+```
+
+The audit is read-only. Bundle verification checks language declarations, catalog
+keys and parameters, static tables, App Intents metadata and resource containment.
+`--runtime` copies the app to a temporary location and executes
+`--localization-diagnostics` in a fresh process for each language, requiring the
+resource path to be inside that copied app. This branch runs before application,
+clipboard, preferences, database or background-service initialization. The full
+release pipeline includes this check; it does not launch the normal UI or install
+an update.
+
+F13 remains partial: the other 13 languages listed by Paste and Hebrew/RTL support
+are not implemented. Actual macOS per-app language selection, Services/Shortcuts
+menu presentation and signed Share Extension language behavior still need real-host
+acceptance. Existing host processes and third-party windows may cache their language;
+saving does not promise immediate refresh across processes.
 
 ## Data and secret handling
 

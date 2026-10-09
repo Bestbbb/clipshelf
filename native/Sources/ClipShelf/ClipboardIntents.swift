@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppIntents
 import ClipShelfCore
 import Foundation
@@ -6,14 +7,14 @@ enum ClipboardIntentError: LocalizedError {
     case unavailable, permissionRequired, invalidInput, missingBoard, inaccessibleBoard, ambiguousBoard, noMatch, unsupportedContent
     var errorDescription: String? {
         switch self {
-        case .unavailable: return "ClipShelf 尚未就绪，请打开应用后重试。"
-        case .permissionRequired: return "请在 ClipShelf 菜单栏开启“允许快捷指令访问”。"
-        case .invalidInput: return "文本不能为空且最多 64 KB；搜索最多 512 字节，序号范围为 1–1000。"
-        case .missingBoard: return "没有找到这个分组，请检查完整分组名称。"
-        case .inaccessibleBoard: return "这个分组不属于当前账号、共享访问已撤销，或当前操作没有写入权限。"
-        case .ambiguousBoard: return "存在同名分组，请在 ClipShelf 中修改名称后重试。"
-        case .noMatch: return "没有符合条件的内容。"
-        case .unsupportedContent: return "这条内容没有可输出的文字。图片可先提取文字；文件请在 ClipShelf 中操作。"
+        case .unavailable: return L10n.text("ClipShelf 尚未就绪，请打开应用后重试。")
+        case .permissionRequired: return L10n.text("请在 ClipShelf 菜单栏开启“允许快捷指令访问”。")
+        case .invalidInput: return L10n.text("文本不能为空且最多 64 KB；搜索最多 512 字节，序号范围为 1–1000。")
+        case .missingBoard: return L10n.text("没有找到这个分组，请检查完整分组名称。")
+        case .inaccessibleBoard: return L10n.text("这个分组不属于当前账号、共享访问已撤销，或当前操作没有写入权限。")
+        case .ambiguousBoard: return L10n.text("存在同名分组，请在 ClipShelf 中修改名称后重试。")
+        case .noMatch: return L10n.text("没有符合条件的内容。")
+        case .unsupportedContent: return L10n.text("这条内容没有可输出的文字。图片可先提取文字；文件请在 ClipShelf 中操作。")
         }
     }
 }
@@ -30,7 +31,12 @@ final class ClipboardIntentRuntime {
     init(loadOnDemand: Bool = false) { self.loadOnDemand = loadOnDemand }
 
     private func authorizedStore() throws -> HistoryStore {
-        if loadOnDemand { enabled = UserDefaults.standard.bool(forKey: "shortcutsEnabled") }
+        if loadOnDemand {
+            let preferences = RuntimeProfile.current.preferences
+            let language = preferences.string(forKey: "interfaceLanguage").flatMap(InterfaceLanguage.init(rawValue:)) ?? .system
+            L10n.configure(language: language, preferredLanguages: Locale.preferredLanguages, hostBundle: .main)
+            enabled = preferences.bool(forKey: "shortcutsEnabled")
+        }
         guard enabled else { throw ClipboardIntentError.permissionRequired }
         if store == nil, loadOnDemand {
             let root = try RuntimeProfile.current.dataDirectory()
@@ -61,7 +67,7 @@ final class ClipboardIntentRuntime {
         let store = try authorizedStore()
         guard !text.isEmpty, text.utf8.count <= 65_536 else { throw ClipboardIntentError.invalidInput }
         let sync = try store.syncConfiguration(), sharing = try store.sharingConfiguration()
-        let record = ClipboardRecord(text: text, sourceApp: "快捷指令", sourceBundleID: "com.apple.shortcuts",
+        let record = ClipboardRecord(text: text, sourceApp: L10n.text("快捷指令"), sourceBundleID: "com.apple.shortcuts",
                                      pinboardID: try boardID(board, store: store, writing: true, sync: sync, sharing: sharing))
         let created = try store.create(record, expectedSyncConfiguration: sync, expectedSharingConfiguration: sharing)
         onDataChanged?()

@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import Darwin
 import Foundation
 import UniformTypeIdentifiers
@@ -54,12 +55,12 @@ public enum ClipboardFileRepairError: Error, LocalizedError {
     case invalidReference, ambiguousFileReferences, ownedFileRequiresProjectionRestore, unavailableReplacement, unchangedURL, unavailableOutput
     public var errorDescription: String? {
         switch self {
-        case .invalidReference: return "文件引用或修复快照已失效，请重新选择条目。"
-        case .ambiguousFileReferences: return "同一个剪贴板对象包含不同的文件引用，无法确定要替换的文件。"
-        case .ownedFileRequiresProjectionRestore: return "此文件由 ClipShelf 托管，请从保留的原件恢复缺失副本。"
-        case .unavailableReplacement: return "所选文件或文件夹不可访问，请重新选择。"
-        case .unchangedURL: return "所选路径与原引用相同，无需修改历史记录。"
-        case .unavailableOutput: return "文件不可用或打开副本异常，请在“文件与位置…”中检查。"
+        case .invalidReference: return L10n.text("文件引用或修复快照已失效，请重新选择条目。")
+        case .ambiguousFileReferences: return L10n.text("同一个剪贴板对象包含不同的文件引用，无法确定要替换的文件。")
+        case .ownedFileRequiresProjectionRestore: return L10n.text("此文件由 ClipShelf 托管，请从保留的原件恢复缺失副本。")
+        case .unavailableReplacement: return L10n.text("所选文件或文件夹不可访问，请重新选择。")
+        case .unchangedURL: return L10n.text("所选路径与原引用相同，无需修改历史记录。")
+        case .unavailableOutput: return L10n.text("文件不可用或打开副本异常，请在“文件与位置…”中检查。")
         }
     }
 }

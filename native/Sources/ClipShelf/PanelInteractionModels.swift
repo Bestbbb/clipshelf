@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import Foundation
 import ClipShelfCore
 
@@ -31,7 +32,7 @@ struct PanelPageWindow: Equatable {
     var hasPrevious: Bool { offset > 0 }
     var previousOffset: Int { max(0, offset - Self.size) }
     var nextOffset: Int { offset + count }
-    var rangeDescription: String { count == 0 ? "0 条" : "第 \(offset + 1)–\(offset + count) 条" }
+    var rangeDescription: String { count == 0 ? L10n.text("0 条") : L10n.text("第 \(offset + 1)–\(offset + count) 条") }
 
     mutating func update(offset: Int, count: Int, hasMore: Bool) {
         self.offset = max(0, offset)

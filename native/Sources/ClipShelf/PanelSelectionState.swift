@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import Foundation
 import ClipShelfCore
 
@@ -7,10 +8,10 @@ struct PanelSelectionState {
         case missingUniverse, staleSelection, outsideUniverse, malformedSnapshot
         var errorDescription: String? {
             switch self {
-            case .missingUniverse: return "无法取得完整选择范围。"
-            case .staleSelection: return "其中一条内容已经改变。"
-            case .outsideUniverse: return "目标不再属于当前搜索范围。"
-            case .malformedSnapshot: return "无法验证完整选择。"
+            case .missingUniverse: return L10n.text("无法取得完整选择范围。")
+            case .staleSelection: return L10n.text("其中一条内容已经改变。")
+            case .outsideUniverse: return L10n.text("目标不再属于当前搜索范围。")
+            case .malformedSnapshot: return L10n.text("无法验证完整选择。")
             }
         }
     }

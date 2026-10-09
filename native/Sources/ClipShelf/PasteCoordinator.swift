@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 import ApplicationServices
 import ClipShelfCore
@@ -56,7 +57,7 @@ final class PasteCoordinator {
         let success = pasteboard.writeObjects(items)
         onClipboardWrite?()
         publications?.reconcileClipboard()
-        if !success { onResult?("无法写入系统剪贴板，请重试。") }
+        if !success { onResult?(L10n.text("无法写入系统剪贴板，请重试。")) }
         return success
     }
 
@@ -72,23 +73,23 @@ final class PasteCoordinator {
         let writtenChangeCount = pasteboard.changeCount
         dismiss()
         guard hasPermission, let target, !target.application.isTerminated, target.window != nil else {
-            onResult?("内容已复制，请切回目标应用按 ⌘V。")
+            onResult?(L10n.text("内容已复制，请切回目标应用按 ⌘V。"))
             return
         }
         // A nonactivating panel normally leaves the intended application in front.
         // If the user selected another app, never force a paste into the stale target.
         let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         guard frontPID == target.application.processIdentifier || frontPID == ProcessInfo.processInfo.processIdentifier else {
-            onResult?("目标已改变；内容已复制，请手动粘贴。")
+            onResult?(L10n.text("目标已改变；内容已复制，请手动粘贴。"))
             return
         }
         guard target.application.activate(options: []) else {
-            onResult?("未能恢复目标应用；内容已复制。")
+            onResult?(L10n.text("未能恢复目标应用；内容已复制。"))
             return
         }
         if let window = target.window {
             guard AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success else {
-                onResult?("原窗口已不可用；内容已复制，请手动粘贴。")
+                onResult?(L10n.text("原窗口已不可用；内容已复制，请手动粘贴。"))
                 return
             }
         }
@@ -104,12 +105,12 @@ final class PasteCoordinator {
             while Date() < deadline {
                 guard self.attempt == identifier, self.hasPermission, !target.application.isTerminated else { return }
                 guard self.pasteboard.changeCount == writtenChangeCount else {
-                    self.onResult?("剪贴板已被新的复制替换，本次自动粘贴已取消。")
+                    self.onResult?(L10n.text("剪贴板已被新的复制替换，本次自动粘贴已取消。"))
                     return
                 }
                 let currentPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
                 if currentPID != target.application.processIdentifier && currentPID != ProcessInfo.processInfo.processIdentifier {
-                    self.onResult?("目标已改变；内容已复制，请手动粘贴。")
+                    self.onResult?(L10n.text("目标已改变；内容已复制，请手动粘贴。"))
                     return
                 }
                 let flags = CGEventSource.flagsState(.combinedSessionState)
@@ -118,12 +119,12 @@ final class PasteCoordinator {
                     if let original = target.window {
                         let app = AXUIElementCreateApplication(target.application.processIdentifier)
                         guard let current = Self.attribute(app, kAXFocusedWindowAttribute), CFEqual(original, current) else {
-                            self.onResult?("原窗口焦点未恢复；内容已复制。")
+                            self.onResult?(L10n.text("原窗口焦点未恢复；内容已复制。"))
                             return
                         }
                         if let originalField = target.focusedElement {
                             guard let currentField = Self.attribute(app, kAXFocusedUIElementAttribute), CFEqual(originalField, currentField) else {
-                                self.onResult?("原输入位置未恢复；内容已复制，请手动粘贴。")
+                                self.onResult?(L10n.text("原输入位置未恢复；内容已复制，请手动粘贴。"))
                                 return
                             }
                         }
@@ -131,7 +132,7 @@ final class PasteCoordinator {
                     guard let source = CGEventSource(stateID: .hidSystemState),
                           let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
                           let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else {
-                        self.onResult?("无法创建粘贴按键；内容已复制。")
+                        self.onResult?(L10n.text("无法创建粘贴按键；内容已复制。"))
                         return
                     }
                     down.flags = .maskCommand
@@ -139,18 +140,18 @@ final class PasteCoordinator {
                     down.setIntegerValueField(.eventSourceUserData, value: StackKeyMonitor.syntheticEventTag)
                     up.setIntegerValueField(.eventSourceUserData, value: StackKeyMonitor.syntheticEventTag)
                     guard self.pasteboard.changeCount == writtenChangeCount else {
-                        self.onResult?("剪贴板已改变，本次自动粘贴已取消。")
+                        self.onResult?(L10n.text("剪贴板已改变，本次自动粘贴已取消。"))
                         return
                     }
                     down.post(tap: .cghidEventTap)
                     up.post(tap: .cghidEventTap)
                     onDispatched?()
-                    self.onResult?("已发出粘贴操作。")
+                    self.onResult?(L10n.text("已发出粘贴操作。"))
                     return
                 }
                 try? await Task.sleep(nanoseconds: 15_000_000)
             }
-            self.onResult?("目标或修饰键尚未就绪；内容已复制，请手动粘贴。")
+            self.onResult?(L10n.text("目标或修饰键尚未就绪；内容已复制，请手动粘贴。"))
         }
     }
 

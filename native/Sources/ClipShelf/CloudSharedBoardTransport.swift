@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 import ClipShelfCore
 import CloudKit
@@ -14,10 +15,10 @@ actor CloudSharedBoardTransport: SharedBoardLifecycleTransport, SharedBoardOwned
 
     func configurationStatus() -> CloudSyncAvailability {
         guard let identifier = configuration.containerIdentifier, identifier.hasPrefix("iCloud."), identifier.count > 7 else {
-            return .unavailable("请先配置开发者自己的 CloudKit 容器，再启用共享板。")
+            return .unavailable(L10n.text("请先配置开发者自己的 CloudKit 容器，再启用共享板。"))
         }
         guard CloudSyncService.hasCloudKitEntitlement(containerIdentifier: identifier) else {
-            return .unavailable("此构建未签署所配置容器的 CloudKit 权限，尚不能连接共享板。")
+            return .unavailable(L10n.text("此构建未签署所配置容器的 CloudKit 权限，尚不能连接共享板。"))
         }
         return .disabled
     }
@@ -117,7 +118,7 @@ actor CloudSharedBoardTransport: SharedBoardLifecycleTransport, SharedBoardOwned
         let scope = blobScope(board: board, context: context)
         for deletion in result.deletions {
             guard CloudOwnedBlobCodec.isBlobDeletion(id: deletion.recordID, type: deletion.recordType, scope: scope) else {
-                throw SyncError.unavailable("共享板的云端操作日志不完整。已停止同步并保留本地内容。")
+                throw SyncError.unavailable(L10n.text("共享板的云端操作日志不完整。已停止同步并保留本地内容。"))
             }
         }
         var operations: [SyncOperation] = []
@@ -261,7 +262,7 @@ actor CloudSharedBoardTransport: SharedBoardLifecycleTransport, SharedBoardOwned
     }
 
     func acceptShare(url: URL, expectedAccountID: String) async throws -> SharedBoardDescriptor {
-        guard Self.isShareURL(url) else { throw SyncError.unavailable("请输入有效的 iCloud 共享链接。") }
+        guard Self.isShareURL(url) else { throw SyncError.unavailable(L10n.text("请输入有效的 iCloud 共享链接。")) }
         let session = try await session(expectedAccountID: expectedAccountID)
         let metadata = try await request(session) { try await session.container.shareMetadata(for: url) }
         guard metadata.containerIdentifier == configuration.containerIdentifier,
@@ -289,7 +290,7 @@ actor CloudSharedBoardTransport: SharedBoardLifecycleTransport, SharedBoardOwned
 
     func leave(_ board: SharedBoardDescriptor) async throws {
         let context = try await context(for: board)
-        guard !context.isOwnerDatabase else { throw SyncError.unavailable("共享板拥有者需要使用“停止共享”。") }
+        guard !context.isOwnerDatabase else { throw SyncError.unavailable(L10n.text("共享板拥有者需要使用“停止共享”。")) }
         let share = try await fetchShare(board, context: context)
         guard Self.access(of: share, userRecordName: context.session.userRecordName) != .owner else { throw SharedBoardError.remotePermissionDenied }
         // CloudKit interprets this delete in sharedCloudDatabase as removing only this participant.
@@ -337,7 +338,7 @@ actor CloudSharedBoardTransport: SharedBoardLifecycleTransport, SharedBoardOwned
         guard let identifier = configuration.containerIdentifier else { throw SyncError.disabled }
         // Do not move container construction above the signing check: an unsigned process can abort here.
         let container = CKContainer(identifier: identifier)
-        guard try await container.accountStatus() == .available else { throw SyncError.unavailable("iCloud 账号当前不可用。") }
+        guard try await container.accountStatus() == .available else { throw SyncError.unavailable(L10n.text("iCloud 账号当前不可用。")) }
         let user = try await container.userRecordID()
         let account = identifier + ":" + user.recordName
         if let expectedAccountID, account != expectedAccountID { throw SharedBoardError.accountChanged }
@@ -515,8 +516,8 @@ final class CloudSharedBoardSharingPresenter: NSObject, NSCloudSharingServiceDel
     init(transport: CloudSharedBoardTransport) { self.transport = transport }
 
     func present(board: SharedBoardDescriptor, relativeTo view: NSView) async throws {
-        guard service == nil, !preparing else { throw SyncError.unavailable("共享成员管理窗口已经打开。") }
-        guard view.window?.isVisible == true else { throw SyncError.unavailable("请先打开共享设置窗口。") }
+        guard service == nil, !preparing else { throw SyncError.unavailable(L10n.text("共享成员管理窗口已经打开。")) }
+        guard view.window?.isVisible == true else { throw SyncError.unavailable(L10n.text("请先打开共享设置窗口。")) }
         preparing = true
         defer { preparing = false }
         let snapshot = try await transport.sharingSnapshot(for: board)
@@ -525,7 +526,7 @@ final class CloudSharedBoardSharingPresenter: NSObject, NSCloudSharingServiceDel
         let provider = NSItemProvider()
         provider.registerCloudKitShare(snapshot.share, container: snapshot.container)
         guard let service = NSSharingService(named: .cloudSharing), service.canPerform(withItems: [provider]) else {
-            throw SyncError.unavailable("当前系统无法显示 iCloud 共享成员管理。")
+            throw SyncError.unavailable(L10n.text("当前系统无法显示 iCloud 共享成员管理。"))
         }
         self.board = board
         self.anchor = view

@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 import ClipShelfCore
 
@@ -90,17 +91,17 @@ final class ImagePreviewController: NSWindowController, NSWindowDelegate {
     private let sourceStore: HistoryStore?
     private let recognizer = LocalIntelligenceService()
     private let canvas = OCRImageCanvas()
-    private let status = NSTextField(labelWithString: "正在读取图片…")
+    private let status = NSTextField(labelWithString: L10n.text("正在读取图片…"))
     private let title = NSTextField(labelWithString: "")
     private let query = NSSearchField()
     private let editor = NSTextView()
     private let textScroll = NSScrollView()
-    private let fullText = NSButton(checkboxWithTitle: "识别全文", target: nil, action: nil)
-    private let regionToggle = NSButton(checkboxWithTitle: "显示识别区域", target: nil, action: nil)
-    private let retry = NSButton(title: "重新识别", target: nil, action: nil)
-    private let cancel = NSButton(title: "取消识别", target: nil, action: nil)
-    private let extract = NSButton(title: "提取为新记录", target: nil, action: nil)
-    private let rotate = NSButton(title: "向左旋转", target: nil, action: nil)
+    private let fullText = NSButton(checkboxWithTitle: L10n.text("识别全文"), target: nil, action: nil)
+    private let regionToggle = NSButton(checkboxWithTitle: L10n.text("显示识别区域"), target: nil, action: nil)
+    private let retry = NSButton(title: L10n.text("重新识别"), target: nil, action: nil)
+    private let cancel = NSButton(title: L10n.text("取消识别"), target: nil, action: nil)
+    private let extract = NSButton(title: L10n.text("提取为新记录"), target: nil, action: nil)
+    private let rotate = NSButton(title: L10n.text("向左旋转"), target: nil, action: nil)
     private var work: Task<Void, Never>?
     private var generation: UInt64 = 0
     private var presented = false
@@ -112,14 +113,14 @@ final class ImagePreviewController: NSWindowController, NSWindowDelegate {
     private var rotationWork: Task<Void, Never>?
     private var preparedRotation: (snapshot: ClipboardEditSnapshot, record: ClipboardRecord)?
     private var rotationMessage: String?
-    private var recognitionMessage = "正在读取图片…"
+    private var recognitionMessage = L10n.text("正在读取图片…")
     private var sourceInvalid = false
 
     init(record: ClipboardRecord, searchQuery: String = "", cache: OCRDerivedCache = .shared, sourceStore: HistoryStore? = nil) {
         self.currentRecord = record; self.cache = cache; self.sourceStore = sourceStore
         let panel = OCRPreviewPanel(contentRect: NSRect(x: 0, y: 0, width: 880, height: 650),
             styleMask: [.titled, .closable, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.title = "图片与识别文字"
+        panel.title = L10n.text("图片与识别文字")
         panel.level = .floating; panel.hidesOnDeactivate = false; panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.minSize = NSSize(width: 680, height: 520)
@@ -158,16 +159,16 @@ final class ImagePreviewController: NSWindowController, NSWindowDelegate {
         guard let window else { return }
         let root = NSView(); window.contentView = root
         title.stringValue = currentRecord.title
-        title.setAccessibilityLabel("图片标题")
+        title.setAccessibilityLabel(L10n.text("图片标题"))
         title.font = .systemFont(ofSize: 13, weight: .semibold); title.lineBreakMode = .byTruncatingTail
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        query.placeholderString = "在识别文字中查找"
+        query.placeholderString = L10n.text("在识别文字中查找")
         query.target = self; query.action = #selector(queryChanged)
         query.sendsSearchStringImmediately = true
-        query.setAccessibilityLabel("图片识别文字搜索")
+        query.setAccessibilityLabel(L10n.text("图片识别文字搜索"))
         let header = NSStackView(views: [title, query]); header.spacing = 16
         query.widthAnchor.constraint(equalToConstant: 260).isActive = true
-        canvas.setAccessibilityLabel("原图预览，青色为识别区域，黄色为搜索命中")
+        canvas.setAccessibilityLabel(L10n.text("原图预览，青色为识别区域，黄色为搜索命中"))
         regionToggle.state = .on; regionToggle.target = self; regionToggle.action = #selector(toggleRegions)
         fullText.target = self; fullText.action = #selector(toggleFullText)
         retry.target = self; retry.action = #selector(retryRecognition)
@@ -183,14 +184,14 @@ final class ImagePreviewController: NSWindowController, NSWindowDelegate {
         editor.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         editor.textContainer?.containerSize = NSSize(width: 800, height: CGFloat.greatestFiniteMagnitude)
         editor.textContainer?.widthTracksTextView = true
-        editor.setAccessibilityLabel("本机识别全文，可选择复制")
+        editor.setAccessibilityLabel(L10n.text("本机识别全文，可选择复制"))
         status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor
-        status.setAccessibilityLabel("图片预览状态")
+        status.setAccessibilityLabel(L10n.text("图片预览状态"))
         status.lineBreakMode = .byWordWrapping; status.maximumNumberOfLines = 3
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         rotate.target = self; rotate.action = #selector(rotateImage)
         extract.target = self; extract.action = #selector(extractText); extract.isEnabled = false
-        let close = NSButton(title: "关闭", target: self, action: #selector(closePreview)); close.keyEquivalent = "\u{1b}"
+        let close = NSButton(title: L10n.text("关闭"), target: self, action: #selector(closePreview)); close.keyEquivalent = "\u{1b}"
         let actions = NSStackView(views: [status, rotate, extract, close]); actions.spacing = 10
         let stack = NSStackView(views: [header, controls, canvas, textScroll, actions])
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 12
@@ -210,9 +211,9 @@ final class ImagePreviewController: NSWindowController, NSWindowDelegate {
         cancelWork(); let current = generation
         result = nil; canvas.regions = []; editor.string = ""; extract.isEnabled = false
         retry.isEnabled = false; cancel.isEnabled = true
-        setRecognitionStatus("正在本机识别…原图保持不变")
+        setRecognitionStatus(L10n.text("正在本机识别…原图保持不变"))
         guard let data = OCRDerivedCache.imageData(in: currentRecord) else {
-            setRecognitionStatus("这条记录没有可读取的图片。"); retry.isEnabled = true; cancel.isEnabled = false; return
+            setRecognitionStatus(L10n.text("这条记录没有可读取的图片。")); retry.isEnabled = true; cancel.isEnabled = false; return
         }
         let cache = self.cache, record = self.currentRecord
         work = Task { [weak self] in
@@ -247,7 +248,7 @@ final class ImagePreviewController: NSWindowController, NSWindowDelegate {
                     self.sourceInvalid = true; self.updateActions(); self.retry.isEnabled = false
                     self.setRecognitionStatus(error.localizedDescription)
                 } else {
-                    self.setRecognitionStatus(error is CancellationError ? "已取消识别，可重新尝试。" : "识别失败：\(error.localizedDescription)")
+                    self.setRecognitionStatus(error is CancellationError ? L10n.text("已取消识别，可重新尝试。") : L10n.text("识别失败：\(error.localizedDescription)"))
                     self.retry.isEnabled = true
                 }
                 self.cancel.isEnabled = false
@@ -259,15 +260,15 @@ final class ImagePreviewController: NSWindowController, NSWindowDelegate {
         guard let result else { return }
         let matched = result.regions.reduce(0) { $0 + ImagePreviewGeometry.matches(in: $1, query: query.stringValue).count }
         let confidence = result.regions.isEmpty ? 0 : result.regions.reduce(Float(0)) { $0 + $1.confidence } / Float(result.regions.count)
-        setRecognitionStatus(result.text.isEmpty ? "未识别到文字 · 可重新识别" : "\(result.regions.count) 个区域 · \(matched) 处命中 · 平均置信度 \(Int(confidence * 100))%")
-        status.toolTip = "\(result.engineIdentifier) r\(result.engineRevision)\n\(result.engineVersion)\n语言：\(result.recognitionLanguages.joined(separator: ", "))"
+        setRecognitionStatus(result.text.isEmpty ? L10n.text("未识别到文字 · 可重新识别") : L10n.text("\(result.regions.count) 个区域 · \(matched) 处命中 · 平均置信度 \(Int(confidence * 100))%"))
+        status.toolTip = L10n.text("\(result.engineIdentifier) r\(result.engineRevision)\n\(result.engineVersion)\n语言：\(result.recognitionLanguages.joined(separator: ", "))")
     }
     @objc private func queryChanged() { canvas.query = query.stringValue; updateStatus() }
     @objc private func toggleRegions() { canvas.showsRegions = regionToggle.state == .on }
     @objc private func toggleFullText() { textScroll.isHidden = fullText.state != .on; if !textScroll.isHidden { window?.makeFirstResponder(editor) } }
     @objc private func retryRecognition() { guard presented, !sourceInvalid else { return }; startRecognition(force: true) }
     @objc private func cancelRecognition() {
-        cancelWork(); setRecognitionStatus("已取消识别，可重新尝试。"); retry.isEnabled = true; cancel.isEnabled = false
+        cancelWork(); setRecognitionStatus(L10n.text("已取消识别，可重新尝试。")); retry.isEnabled = true; cancel.isEnabled = false
     }
     @objc private func closePreview() { dismiss() }
     @objc private func rotateImage() {
@@ -276,20 +277,20 @@ final class ImagePreviewController: NSWindowController, NSWindowDelegate {
         let reference = ClipboardSelectionReference(id: currentRecord.id, revision: currentRecord.revision)
         rotationOperationID = operation
         if let preparedRotation {
-            rotationMessage = "正在重试保存旋转…"; renderStatus(); updateActions()
+            rotationMessage = L10n.text("正在重试保存旋转…"); renderStatus(); updateActions()
             submitRotation(preparedRotation, operation: operation, session: session, reference: reference)
             return
         }
-        rotationMessage = "正在检查旋转权限…"; rotationPreparing = true; renderStatus(); updateActions()
+        rotationMessage = L10n.text("正在检查旋转权限…"); rotationPreparing = true; renderStatus(); updateActions()
         onPrepareEdit(reference) { [weak self] response in
             guard let self, self.rotationPreparing, self.rotationIsCurrent(operation, session: session, reference: reference) else { return }
             self.rotationPreparing = false
             switch response {
-            case .failure(let error): self.rotationFailed(error, stage: "无法开始旋转")
+            case .failure(let error): self.rotationFailed(error, stage: L10n.text("无法开始旋转"))
             case .success(let snapshot):
                 guard snapshot.record.id == reference.id, snapshot.record.revision == reference.revision,
                       snapshot.record.hasSameContents(as: self.currentRecord) else {
-                    self.rotationFailed(OCRDerivedCache.CacheError.sourceChanged, stage: "无法开始旋转"); return
+                    self.rotationFailed(OCRDerivedCache.CacheError.sourceChanged, stage: L10n.text("无法开始旋转")); return
                 }
                 self.convertRotation(snapshot, operation: operation, session: session, reference: reference)
             }
@@ -297,7 +298,7 @@ final class ImagePreviewController: NSWindowController, NSWindowDelegate {
     }
 
     private func convertRotation(_ snapshot: ClipboardEditSnapshot, operation: UUID, session: UUID, reference: ClipboardSelectionReference) {
-        rotationMessage = "正在准备旋转图片…原图保持不变"; renderStatus()
+        rotationMessage = L10n.text("正在准备旋转图片…原图保持不变"); renderStatus()
         let converter = rotationConverter
         let task = Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
@@ -313,7 +314,7 @@ final class ImagePreviewController: NSWindowController, NSWindowDelegate {
                 guard let self, self.rotationIsCurrent(operation, session: session, reference: reference) else { return }
                 self.rotationTask = nil; self.rotationWork = nil
                 guard converted.id == snapshot.record.id, converted.revision == snapshot.record.revision else {
-                    self.rotationFailed(OCRDerivedCache.CacheError.sourceChanged, stage: "旋转结果不匹配"); return
+                    self.rotationFailed(OCRDerivedCache.CacheError.sourceChanged, stage: L10n.text("旋转结果不匹配")); return
                 }
                 let prepared = (snapshot: snapshot, record: converted)
                 self.preparedRotation = prepared
@@ -321,7 +322,7 @@ final class ImagePreviewController: NSWindowController, NSWindowDelegate {
             } catch {
                 guard let self, self.rotationIsCurrent(operation, session: session, reference: reference) else { return }
                 self.rotationTask = nil; self.rotationWork = nil
-                self.rotationFailed(error, stage: "旋转失败")
+                self.rotationFailed(error, stage: L10n.text("旋转失败"))
             }
         }
     }
@@ -329,14 +330,14 @@ final class ImagePreviewController: NSWindowController, NSWindowDelegate {
     private func submitRotation(_ prepared: (snapshot: ClipboardEditSnapshot, record: ClipboardRecord), operation: UUID,
                                 session: UUID, reference: ClipboardSelectionReference) {
         guard rotationIsCurrent(operation, session: session, reference: reference), let onEdit else { return }
-        rotationMessage = "正在保存旋转…关闭预览不会撤回已提交的保存。"; renderStatus(); updateActions()
+        rotationMessage = L10n.text("正在保存旋转…关闭预览不会撤回已提交的保存。"); renderStatus(); updateActions()
         onEdit(prepared.snapshot, prepared.record) { [weak self] response in
             guard let self, self.rotationIsCurrent(operation, session: session, reference: reference) else { return }
             switch response {
-            case .failure(let error): self.rotationFailed(error, stage: "旋转保存失败")
+            case .failure(let error): self.rotationFailed(error, stage: L10n.text("旋转保存失败"))
             case .success(let committed):
                 guard committed.id == reference.id, committed.revision > reference.revision else {
-                    self.rotationFailed(OCRDerivedCache.CacheError.sourceChanged, stage: "保存回执不匹配"); return
+                    self.rotationFailed(OCRDerivedCache.CacheError.sourceChanged, stage: L10n.text("保存回执不匹配")); return
                 }
                 self.cancelWork()
                 var saved = prepared.record; saved.revision = committed.revision
@@ -360,7 +361,7 @@ final class ImagePreviewController: NSWindowController, NSWindowDelegate {
     }
     private func rotationFailed(_ error: Error, stage: String) {
         rotationOperationID = nil
-        rotationMessage = "\(stage)：\(error.localizedDescription) 原图保留；可重试，条目、权限或账号变化时请重新打开。"
+        rotationMessage = L10n.text("\(stage)：\(error.localizedDescription) 原图保留；可重试，条目、权限或账号变化时请重新打开。")
         renderStatus(); updateActions()
     }
     private func cancelRotation() {
@@ -369,7 +370,7 @@ final class ImagePreviewController: NSWindowController, NSWindowDelegate {
     }
     private func updateActions() {
         rotate.isEnabled = presented && !sourceInvalid && rotationOperationID == nil && onPrepareEdit != nil && onEdit != nil
-        rotate.title = preparedRotation == nil ? "向左旋转" : "重试保存旋转"
+        rotate.title = preparedRotation == nil ? L10n.text("向左旋转") : L10n.text("重试保存旋转")
         extract.isEnabled = presented && rotationOperationID == nil && result?.text.isEmpty == false && onExtractText != nil
     }
     private func setRecognitionStatus(_ text: String) { recognitionMessage = text; renderStatus() }

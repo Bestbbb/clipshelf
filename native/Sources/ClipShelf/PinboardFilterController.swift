@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 import ClipShelfCore
 
@@ -17,9 +18,9 @@ final class PinboardFilterController: NSViewController {
 
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 310, height: 340))
-        let title = NSTextField(labelWithString: "选择要搜索的分组")
+        let title = NSTextField(labelWithString: L10n.text("选择要搜索的分组"))
         title.font = .systemFont(ofSize: 14, weight: .semibold)
-        let note = NSTextField(wrappingLabelWithString: "同时勾选多个分组；可继续组合类型、来源和时间。未勾选时搜索全部内容。")
+        let note = NSTextField(wrappingLabelWithString: L10n.text("同时勾选多个分组；可继续组合类型、来源和时间。未勾选时搜索全部内容。"))
         note.font = .systemFont(ofSize: 11)
         note.textColor = .secondaryLabelColor
         let rows = NSStackView()
@@ -27,16 +28,16 @@ final class PinboardFilterController: NSViewController {
         for board in boards {
             let button = NSButton(checkboxWithTitle: board.name, target: nil, action: nil)
             button.state = selected.contains(board.id) ? .on : .off
-            button.setAccessibilityLabel("筛选分组：\(board.name)")
+            button.setAccessibilityLabel(L10n.text("筛选分组：\(board.name)"))
             buttons.append((board.id, button)); rows.addArrangedSubview(button)
         }
-        if boards.isEmpty { rows.addArrangedSubview(NSTextField(labelWithString: "还没有分组，可从“分组操作”中新建。")) }
+        if boards.isEmpty { rows.addArrangedSubview(NSTextField(labelWithString: L10n.text("还没有分组，可从“分组操作”中新建。"))) }
         rows.translatesAutoresizingMaskIntoConstraints = false
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.documentView = rows
-        let clear = NSButton(title: "取消勾选", target: self, action: #selector(clearSelection))
-        let cancel = NSButton(title: "取消", target: self, action: #selector(cancelSelection))
-        let apply = NSButton(title: "应用筛选", target: self, action: #selector(applySelection))
+        let clear = NSButton(title: L10n.text("取消勾选"), target: self, action: #selector(clearSelection))
+        let cancel = NSButton(title: L10n.text("取消"), target: self, action: #selector(cancelSelection))
+        let apply = NSButton(title: L10n.text("应用筛选"), target: self, action: #selector(applySelection))
         apply.keyEquivalent = "\r"; cancel.keyEquivalent = "\u{1b}"
         let actions = NSStackView(views: [clear, NSView(), cancel, apply])
         actions.orientation = .horizontal; actions.spacing = 8

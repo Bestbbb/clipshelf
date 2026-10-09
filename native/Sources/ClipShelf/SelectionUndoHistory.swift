@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import ClipShelfCore
 import Foundation
 
@@ -72,9 +73,9 @@ private final class WeakSelectionUndoTicket {
         }
         manager.setActionName({
             switch action {
-            case .move: return "移动所选内容"
-            case .deletion: return "删除所选内容"
-            case .edit: return "编辑内容"
+            case .move: return L10n.text("移动所选内容")
+            case .deletion: return L10n.text("删除所选内容")
+            case .edit: return L10n.text("编辑内容")
             }
         }())
         manager.endUndoGrouping()

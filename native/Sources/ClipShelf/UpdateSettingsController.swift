@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 
 @MainActor
@@ -5,16 +6,16 @@ final class UpdateSettingsController: NSWindowController {
     private let coordinator: AppUpdateCoordinator
     private let status = NSTextField(wrappingLabelWithString: "")
     private let lastCheck = NSTextField(wrappingLabelWithString: "")
-    private let automaticChecks = NSButton(checkboxWithTitle: "自动检查更新", target: nil, action: nil)
-    private let automaticDownloads = NSButton(checkboxWithTitle: "自动下载更新并在退出后安装", target: nil, action: nil)
-    private let check = NSButton(title: "检查更新…", target: nil, action: nil)
-    private let retry = NSButton(title: "重试安装重启", target: nil, action: nil)
+    private let automaticChecks = NSButton(checkboxWithTitle: L10n.text("自动检查更新"), target: nil, action: nil)
+    private let automaticDownloads = NSButton(checkboxWithTitle: L10n.text("自动下载更新并在退出后安装"), target: nil, action: nil)
+    private let check = NSButton(title: L10n.text("检查更新…"), target: nil, action: nil)
+    private let retry = NSButton(title: L10n.text("重试安装重启"), target: nil, action: nil)
 
     init(coordinator: AppUpdateCoordinator) {
         self.coordinator = coordinator
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 580, height: 380),
                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "ClipShelf · 应用更新"; window.isReleasedWhenClosed = false
+        window.title = L10n.text("ClipShelf · 应用更新"); window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 580, height: 380)
         super.init(window: window)
         status.setAccessibilityIdentifier("update.status")
@@ -26,7 +27,7 @@ final class UpdateSettingsController: NSWindowController {
         check.target = self; check.action = #selector(checkNow)
         retry.target = self; retry.action = #selector(retryRestart)
         let version = NSTextField(labelWithString: coordinator.versionDescription)
-        let explanation = NSTextField(wrappingLabelWithString: "自动检查和自动下载默认关闭。开启后由 Sparkle 检查签名并提供更新。关闭开关不会撤销已下载、等待正常退出安装的更新。安装重启仍会确认未保存草稿，并等待正在进行的存储事务完成。")
+        let explanation = NSTextField(wrappingLabelWithString: L10n.text("自动检查和自动下载默认关闭。开启后由 Sparkle 检查签名并提供更新。关闭开关不会撤销已下载、等待正常退出安装的更新。安装重启仍会确认未保存草稿，并等待正在进行的存储事务完成。"))
         explanation.textColor = .secondaryLabelColor; lastCheck.textColor = .secondaryLabelColor
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         let detail = NSStackView(views: [version, status, lastCheck, explanation])
@@ -54,7 +55,7 @@ final class UpdateSettingsController: NSWindowController {
     /// Root calls this alongside menu rendering in coordinator.onChange.
     func refreshView() {
         status.stringValue = coordinator.status
-        lastCheck.stringValue = coordinator.lastUpdateCheckDate.map { "上次检查：\($0.formatted(date: .abbreviated, time: .shortened))" } ?? "尚无检查记录。"
+        lastCheck.stringValue = coordinator.lastUpdateCheckDate.map { L10n.text("上次检查：\(L10n.date($0))") } ?? L10n.text("尚无检查记录。")
         automaticChecks.state = coordinator.automaticallyChecksForUpdates ? .on : .off
         automaticDownloads.state = coordinator.automaticallyDownloadsUpdates ? .on : .off
         automaticChecks.isEnabled = coordinator.isAvailable

@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 import ClipShelfCore
 
@@ -24,16 +25,16 @@ final class SuggestionPanelController: NSWindowController, NSWindowDelegate, NST
     private var records: [UUID: ClipboardRecordMetadata] = [:]
     private let table = NSTableView()
     private let status = NSTextField(wrappingLabelWithString: "")
-    private let model = NSTextField(labelWithString: "Apple Intelligence · 本机模型")
+    private let model = NSTextField(labelWithString: L10n.text("Apple Intelligence · 本机模型"))
     private let progress = NSProgressIndicator()
-    private let permission = NSButton(title: "允许读取目标窗口…", target: nil, action: nil)
-    private let paste = NSButton(title: "粘贴所选内容", target: nil, action: nil)
+    private let permission = NSButton(title: L10n.text("允许读取目标窗口…"), target: nil, action: nil)
+    private let paste = NSButton(title: L10n.text("粘贴所选内容"), target: nil, action: nil)
     private var displayed = false
 
     init() {
         let panel = SuggestionFloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 480, height: 470),
             styleMask: [.titled, .closable, .nonactivatingPanel, .utilityWindow], backing: .buffered, defer: false)
-        panel.title = "ClipShelf · 智能建议"
+        panel.title = L10n.text("ClipShelf · 智能建议")
         panel.level = .floating
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
@@ -61,7 +62,7 @@ final class SuggestionPanelController: NSWindowController, NSWindowDelegate, NST
         table.allowsMultipleSelection = false
         table.target = self
         table.doubleAction = #selector(pasteSelected)
-        table.setAccessibilityLabel("本机模型建议的剪贴板内容")
+        table.setAccessibilityLabel(L10n.text("本机模型建议的剪贴板内容"))
         let scroll = NSScrollView()
         scroll.documentView = table
         scroll.hasVerticalScroller = true
@@ -70,10 +71,10 @@ final class SuggestionPanelController: NSWindowController, NSWindowDelegate, NST
         permission.action = #selector(requestPermission)
         paste.target = self
         paste.action = #selector(pasteSelected)
-        let close = NSButton(title: "关闭", target: self, action: #selector(closePanel))
+        let close = NSButton(title: L10n.text("关闭"), target: self, action: #selector(closePanel))
         let buttons = NSStackView(views: [permission, paste, close])
         buttons.spacing = 8
-        let privacy = NSTextField(wrappingLabelWithString: "仅本次读取原窗口 · 截图和识别文字不保存 · 关闭即取消")
+        let privacy = NSTextField(wrappingLabelWithString: L10n.text("仅本次读取原窗口 · 截图和识别文字不保存 · 关闭即取消"))
         privacy.font = .systemFont(ofSize: 11)
         privacy.textColor = .secondaryLabelColor
         let content = NSStackView(views: [header, status, scroll, privacy, buttons])
@@ -99,8 +100,8 @@ final class SuggestionPanelController: NSWindowController, NSWindowDelegate, NST
         self.target = target
         displayed = true
         clearResults()
-        status.stringValue = "正在读取原窗口并由本机模型选择相关内容…"
-        model.stringValue = "Apple Intelligence · 本机模型"
+        status.stringValue = L10n.text("正在读取原窗口并由本机模型选择相关内容…")
+        model.stringValue = L10n.text("Apple Intelligence · 本机模型")
         permission.isHidden = true
         progress.startAnimation(nil)
         if let screen = window?.screen ?? NSScreen.main {
@@ -117,7 +118,7 @@ final class SuggestionPanelController: NSWindowController, NSWindowDelegate, NST
         self.records = Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         selections = result.suggestions.filter { self.records[$0.id] != nil }
         model.stringValue = result.modelLabel
-        status.stringValue = selections.isEmpty ? "没有找到明显相关的内容。可关闭后使用普通搜索。" : "根据原窗口，从 \(result.candidateCount) 个候选中选出 \(selections.count) 项。"
+        status.stringValue = selections.isEmpty ? L10n.text("没有找到明显相关的内容。可关闭后使用普通搜索。") : L10n.text("根据原窗口，从 \(result.candidateCount) 个候选中选出 \(selections.count) 项。")
         table.reloadData()
         if !selections.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
         paste.isEnabled = !selections.isEmpty

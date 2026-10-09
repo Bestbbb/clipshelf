@@ -1,0 +1,197 @@
+[
+  {
+    "file": "native/Sources/ClipShelf/ClipShelfApplication.swift",
+    "literal": "\"验收 · 代码\"",
+    "reason": "Synthetic acceptance board"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipShelfApplication.swift",
+    "literal": "\"验收 · 资料\"",
+    "reason": "Synthetic acceptance board"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipShelfApplication.swift",
+    "literal": "\"把复制的内容，放回你的工作流。\\n\\n唤起、找到、粘贴，然后继续。\"",
+    "reason": "Synthetic demo content"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipShelfApplication.swift",
+    "literal": "\"备忘录\"",
+    "reason": "Synthetic demo content"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipShelfApplication.swift",
+    "literal": "\"设计稿\"",
+    "reason": "Synthetic demo content"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipShelfApplication.swift",
+    "literal": "\"会议笔记\\n• 先把跨 App 的焦点恢复做好\\n• 保持中文输入和键盘操作流畅\\n• 用真实结果验证粘贴\"",
+    "reason": "Synthetic demo content"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipShelfApplication.swift",
+    "literal": "\"图片 640 × 400\"",
+    "reason": "Synthetic demo content"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipShelfApplication.swift",
+    "literal": "\"合成演示\"",
+    "reason": "Synthetic demo content"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipShelfApplication.swift",
+    "literal": "\"ClipShelf 合成 PDF · 2 页\"",
+    "reason": "Synthetic demo content"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipboardCardView.swift",
+    "literal": "\"复制的内容\"",
+    "reason": "Persisted legacy content marker; preserve bytes"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipboardCodec.swift",
+    "literal": "\"图片 \\(Int(size.width)) × \\(Int(size.height))\"",
+    "reason": "Persisted legacy content marker; preserve bytes"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipboardCodec.swift",
+    "literal": "\"扫描文稿（PDF）\"",
+    "reason": "Persisted legacy content marker; preserve bytes"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipboardCodec.swift",
+    "literal": "\"复制的内容\"",
+    "reason": "Persisted legacy content marker; preserve bytes"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipboardIntents.swift",
+    "literal": "\"保存文本到 ClipShelf\"",
+    "reason": "Static App Intents resource; system tables"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipboardIntents.swift",
+    "literal": "\"把文本或链接保存到历史或指定分组。不会改写系统剪贴板。\"",
+    "reason": "Static App Intents resource; system tables"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipboardIntents.swift",
+    "literal": "\"文本\"",
+    "reason": "Static App Intents resource; system tables"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipboardIntents.swift",
+    "literal": "\"分组名称\"",
+    "reason": "Static App Intents resource; system tables"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipboardIntents.swift",
+    "literal": "\"保存 \\(\\.$text) 到 ClipShelf\"",
+    "reason": "Static App Intents resource; system tables"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipboardIntents.swift",
+    "literal": "\"查找 ClipShelf 最近文本\"",
+    "reason": "Static App Intents resource; system tables"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipboardIntents.swift",
+    "literal": "\"查找本地内容、当前同步账号及仍可读取的共享板，排除过往账号缓存与撤销的共享。需单独允许快捷指令访问。\"",
+    "reason": "Static App Intents resource; system tables"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipboardIntents.swift",
+    "literal": "\"搜索\"",
+    "reason": "Static App Intents resource; system tables"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipboardIntents.swift",
+    "literal": "\"从 ClipShelf 查找 \\(\\.$query)\"",
+    "reason": "Static App Intents resource; system tables"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipboardIntents.swift",
+    "literal": "\"获取 ClipShelf 第几条文本\"",
+    "reason": "Static App Intents resource; system tables"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipboardIntents.swift",
+    "literal": "\"从当前授权范围内的列表取得指定序号文本，从 1 开始。仅包含本地内容、当前账号及仍可读取的共享板。\"",
+    "reason": "Static App Intents resource; system tables"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipboardIntents.swift",
+    "literal": "\"序号\"",
+    "reason": "Static App Intents resource; system tables"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipboardIntents.swift",
+    "literal": "\"获取 ClipShelf 第 \\(\\.$index) 条文本\"",
+    "reason": "Static App Intents resource; system tables"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ClipboardIntents.swift",
+    "literal": "\"查找最近文本\"",
+    "reason": "Static App Intents resource; system tables"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ImageRotationPlan.swift",
+    "literal": "\"图片 \\(size.height) × \\(size.width)\"",
+    "reason": "Persisted legacy content marker; preserve bytes"
+  },
+  {
+    "file": "native/Sources/ClipShelf/ImageRotationPlan.swift",
+    "literal": "\"图片 \\(width) × \\(height)\"",
+    "reason": "Persisted legacy content marker; preserve bytes"
+  },
+  {
+    "file": "native/Sources/ClipShelf/LanguageSettingsController.swift",
+    "literal": "\"简体中文\"",
+    "reason": "Native language self-name"
+  },
+  {
+    "file": "native/Sources/ClipShelf/LanguageSettingsController.swift",
+    "literal": "\"繁體中文\"",
+    "reason": "Native language self-name"
+  },
+  {
+    "file": "native/Sources/ClipShelf/SearchValidationFixtures.swift",
+    "literal": "\"验收 · 深页\"",
+    "reason": "Synthetic acceptance content"
+  },
+  {
+    "file": "native/Sources/ClipShelf/SearchValidationFixtures.swift",
+    "literal": "\"TARGET-DEEP-HISTORY · 位于历史末尾的合成条目\"",
+    "reason": "Synthetic acceptance content"
+  },
+  {
+    "file": "native/Sources/ClipShelf/SearchValidationFixtures.swift",
+    "literal": "\"验收夹具\"",
+    "reason": "Synthetic acceptance content"
+  },
+  {
+    "file": "native/Sources/ClipShelf/SearchValidationFixtures.swift",
+    "literal": "\"TARGET-DEEP-BOARD · 分组第 401 条合成内容\"",
+    "reason": "Synthetic acceptance content"
+  },
+  {
+    "file": "native/Sources/ClipShelf/SearchValidationFixtures.swift",
+    "literal": "\"合成历史 %03d · search fixture\"",
+    "reason": "Synthetic acceptance content"
+  },
+  {
+    "file": "native/Sources/ClipShelf/SearchValidationFixtures.swift",
+    "literal": "\"验收编辑器\"",
+    "reason": "Synthetic acceptance content"
+  },
+  {
+    "file": "native/Sources/ClipShelf/SearchValidationFixtures.swift",
+    "literal": "\"验收笔记\"",
+    "reason": "Synthetic acceptance content"
+  },
+  {
+    "file": "native/Sources/ClipShelf/LanguageSettingsController.swift",
+    "literal": "\"English\"",
+    "reason": "Native language self-name; the picker must remain identifiable in every interface language"
+  }
+]

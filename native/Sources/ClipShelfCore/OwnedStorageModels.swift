@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import Darwin
 import Foundation
 
@@ -74,9 +75,9 @@ public enum OwnedStorageError: Error, LocalizedError {
     case changed, invalidLease, incompleteRecovery
     public var errorDescription: String? {
         switch self {
-        case .changed: return "文件、保留依赖或账号已变化，未按旧确认继续清理，请重新检查范围。"
-        case .invalidLease: return "文件保留凭证已失效，未继续输出或清理。"
-        case .incompleteRecovery: return "部分文件仍在安全恢复区，未删除不确定内容；请重试完成清理。"
+        case .changed: return L10n.text("文件、保留依赖或账号已变化，未按旧确认继续清理，请重新检查范围。")
+        case .invalidLease: return L10n.text("文件保留凭证已失效，未继续输出或清理。")
+        case .incompleteRecovery: return L10n.text("部分文件仍在安全恢复区，未删除不确定内容；请重试完成清理。")
         }
     }
 }

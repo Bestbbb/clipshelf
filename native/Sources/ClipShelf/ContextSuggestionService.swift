@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 import ApplicationServices
 import Carbon
@@ -37,18 +38,18 @@ final class ContextSuggestionService {
         var errorDescription: String? {
             switch self {
             case .unavailable(let reason): return reason
-            case .paused: return "记录已暂停，窗口上下文建议也已暂停。"
-            case .excludedApplication: return "此应用在隐私排除列表中，不读取它的窗口。"
-            case .missingTarget: return "没有可用的原应用窗口。请回到目标应用后重新请求建议。"
-            case .targetChanged: return "目标窗口或输入位置已改变，请重新请求建议。"
-            case .accessibilityRequired: return "需要辅助功能权限来确认目标窗口和密码输入状态。"
-            case .screenRecordingRequired: return "仅在你请求建议时读取目标窗口；请先允许屏幕录制权限。"
-            case .secureField: return "密码或安全输入状态下不读取窗口，也不生成上下文建议。"
-            case .ambiguousWindow: return "无法准确确认原窗口，因此没有读取屏幕内容。"
-            case .captureFailed: return "未能读取目标窗口，请检查屏幕权限或返回原窗口重试。"
-            case .noContext: return "没有从目标窗口识别到可用文字。"
-            case .noCandidates: return "没有可用于建议的剪贴板内容。"
-            case .modelFailed: return "本机模型未能生成建议，请稍后重试。普通历史搜索仍可使用。"
+            case .paused: return L10n.text("记录已暂停，窗口上下文建议也已暂停。")
+            case .excludedApplication: return L10n.text("此应用在隐私排除列表中，不读取它的窗口。")
+            case .missingTarget: return L10n.text("没有可用的原应用窗口。请回到目标应用后重新请求建议。")
+            case .targetChanged: return L10n.text("目标窗口或输入位置已改变，请重新请求建议。")
+            case .accessibilityRequired: return L10n.text("需要辅助功能权限来确认目标窗口和密码输入状态。")
+            case .screenRecordingRequired: return L10n.text("仅在你请求建议时读取目标窗口；请先允许屏幕录制权限。")
+            case .secureField: return L10n.text("密码或安全输入状态下不读取窗口，也不生成上下文建议。")
+            case .ambiguousWindow: return L10n.text("无法准确确认原窗口，因此没有读取屏幕内容。")
+            case .captureFailed: return L10n.text("未能读取目标窗口，请检查屏幕权限或返回原窗口重试。")
+            case .noContext: return L10n.text("没有从目标窗口识别到可用文字。")
+            case .noCandidates: return L10n.text("没有可用于建议的剪贴板内容。")
+            case .modelFailed: return L10n.text("本机模型未能生成建议，请稍后重试。普通历史搜索仍可使用。")
             }
         }
     }
@@ -66,14 +67,14 @@ final class ContextSuggestionService {
         if #available(macOS 26.0, *) {
             switch SystemLanguageModel.default.availability {
             case .available: return .available
-            case .unavailable(.deviceNotEligible): return .unavailable("这台 Mac 不支持系统 Apple Intelligence 模型，普通搜索仍可使用。")
-            case .unavailable(.appleIntelligenceNotEnabled): return .unavailable("请在系统设置中启用 Apple Intelligence 后使用上下文建议。")
-            case .unavailable(.modelNotReady): return .unavailable("系统本机模型尚未就绪，请等待系统准备完成。")
-            case .unavailable: return .unavailable("系统本机模型当前不可用。")
+            case .unavailable(.deviceNotEligible): return .unavailable(L10n.text("这台 Mac 不支持系统 Apple Intelligence 模型，普通搜索仍可使用。"))
+            case .unavailable(.appleIntelligenceNotEnabled): return .unavailable(L10n.text("请在系统设置中启用 Apple Intelligence 后使用上下文建议。"))
+            case .unavailable(.modelNotReady): return .unavailable(L10n.text("系统本机模型尚未就绪，请等待系统准备完成。"))
+            case .unavailable: return .unavailable(L10n.text("系统本机模型当前不可用。"))
             }
         }
         #endif
-        return .unavailable("上下文建议需要 macOS 26 或更新版本和可用的 Apple Intelligence。")
+        return .unavailable(L10n.text("上下文建议需要 macOS 26 或更新版本和可用的 Apple Intelligence。"))
     }
 
     static var hasScreenRecordingPermission: Bool { CGPreflightScreenCaptureAccess() }
@@ -126,7 +127,7 @@ final class ContextSuggestionService {
             let selections = try await generate(context, candidates)
             try Task.checkCancellation()
             return Result(suggestions: Self.validateSelections(selections, candidates: candidates),
-                          candidateCount: candidates.count, modelLabel: "Apple Intelligence · 本机模型")
+                          candidateCount: candidates.count, modelLabel: L10n.text("Apple Intelligence · 本机模型"))
         }
         task = work
         defer { if generation == currentGeneration { task = nil } }
@@ -199,7 +200,7 @@ final class ContextSuggestionService {
             }
         }
         #endif
-        throw SuggestionError.unavailable("系统本机模型不可用。")
+        throw SuggestionError.unavailable(L10n.text("系统本机模型不可用。"))
     }
 
     private static func captureWindowContext(target: PasteCoordinator.Target, excluded: Set<String>) async throws -> String {

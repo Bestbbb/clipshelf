@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 import Carbon
 
@@ -11,7 +12,7 @@ extension GlobalHotKey: GlobalHotKeyRegistration {}
 
 enum GlobalShortcutAction: CaseIterable, Hashable {
     case activation, stack
-    var title: String { self == .activation ? "打开剪贴板" : "顺序粘贴 Stack" }
+    var title: String { self == .activation ? L10n.text("打开剪贴板") : L10n.text("顺序粘贴 Stack") }
 }
 
 struct GlobalShortcutRegistrationError: LocalizedError {
@@ -19,7 +20,7 @@ struct GlobalShortcutRegistrationError: LocalizedError {
     let chord: ShortcutChord
     let status: OSStatus
     var errorDescription: String? {
-        "\(action.title)的快捷键 \(chord.displayName) 无法注册（\(status)），可能已被系统或其他应用占用。"
+        L10n.text("\(action.title)的快捷键 \(chord.displayName) 无法注册（\(status)），可能已被系统或其他应用占用。")
     }
 }
 

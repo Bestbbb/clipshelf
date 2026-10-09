@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import ClipShelfCore
 import Foundation
 
@@ -14,8 +15,8 @@ enum HistoryCleanupFlowError: LocalizedError, Equatable {
     case unavailable
     var errorDescription: String? {
         switch self {
-        case .invalidRequest: return "清理期限无效；永久保留不会执行清理。"
-        case .unavailable: return "清理流程暂不可用，现有内容与保留期限未改变。"
+        case .invalidRequest: return L10n.text("清理期限无效；永久保留不会执行清理。")
+        case .unavailable: return L10n.text("清理流程暂不可用，现有内容与保留期限未改变。")
         }
     }
 }

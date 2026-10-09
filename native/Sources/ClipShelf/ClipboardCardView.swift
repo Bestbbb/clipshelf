@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 import ClipShelfCore
 import ImageIO
@@ -42,7 +43,7 @@ struct ClipboardCardContent {
         pinboardID = record.pinboardID; revision = record.revision; kind = record.kind
         hasPDF = record.parts.flatMap(\.representations).contains { Self.isPDFType($0.typeIdentifier) }
         hasImageFileParts = Self.hasImageFileParts(record.parts.map { $0.representations.map(\.typeIdentifier) })
-        title = hasPDF && record.renamedTitle == nil && (record.text.isEmpty || record.text == "复制的内容") ? "扫描文稿（PDF）" : record.title
+        title = hasPDF && record.renamedTitle == nil && (record.text.isEmpty || record.text == "复制的内容") ? L10n.text("扫描文稿（PDF）") : record.title
         hasRichText = record.rtf != nil || record.html != nil
     }
 
@@ -52,7 +53,7 @@ struct ClipboardCardContent {
         pinboardID = metadata.pinboardID; revision = metadata.revision; kind = metadata.kind
         hasPDF = metadata.representationTypes.joined().contains { Self.isPDFType($0) }
         hasImageFileParts = Self.hasImageFileParts(metadata.representationTypes)
-        title = hasPDF && metadata.renamedTitle == nil && (metadata.text.isEmpty || metadata.text == "复制的内容") ? "扫描文稿（PDF）" : metadata.title
+        title = hasPDF && metadata.renamedTitle == nil && (metadata.text.isEmpty || metadata.text == "复制的内容") ? L10n.text("扫描文稿（PDF）") : metadata.title
         hasRichText = metadata.representationTypes.joined().contains { ["public.rtf", "public.html", "com.apple.flat-rtfd"].contains($0) }
     }
 
@@ -120,7 +121,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         accent.layer?.cornerRadius = 2
         accent.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
 
-        sourceLabel.stringValue = record.sourceApp ?? "剪贴板"
+        sourceLabel.stringValue = record.sourceApp ?? L10n.text("剪贴板")
         sourceLabel.font = .systemFont(ofSize: 11, weight: .semibold)
         sourceLabel.textColor = .secondaryLabelColor
         sourceLabel.lineBreakMode = .byTruncatingTail
@@ -140,10 +141,11 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         }
 
         let formatter = RelativeDateTimeFormatter()
+        formatter.locale = L10n.locale
         formatter.unitsStyle = .abbreviated
         let kind = Self.contentKind(record)
         let elapsed = Date().timeIntervalSince(record.copiedAt)
-        let relativeTime = abs(elapsed) < 10 ? "刚刚" : formatter.localizedString(for: record.copiedAt, relativeTo: Date())
+        let relativeTime = abs(elapsed) < 10 ? L10n.text("刚刚") : formatter.localizedString(for: record.copiedAt, relativeTo: Date())
         detailLabel.stringValue = "\(kind) · \(relativeTime)"
         detailLabel.font = .systemFont(ofSize: 10, weight: .medium)
         detailLabel.textColor = .tertiaryLabelColor
@@ -154,10 +156,10 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         previewImage.wantsLayer = true
         previewImage.layer?.cornerRadius = 8
         previewImage.layer?.masksToBounds = true
-        previewImage.setAccessibilityLabel("\(kind)预览")
+        previewImage.setAccessibilityLabel(L10n.text("\(kind)预览"))
         switch record.kind {
         case .image:
-            previewImage.image = NSImage(systemSymbolName: "photo", accessibilityDescription: "图片预览正在读取")
+            previewImage.image = NSImage(systemSymbolName: "photo", accessibilityDescription: L10n.text("图片预览正在读取"))
             bodyLabel.isHidden = true
         case .color:
             previewImage.layer?.backgroundColor = Self.hexColor(record.text)?.cgColor
@@ -194,20 +196,20 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
             detailLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -15)
         ])
         setAccessibilityLabel("\(sourceLabel.stringValue)，\(kind)，\(record.text.prefix(140))")
-        setAccessibilityHelp("单击选择，双击粘贴；回车粘贴，Shift 回车以纯文本粘贴。")
+        setAccessibilityHelp(L10n.text("单击选择，双击粘贴；回车粘贴，Shift 回车以纯文本粘贴。"))
         updateAppearance()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     private static func contentKind(_ record: ClipboardCardContent) -> String {
-        if record.hasPDF { return "PDF 文稿" }
+        if record.hasPDF { return L10n.text("PDF 文稿") }
         switch record.kind {
-        case .text: return record.hasRichText ? "富文本" : "文本"
-        case .link: return "链接"
-        case .image: return "图片"
-        case .file: return "文件"
-        case .color: return "颜色"
+        case .text: return record.hasRichText ? L10n.text("富文本") : L10n.text("文本")
+        case .link: return L10n.text("链接")
+        case .image: return L10n.text("图片")
+        case .file: return L10n.text("文件")
+        case .color: return L10n.text("颜色")
         }
     }
 
@@ -227,7 +229,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
 
     func applyThumbnail(_ image: NSImage?) {
         if let image { previewImage.image = image }
-        else { previewImage.image = NSImage(systemSymbolName: "photo.badge.exclamationmark", accessibilityDescription: "无法显示图片预览") }
+        else { previewImage.image = NSImage(systemSymbolName: "photo.badge.exclamationmark", accessibilityDescription: L10n.text("无法显示图片预览")) }
     }
 
     static func hexColor(_ value: String) -> NSColor? {
@@ -393,7 +395,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
             onDragError?(error)
             return
         }
-        let icon = previewImage.image ?? NSImage(systemSymbolName: record.kind == .file ? "doc" : "doc.on.clipboard", accessibilityDescription: "剪贴板内容")
+        let icon = previewImage.image ?? NSImage(systemSymbolName: record.kind == .file ? "doc" : "doc.on.clipboard", accessibilityDescription: L10n.text("剪贴板内容"))
         let items = preparedWriters.map { writer in
             let dragging = NSDraggingItem(pasteboardWriter: writer)
             dragging.setDraggingFrame(NSRect(x: 12, y: 40, width: 120, height: 120), contents: icon)
@@ -460,6 +462,6 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
             layer?.borderColor = (isSelected ? NSColor.controlAccentColor.withAlphaComponent(0.75) : NSColor.separatorColor.withAlphaComponent(isHovered ? 0.8 : 0.45)).cgColor
             layer?.borderWidth = isSelected ? 2 : 1
         }
-        setAccessibilityValue(isSelected ? "已选中" : "")
+        setAccessibilityValue(isSelected ? L10n.text("已选中") : "")
     }
 }

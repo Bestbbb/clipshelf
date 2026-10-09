@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import Foundation
 
 enum AppUpdateEvent {
@@ -49,7 +50,7 @@ final class AppUpdateCoordinator {
     init(configuration: Result<UpdateConfiguration, Error>, factory: @escaping DriverFactory) {
         self.factory = factory
         switch configuration {
-        case .success(let value): self.configuration = value; status = "尚未检查更新。"
+        case .success(let value): self.configuration = value; status = L10n.text("尚未检查更新。")
         case .failure(let error): self.configuration = nil; status = error.localizedDescription
         }
     }
@@ -59,13 +60,13 @@ final class AppUpdateCoordinator {
     var canCheck: Bool { isAvailable && driver?.canCheckForUpdates == true && pendingRestart == nil && isRestartBlocked?() != true }
     var canRetryPendingRestart: Bool { isAvailable && pendingRestart != nil && isRestartBlocked?() != true }
     var hasPendingRestart: Bool { pendingRestart != nil }
-    var menuActionTitle: String { hasPendingRestart ? "继续安装更新…" : "检查更新…" }
+    var menuActionTitle: String { hasPendingRestart ? L10n.text("继续安装更新…") : L10n.text("检查更新…") }
     var canPerformMenuAction: Bool { hasPendingRestart ? canRetryPendingRestart : canCheck }
     var automaticallyChecksForUpdates: Bool { isAvailable && driver?.automaticallyChecksForUpdates == true }
     var automaticallyDownloadsUpdates: Bool { isAvailable && driver?.automaticallyDownloadsUpdates == true }
     var canChangeAutomaticDownloads: Bool { isAvailable && driver?.allowsAutomaticUpdates == true }
     var lastUpdateCheckDate: Date? { isAvailable ? driver?.lastUpdateCheckDate : nil }
-    var versionDescription: String { configuration.map { "\($0.version)（构建 \($0.build)）" } ?? "当前版本未启用更新" }
+    var versionDescription: String { configuration.map { L10n.text("\($0.version)（构建 \($0.build)）") } ?? L10n.text("当前版本未启用更新") }
 
     /// Call only after Root installs its lifetime guard. Invalid and isolated
     /// builds never invoke the driver factory, even when the user opens settings.
@@ -89,7 +90,7 @@ final class AppUpdateCoordinator {
                 if self.pendingRestart == nil {
                     self.pendingRestart = continuation; self.pendingVersion = version
                 }
-                self.status = "更新 \(version) 已准备好；请完成当前操作后重试安装重启。"
+                self.status = L10n.text("更新 \(version) 已准备好；请完成当前操作后重试安装重启。")
                 self.refreshAvailability()
                 return true
             }
@@ -98,14 +99,14 @@ final class AppUpdateCoordinator {
         } catch {
             driver?.onChange = nil; driver?.onEvent = nil
             driver?.mayCheck = { false }; driver?.postponeRestart = { _, _ in true }
-            status = "更新器未能启动：\(error.localizedDescription)"
+            status = L10n.text("更新器未能启动：\(error.localizedDescription)")
         }
         refreshAvailability()
     }
 
     func checkForUpdates() {
         guard canCheck else { refreshAvailability(); return }
-        if driver?.sessionInProgress != true { status = "正在检查更新…" }
+        if driver?.sessionInProgress != true { status = L10n.text("正在检查更新…") }
         driver?.checkForUpdates()
         refreshAvailability()
     }
@@ -123,7 +124,7 @@ final class AppUpdateCoordinator {
         guard canRetryPendingRestart, let continuation = pendingRestart else { refreshAvailability(); return }
         let version = pendingVersion ?? ""
         pendingRestart = nil; pendingVersion = nil
-        status = "正在请求安装更新 \(version)；退出仍需完成草稿与存储检查。"
+        status = L10n.text("正在请求安装更新 \(version)；退出仍需完成草稿与存储检查。")
         // Consume before invoking: Sparkle/Root may synchronously reenter us.
         refreshAvailability()
         continuation()
@@ -135,31 +136,31 @@ final class AppUpdateCoordinator {
         stopped = true; pendingRestart = nil; pendingVersion = nil
         driver?.onChange = nil; driver?.onEvent = nil
         driver?.mayCheck = { false }; driver?.postponeRestart = { _, _ in true }
-        if configuration != nil { status = "应用正在退出，更新操作已停止。" }
+        if configuration != nil { status = L10n.text("应用正在退出，更新操作已停止。") }
         refreshAvailability()
     }
 
     private func receive(_ event: AppUpdateEvent) {
         guard !stopped, driver != nil else { return }
         switch event {
-        case .checking: status = "正在检查更新…"
-        case .found(let version): status = "发现可用更新 \(version)。"
-        case .downloading(let version): status = "正在下载更新 \(version)…"
-        case .downloaded(let version): status = "更新 \(version) 已下载，正在验证并准备。"
-        case .extracting(let version): status = "正在解包更新 \(version)…"
-        case .waitingForQuit(let version): status = "更新 \(version) 已准备好，将在正常退出后安装。"
-        case .installing(let version): status = "正在准备安装更新 \(version)；退出仍需完成草稿与存储检查。"
-        case .noCompatibleUpdate: status = "未发现此 Mac 可用的更新。"
+        case .checking: status = L10n.text("正在检查更新…")
+        case .found(let version): status = L10n.text("发现可用更新 \(version)。")
+        case .downloading(let version): status = L10n.text("正在下载更新 \(version)…")
+        case .downloaded(let version): status = L10n.text("更新 \(version) 已下载，正在验证并准备。")
+        case .extracting(let version): status = L10n.text("正在解包更新 \(version)…")
+        case .waitingForQuit(let version): status = L10n.text("更新 \(version) 已准备好，将在正常退出后安装。")
+        case .installing(let version): status = L10n.text("正在准备安装更新 \(version)；退出仍需完成草稿与存储检查。")
+        case .noCompatibleUpdate: status = L10n.text("未发现此 Mac 可用的更新。")
         case .cancelled:
             pendingRestart = nil; pendingVersion = nil
-            status = "更新操作已取消。"
+            status = L10n.text("更新操作已取消。")
         case .failed(let message):
             pendingRestart = nil; pendingVersion = nil
-            status = "更新未完成：\(message)"
+            status = L10n.text("更新未完成：\(message)")
         case .cycleFinished:
             // A successful cycle can mean the offer was dismissed/skipped or
             // an update is staged. It is never evidence that we are up to date.
-            if status == "正在检查更新…" { status = "本次更新检查已结束。" }
+            if status == L10n.text("正在检查更新…") { status = L10n.text("本次更新检查已结束。") }
         }
         refreshAvailability()
     }

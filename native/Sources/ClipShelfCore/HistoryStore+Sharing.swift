@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import CSQLite
 import Foundation
 
@@ -51,7 +52,7 @@ extension HistoryStore {
                 let contents = try readRecords(statement)
                 try registerSharedBoardWithoutLock(descriptor, access: .owner)
                 board.id = descriptor.boardID
-                board.name = String(board.name.prefix(180)) + " (共享)"
+                board.name = String(board.name.prefix(180)) + L10n.text(" (共享)")
                 try setSyncNamespace(kind: .pinboard, id: board.id, accountID: descriptor.namespace)
                 try savePinboard(board, replace: false)
                 for var record in contents {
@@ -251,7 +252,7 @@ extension HistoryStore {
     }
 
     @discardableResult
-    public func copyBoardToLocal(boardID: UUID, nameSuffix: String = " (本地副本)") throws -> Pinboard {
+    public func copyBoardToLocal(boardID: UUID, nameSuffix: String = L10n.text(" (本地副本)")) throws -> Pinboard {
         try synchronized {
             try transaction {
                 guard var board = try pinboardsWithoutLock().first(where: { $0.id == boardID }) else { throw HistoryStoreError.pinboardNotFound }

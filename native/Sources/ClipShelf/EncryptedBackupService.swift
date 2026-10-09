@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import ClipShelfCore
 import CommonCrypto
 import CryptoKit
@@ -9,9 +10,9 @@ enum EncryptedBackupError: LocalizedError {
     case passwordTooShort, invalidBackup, cannotEncrypt
     var errorDescription: String? {
         switch self {
-        case .passwordTooShort: return "备份密码需至少 8 个字符且最多 1024 字节。"
-        case .invalidBackup: return "密码不正确，或备份已损坏、超出大小限制或使用了不支持的版本。"
-        case .cannotEncrypt: return "无法创建加密备份，请稍后重试。"
+        case .passwordTooShort: return L10n.text("备份密码需至少 8 个字符且最多 1024 字节。")
+        case .invalidBackup: return L10n.text("密码不正确，或备份已损坏、超出大小限制或使用了不支持的版本。")
+        case .cannotEncrypt: return L10n.text("无法创建加密备份，请稍后重试。")
         }
     }
 }

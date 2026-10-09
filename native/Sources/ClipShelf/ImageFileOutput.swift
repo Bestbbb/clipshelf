@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 import ClipShelfCore
 import Darwin
@@ -8,10 +9,10 @@ enum ImageFileOutputError: Error, LocalizedError {
     case noImage, invalidImage, imageTooLarge, invalidDestination
     var errorDescription: String? {
         switch self {
-        case .noImage: return "所选内容中没有可转为文件的图片。"
-        case .invalidImage: return "有图片无法解码，未输出任何内容。"
-        case .imageTooLarge: return "所选图片超过本次转换的大小限制，未输出任何内容。"
-        case .invalidDestination: return "图片文件的保存位置不可用。"
+        case .noImage: return L10n.text("所选内容中没有可转为文件的图片。")
+        case .invalidImage: return L10n.text("有图片无法解码，未输出任何内容。")
+        case .imageTooLarge: return L10n.text("所选图片超过本次转换的大小限制，未输出任何内容。")
+        case .invalidDestination: return L10n.text("图片文件的保存位置不可用。")
         }
     }
 }

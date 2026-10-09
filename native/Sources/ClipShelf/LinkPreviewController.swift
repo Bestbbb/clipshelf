@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 import WebKit
 
@@ -14,11 +15,11 @@ final class LinkPreviewController: NSWindowController, NSWindowDelegate, WKNavig
     private let initialURL: URL
     private let address = NSTextField(string: "")
     private let progress = NSProgressIndicator()
-    private let status = NSTextField(labelWithString: "仅在此预览中访问网页 · 临时浏览会话")
-    private let back = NSButton(title: "后退", target: nil, action: nil)
-    private let forward = NSButton(title: "前进", target: nil, action: nil)
-    private let reload = NSButton(title: "重新加载", target: nil, action: nil)
-    private let external = NSButton(title: "在浏览器中打开", target: nil, action: nil)
+    private let status = NSTextField(labelWithString: L10n.text("仅在此预览中访问网页 · 临时浏览会话"))
+    private let back = NSButton(title: L10n.text("后退"), target: nil, action: nil)
+    private let forward = NSButton(title: L10n.text("前进"), target: nil, action: nil)
+    private let reload = NSButton(title: L10n.text("重新加载"), target: nil, action: nil)
+    private let external = NSButton(title: L10n.text("在浏览器中打开"), target: nil, action: nil)
     private let browserHost = NSView()
     private var webView: WKWebView?
     private var observations: [NSKeyValueObservation] = []
@@ -29,7 +30,7 @@ final class LinkPreviewController: NSWindowController, NSWindowDelegate, WKNavig
         initialURL = url
         let panel = LinkPreviewPanel(contentRect: NSRect(x: 0, y: 0, width: 880, height: 650),
                                      styleMask: [.titled, .closable, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.title = "链接预览"
+        panel.title = L10n.text("链接预览")
         panel.level = .floating
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
@@ -56,7 +57,7 @@ final class LinkPreviewController: NSWindowController, NSWindowDelegate, WKNavig
         parent?.addChildWindow(window, ordered: .above)
         installKeyMonitor()
         window.makeKeyAndOrderFront(nil)
-        guard Self.allows(initialURL) else { status.stringValue = "仅支持不含登录凭据的 HTTP 或 HTTPS 链接。"; return }
+        guard Self.allows(initialURL) else { status.stringValue = L10n.text("仅支持不含登录凭据的 HTTP 或 HTTPS 链接。"); return }
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
@@ -111,15 +112,15 @@ final class LinkPreviewController: NSWindowController, NSWindowDelegate, WKNavig
         reload.target = self; reload.action = #selector(reloadPage)
         external.target = self; external.action = #selector(openExternally)
         back.isEnabled = false; forward.isEnabled = false
-        let close = NSButton(title: "返回列表", target: self, action: #selector(closePreview))
+        let close = NSButton(title: L10n.text("返回列表"), target: self, action: #selector(closePreview))
         close.keyEquivalent = "\u{1b}"
         let toolbar = NSStackView(views: [back, forward, reload, external, close]); toolbar.spacing = 8
         address.isEditable = false; address.isSelectable = true
         address.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        address.setAccessibilityLabel("当前网页真实地址")
+        address.setAccessibilityLabel(L10n.text("当前网页真实地址"))
         address.lineBreakMode = .byTruncatingMiddle
         progress.style = .bar; progress.isIndeterminate = false; progress.minValue = 0; progress.maxValue = 1
-        progress.setAccessibilityLabel("网页加载进度")
+        progress.setAccessibilityLabel(L10n.text("网页加载进度"))
         status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor
         status.lineBreakMode = .byTruncatingTail
         for view in [toolbar, address, progress, browserHost, status] { view.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(view) }
@@ -154,7 +155,7 @@ final class LinkPreviewController: NSWindowController, NSWindowDelegate, WKNavig
         progress.isHidden = !webView.isLoading
         back.isEnabled = webView.canGoBack; forward.isEnabled = webView.canGoForward
         external.isEnabled = Self.allows(webView.url ?? initialURL)
-        reload.title = webView.isLoading ? "停止加载" : "重新加载"
+        reload.title = webView.isLoading ? L10n.text("停止加载") : L10n.text("重新加载")
     }
 
     @objc private func closePreview() { dismiss() }
@@ -172,14 +173,14 @@ final class LinkPreviewController: NSWindowController, NSWindowDelegate, WKNavig
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard presented, Self.allows(navigationAction.request.url), !navigationAction.shouldPerformDownload else {
-            if presented { status.stringValue = "此预览不打开文件、自定义协议或下载。" }
+            if presented { status.stringValue = L10n.text("此预览不打开文件、自定义协议或下载。") }
             decisionHandler(.cancel); return
         }
         if navigationAction.targetFrame == nil {
             // A user-clicked target=_blank link stays in this window; scripted popups are discarded.
             decisionHandler(.cancel)
             if navigationAction.navigationType == .linkActivated { webView.load(navigationAction.request) }
-            else { status.stringValue = "网页弹出窗口已阻止。" }
+            else { status.stringValue = L10n.text("网页弹出窗口已阻止。") }
             return
         }
         decisionHandler(.allow)
@@ -190,25 +191,25 @@ final class LinkPreviewController: NSWindowController, NSWindowDelegate, WKNavig
         let disposition = (navigationResponse.response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition")?.lowercased() ?? ""
         guard presented, Self.allows(navigationResponse.response.url), navigationResponse.canShowMIMEType,
               !disposition.trimmingCharacters(in: .whitespaces).hasPrefix("attachment") else {
-            if presented { status.stringValue = "此内容需要下载或不支持内置显示，请自行选择外部浏览器打开。" }
+            if presented { status.stringValue = L10n.text("此内容需要下载或不支持内置显示，请自行选择外部浏览器打开。") }
             decisionHandler(.cancel); return
         }
         decisionHandler(.allow)
     }
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        status.stringValue = "正在连接网页 · 临时浏览会话"; updateNavigation()
+        status.stringValue = L10n.text("正在连接网页 · 临时浏览会话"); updateNavigation()
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        status.stringValue = "临时浏览会话 · 关闭后释放此预览"; updateNavigation()
+        status.stringValue = L10n.text("临时浏览会话 · 关闭后释放此预览"); updateNavigation()
     }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { show(error) }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { show(error) }
     private func show(_ error: Error) {
         guard presented, (error as NSError).code != NSURLErrorCancelled else { return }
-        status.stringValue = "网页未能加载：\(error.localizedDescription)"; updateNavigation()
+        status.stringValue = L10n.text("网页未能加载：\(error.localizedDescription)"); updateNavigation()
     }
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        status.stringValue = "网页进程已停止，可重新加载。"; updateNavigation()
+        status.stringValue = L10n.text("网页进程已停止，可重新加载。"); updateNavigation()
     }
     func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,
                  completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {

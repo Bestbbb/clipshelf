@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 import ClipShelfCore
 import UniformTypeIdentifiers
@@ -13,13 +14,13 @@ enum ClipboardEditPlanError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .multipleObjects: return "此条目包含多个对象，暂不支持原位文本编辑；原内容已保留。"
-        case .unsupportedRepresentation(let type): return "此条目包含暂不支持编辑的格式（\(type)）；原内容已保留。"
-        case .attachments: return "此条目包含附件或非文本对象，不能作为纯文本保存；原内容已保留。"
-        case .invalidRichText: return "原富文本无法完整读取，不能覆盖保存；可继续查看原条目。"
-        case .invalidLink: return "请输入完整的 http、https、mailto 或 ftp 链接，链接内部不能含空白。"
-        case .invalidColor: return "请输入六位 RGB 十六进制颜色，例如 #12ABEF；不支持透明度或缩写。"
-        case .richTextEncodingFailed: return "无法保存富文本格式，草稿已保留，请重试。"
+        case .multipleObjects: return L10n.text("此条目包含多个对象，暂不支持原位文本编辑；原内容已保留。")
+        case .unsupportedRepresentation(let type): return L10n.text("此条目包含暂不支持编辑的格式（\(type)）；原内容已保留。")
+        case .attachments: return L10n.text("此条目包含附件或非文本对象，不能作为纯文本保存；原内容已保留。")
+        case .invalidRichText: return L10n.text("原富文本无法完整读取，不能覆盖保存；可继续查看原条目。")
+        case .invalidLink: return L10n.text("请输入完整的 http、https、mailto 或 ftp 链接，链接内部不能含空白。")
+        case .invalidColor: return L10n.text("请输入六位 RGB 十六进制颜色，例如 #12ABEF；不支持透明度或缩写。")
+        case .richTextEncodingFailed: return L10n.text("无法保存富文本格式，草稿已保留，请重试。")
         }
     }
 }

@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 import ClipShelfCore
 import Quartz
@@ -174,9 +175,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func updateShortcutPresentation() {
         let quick = shortcutConfiguration.quickPaste.symbol, plain = shortcutConfiguration.plainText.symbol
-        shortcutHints.stringValue = "↵ 粘贴   \(plain)↵ 纯文本   \(quick)1–9 快速粘贴   esc 收起"
-        shortcutHints.toolTip = "切换分组：\(shortcutConfiguration.previousPinboard.displayName) / \(shortcutConfiguration.nextPinboard.displayName)"
-        emptyDescription.stringValue = "在其他 App 中复制文本，再按 \(shortcutConfiguration.activation.displayName) 打开 ClipShelf。"
+        shortcutHints.stringValue = L10n.text("↵ 粘贴   \(plain)↵ 纯文本   \(quick)1–9 快速粘贴   esc 收起")
+        shortcutHints.toolTip = L10n.text("切换分组：\(shortcutConfiguration.previousPinboard.displayName) / \(shortcutConfiguration.nextPinboard.displayName)")
+        emptyDescription.stringValue = L10n.text("在其他 App 中复制文本，再按 \(shortcutConfiguration.activation.displayName) 打开 ClipShelf。")
         cardViews.forEach(updateShortcutLabel)
     }
 
@@ -202,16 +203,16 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private let searchField = NSSearchField()
     private let statusLabel = NSTextField(labelWithString: "")
     private let countLabel = NSTextField(labelWithString: "")
-    private let emptyTitle = NSTextField(labelWithString: "复制一点内容，从这里开始")
-    private let emptyDescription = NSTextField(labelWithString: "在其他 App 中复制文本，再按 ⌘⇧V 打开 ClipShelf。")
+    private let emptyTitle = NSTextField(labelWithString: L10n.text("复制一点内容，从这里开始"))
+    private let emptyDescription = NSTextField(labelWithString: L10n.text("在其他 App 中复制文本，再按 ⌘⇧V 打开 ClipShelf。"))
     private let emptyStack = NSStackView()
-    private let pauseButton = NSButton(title: "暂停记录", target: nil, action: nil)
-    private let compactButton = NSButton(title: "紧凑", target: nil, action: nil)
+    private let pauseButton = NSButton(title: L10n.text("暂停记录"), target: nil, action: nil)
+    private let compactButton = NSButton(title: L10n.text("紧凑"), target: nil, action: nil)
     private var compactMode = false
     private let boardPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let multiBoardButton = NSButton(title: "多板筛选…", target: nil, action: nil)
-    private let clearFiltersButton = NSButton(title: "清除条件", target: nil, action: nil)
-    private let allFiltersButton = NSButton(title: "全部筛选…", target: nil, action: nil)
+    private let multiBoardButton = NSButton(title: L10n.text("多板筛选…"), target: nil, action: nil)
+    private let clearFiltersButton = NSButton(title: L10n.text("清除条件"), target: nil, action: nil)
+    private let allFiltersButton = NSButton(title: L10n.text("全部筛选…"), target: nil, action: nil)
     private let orderPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let orderingActions = NSPopUpButton(frame: .zero, pullsDown: true)
     private var filterPopover: NSPopover?
@@ -230,8 +231,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private let sourcePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let devicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let datePopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let loadMoreButton = NSButton(title: "加载更多", target: nil, action: nil)
-    private let previousPageButton = NSButton(title: "上一页", target: nil, action: nil)
+    private let loadMoreButton = NSButton(title: L10n.text("加载更多"), target: nil, action: nil)
+    private let previousPageButton = NSButton(title: L10n.text("上一页"), target: nil, action: nil)
     private var pinboards: [Pinboard] = []
     private var sources: [String: String] = [:]
     private var devices: [UUID: String] = [:]
@@ -319,7 +320,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.animationBehavior = .utilityWindow
-        panel.title = "ClipShelf 剪贴板历史"
+        panel.title = L10n.text("ClipShelf 剪贴板历史")
         panel.minSize = NSSize(width: 720, height: 338)
         super.init(window: panel)
         panel.delegate = self
@@ -386,7 +387,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         scopeGeneration = UUID()
         selectionRequestID = nil
         validationRequestID = nil
-        statusLabel.stringValue = status ?? "本机保存 · 随时取用"
+        statusLabel.stringValue = status ?? L10n.text("本机保存 · 随时取用")
         reloadResults(resetScroll: true)
         let visible = (screen ?? NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         let width = max(520, min(1180, visible.width - 40))
@@ -445,15 +446,15 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                 if let index = filteredRecords.firstIndex(where: { $0.id == id }) { revealItem(at: index) }
                 window?.makeFirstResponder(resultsView)
             } else if hasMoreResults {
-                statusLabel.stringValue = "该条目尚未加载，请点“加载更多”以定位。"
+                statusLabel.stringValue = L10n.text("该条目尚未加载，请点“加载更多”以定位。")
             } else { pendingRevealID = nil }
         }
     }
 
     func setCapturePaused(_ paused: Bool, recordingAllowed: Bool = true) {
         pauseButton.isEnabled = recordingAllowed
-        pauseButton.title = recordingAllowed ? (paused ? "继续记录" : "暂停记录") : "验收模式"
-        pauseButton.setAccessibilityLabel(recordingAllowed ? (paused ? "继续记录剪贴板" : "暂停记录剪贴板") : "验收模式不记录剪贴板")
+        pauseButton.title = recordingAllowed ? (paused ? L10n.text("继续记录") : L10n.text("暂停记录")) : L10n.text("验收模式")
+        pauseButton.setAccessibilityLabel(recordingAllowed ? (paused ? L10n.text("继续记录剪贴板") : L10n.text("暂停记录剪贴板")) : L10n.text("验收模式不记录剪贴板"))
     }
 
     func edit(_ record: ClipboardRecord) { showDetail(record, editing: true) }
@@ -461,7 +462,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     func setCompactMode(_ compact: Bool) {
         compactMode = compact
         compactButton.state = compact ? .on : .off
-        compactButton.toolTip = compact ? "切换为大卡片" : "切换为紧凑卡片"
+        compactButton.toolTip = compact ? L10n.text("切换为大卡片") : L10n.text("切换为紧凑卡片")
         guard let window else { return }
         var frame = window.frame
         frame.size.height = compact ? 338 : 430
@@ -473,7 +474,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         self.pinboards = pinboards
         allFiltersController?.updateOptions(filterOptions)
         boardPopup.removeAllItems()
-        boardPopup.addItem(withTitle: "全部内容")
+        boardPopup.addItem(withTitle: L10n.text("全部内容"))
         for board in self.pinboards {
             boardPopup.addItem(withTitle: board.name)
             boardPopup.lastItem?.representedObject = board.id
@@ -492,13 +493,13 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         self.sources.merge(sources) { _, newer in newer }
         allFiltersController?.updateOptions(filterOptions)
         sourcePopup.removeAllItems()
-        sourcePopup.addItem(withTitle: "所有来源 App")
+        sourcePopup.addItem(withTitle: L10n.text("所有来源 App"))
         for (id, name) in self.sources.sorted(by: { $0.value.localizedStandardCompare($1.value) == .orderedAscending }) {
             sourcePopup.addItem(withTitle: name)
             sourcePopup.lastItem?.representedObject = id
         }
         if let selectedSourceID, self.sources[selectedSourceID] == nil {
-            sourcePopup.addItem(withTitle: "不可用来源 · \(selectedSourceID)")
+            sourcePopup.addItem(withTitle: L10n.text("不可用来源 · \(selectedSourceID)"))
             sourcePopup.lastItem?.representedObject = selectedSourceID
         }
         if let selectedSourceID, let item = sourcePopup.itemArray.first(where: { $0.representedObject as? String == selectedSourceID }) { sourcePopup.select(item) }
@@ -526,15 +527,15 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             devicePopup.lastItem?.representedObject = key
             devicePopup.lastItem?.isEnabled = enabled
         }
-        add("所有来源设备", key: "all")
-        add("此 Mac", key: localDeviceID?.uuidString ?? "local-unavailable", enabled: localDeviceID != nil)
+        add(L10n.text("所有来源设备"), key: "all")
+        add(L10n.text("此 Mac"), key: localDeviceID?.uuidString ?? "local-unavailable", enabled: localDeviceID != nil)
         var candidates = devices
         // Keep an explicit condition after its last record disappears; never broaden silently.
         if case .device(let id) = selectedDeviceFilter, id != localDeviceID, candidates[id] == nil { candidates[id] = "Mac" }
         for (id, name) in candidates.sorted(by: { $0.key.uuidString < $1.key.uuidString }) where id != localDeviceID {
             add("\(name.prefix(20)) · \(id.uuidString.prefix(8))", key: id.uuidString)
         }
-        add("未知（含来源矛盾）", key: "unknown")
+        add(L10n.text("未知（含来源矛盾）"), key: "unknown")
         if let item = devicePopup.itemArray.first(where: { $0.representedObject as? String == selectedDeviceKey }) { devicePopup.select(item) }
     }
 
@@ -620,7 +621,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
         let logo = NSTextField(labelWithString: "ClipShelf")
         logo.font = .systemFont(ofSize: 20, weight: .bold)
-        let subtitle = NSTextField(labelWithString: "你的剪贴板，触手可及")
+        let subtitle = NSTextField(labelWithString: L10n.text("你的剪贴板，触手可及"))
         subtitle.font = .systemFont(ofSize: 10, weight: .medium)
         subtitle.textColor = .secondaryLabelColor
         let branding = NSStackView(views: [logo, subtitle])
@@ -629,69 +630,69 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         branding.spacing = 3
         branding.setContentHuggingPriority(.required, for: .horizontal)
 
-        searchField.placeholderString = "搜索内容或来源 App"
+        searchField.placeholderString = L10n.text("搜索内容或来源 App")
         searchField.font = .systemFont(ofSize: 13)
         searchField.controlSize = .large
         searchField.sendsSearchStringImmediately = true
         searchField.delegate = self
-        searchField.setAccessibilityLabel("搜索剪贴板历史")
-        searchField.setAccessibilityHelp("输入文字过滤历史，按回车进入结果，再按回车粘贴。搜索中按 Command-F 打开全部筛选。")
+        searchField.setAccessibilityLabel(L10n.text("搜索剪贴板历史"))
+        searchField.setAccessibilityHelp(L10n.text("输入文字过滤历史，按回车进入结果，再按回车粘贴。搜索中按 Command-F 打开全部筛选。"))
         pauseButton.target = self
         pauseButton.action = #selector(togglePause)
         pauseButton.bezelStyle = .rounded
         pauseButton.controlSize = .small
-        let permissions = NSButton(image: NSImage(systemSymbolName: "hand.raised", accessibilityDescription: "粘贴权限") ?? NSImage(), target: self, action: #selector(openPermissions))
+        let permissions = NSButton(image: NSImage(systemSymbolName: "hand.raised", accessibilityDescription: L10n.text("粘贴权限")) ?? NSImage(), target: self, action: #selector(openPermissions))
         permissions.bezelStyle = .inline
-        permissions.toolTip = "设置直接粘贴所需的辅助功能权限"
-        let close = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "收起 ClipShelf") ?? NSImage(), target: self, action: #selector(closePanel))
+        permissions.toolTip = L10n.text("设置直接粘贴所需的辅助功能权限")
+        let close = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: L10n.text("收起 ClipShelf")) ?? NSImage(), target: self, action: #selector(closePanel))
         close.bezelStyle = .inline
-        compactButton.image = NSImage(systemSymbolName: "rectangle.compress.vertical", accessibilityDescription: "切换紧凑卡片")
+        compactButton.image = NSImage(systemSymbolName: "rectangle.compress.vertical", accessibilityDescription: L10n.text("切换紧凑卡片"))
         compactButton.imagePosition = .imageOnly
         compactButton.bezelStyle = .inline
         compactButton.setButtonType(.toggle)
         compactButton.target = self
         compactButton.action = #selector(toggleCompactMode)
-        compactButton.setAccessibilityLabel("切换紧凑卡片")
+        compactButton.setAccessibilityLabel(L10n.text("切换紧凑卡片"))
         let header = NSStackView(views: [branding, searchField, pauseButton, compactButton, permissions, close])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.spacing = 16
 
-        boardPopup.addItem(withTitle: "全部内容")
+        boardPopup.addItem(withTitle: L10n.text("全部内容"))
         boardPopup.target = self
         boardPopup.action = #selector(boardChanged)
-        boardPopup.setAccessibilityLabel("分组")
+        boardPopup.setAccessibilityLabel(L10n.text("分组"))
         let boardActions = NSPopUpButton(frame: .zero, pullsDown: true)
-        boardActions.addItem(withTitle: "分组操作")
-        for (title, action) in [("新建分组…", #selector(createBoard)), ("编辑当前分组…", #selector(renameBoard)), ("将当前分组前移", #selector(moveBoardEarlier)), ("将当前分组后移", #selector(moveBoardLater)), ("删除当前分组…", #selector(deleteBoard))] {
+        boardActions.addItem(withTitle: L10n.text("分组操作"))
+        for (title, action) in [(L10n.text("新建分组…"), #selector(createBoard)), (L10n.text("编辑当前分组…"), #selector(renameBoard)), (L10n.text("将当前分组前移"), #selector(moveBoardEarlier)), (L10n.text("将当前分组后移"), #selector(moveBoardLater)), (L10n.text("删除当前分组…"), #selector(deleteBoard))] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             boardActions.menu?.addItem(item)
         }
-        typePopup.addItem(withTitle: "所有类型")
+        typePopup.addItem(withTitle: L10n.text("所有类型"))
         for kind in ClipboardContentKind.allCases {
             typePopup.addItem(withTitle: Self.kindTitle(kind))
             typePopup.lastItem?.representedObject = kind.rawValue
         }
         typePopup.target = self
         typePopup.action = #selector(typeChanged)
-        typePopup.setAccessibilityLabel("按内容类型筛选")
-        sourcePopup.addItem(withTitle: "所有来源 App")
+        typePopup.setAccessibilityLabel(L10n.text("按内容类型筛选"))
+        sourcePopup.addItem(withTitle: L10n.text("所有来源 App"))
         sourcePopup.target = self
         sourcePopup.action = #selector(sourceChanged)
-        sourcePopup.setAccessibilityLabel("按来源应用筛选")
+        sourcePopup.setAccessibilityLabel(L10n.text("按来源应用筛选"))
         devicePopup.target = self
         devicePopup.action = #selector(deviceChanged)
-        devicePopup.setAccessibilityLabel("按最初采集设备筛选")
-        devicePopup.toolTip = "最初由哪台 ClipShelf 安装采集或创建；不会推断通用剪贴板的 iPhone 等物理来源。"
+        devicePopup.setAccessibilityLabel(L10n.text("按最初采集设备筛选"))
+        devicePopup.toolTip = L10n.text("最初由哪台 ClipShelf 安装采集或创建；不会推断通用剪贴板的 iPhone 等物理来源。")
         devicePopup.menu?.autoenablesItems = false
         rebuildDeviceOptions()
         devicePopup.widthAnchor.constraint(lessThanOrEqualToConstant: 220).isActive = true
         devicePopup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        datePopup.addItems(withTitles: ["任意时间", "今天", "最近 7 天", "最近 30 天", "自定义时间范围…"])
+        datePopup.addItems(withTitles: [L10n.text("任意时间"), L10n.text("今天"), L10n.text("最近 7 天"), L10n.text("最近 30 天"), L10n.text("自定义时间范围…")])
         datePopup.target = self
         datePopup.action = #selector(dateChanged)
-        datePopup.setAccessibilityLabel("按复制时间筛选")
+        datePopup.setAccessibilityLabel(L10n.text("按复制时间筛选"))
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         loadMoreButton.bezelStyle = .inline
@@ -704,26 +705,26 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         multiBoardButton.target = self
         multiBoardButton.action = #selector(showBoardFilters)
         multiBoardButton.bezelStyle = .rounded
-        multiBoardButton.setAccessibilityLabel("勾选多个分组筛选")
+        multiBoardButton.setAccessibilityLabel(L10n.text("勾选多个分组筛选"))
         clearFiltersButton.target = self
         clearFiltersButton.action = #selector(clearFilters)
         clearFiltersButton.bezelStyle = .inline
         allFiltersButton.target = self
         allFiltersButton.action = #selector(showAllFilters)
         allFiltersButton.bezelStyle = .rounded
-        allFiltersButton.setAccessibilityLabel("全部筛选")
-        orderPopup.addItems(withTitles: ["最近复制", "分组内手动顺序"])
+        allFiltersButton.setAccessibilityLabel(L10n.text("全部筛选"))
+        orderPopup.addItems(withTitles: [L10n.text("最近复制"), L10n.text("分组内手动顺序")])
         orderPopup.target = self
         orderPopup.action = #selector(orderChanged)
-        orderPopup.setAccessibilityLabel("条目顺序")
-        orderingActions.addItem(withTitle: "调整条目顺序")
-        for (title, action, key) in [("选中条目前移", #selector(moveItemsEarlier), "\u{F702}"), ("选中条目后移", #selector(moveItemsLater), "\u{F703}")] {
+        orderPopup.setAccessibilityLabel(L10n.text("条目顺序"))
+        orderingActions.addItem(withTitle: L10n.text("调整条目顺序"))
+        for (title, action, key) in [(L10n.text("选中条目前移"), #selector(moveItemsEarlier), "\u{F702}"), (L10n.text("选中条目后移"), #selector(moveItemsLater), "\u{F703}")] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
             item.keyEquivalentModifierMask = [.command, .option]
             item.target = self
             orderingActions.menu?.addItem(item)
         }
-        orderingActions.toolTip = "拖动卡片在分组内排序；⌥ 拖动原始内容到其他 App；⌥⌘← / ⌥⌘→ 移动选中条目"
+        orderingActions.toolTip = L10n.text("拖动卡片在分组内排序；⌥ 拖动原始内容到其他 App；⌥⌘← / ⌥⌘→ 移动选中条目")
         let boardRow = NSStackView(views: [boardPopup, multiBoardButton, boardActions, devicePopup, spacer, clearFiltersButton])
         let filterRow = NSStackView(views: [typePopup, sourcePopup, datePopup, orderPopup, orderingActions, allFiltersButton, NSView(), previousPageButton, loadMoreButton])
         for row in [boardRow, filterRow] { row.orientation = .horizontal; row.alignment = .centerY; row.spacing = 10 }
@@ -767,7 +768,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         resultsView.autoresizingMask = [.width]
         scrollView.documentView = resultsView
         resultsView.setAccessibilityRole(.group)
-        resultsView.setAccessibilityLabel("剪贴板搜索结果")
+        resultsView.setAccessibilityLabel(L10n.text("剪贴板搜索结果"))
 
         emptyTitle.font = .systemFont(ofSize: 18, weight: .semibold)
         emptyTitle.alignment = .center
@@ -785,7 +786,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         statusLabel.lineBreakMode = .byTruncatingTail
         countLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
         countLabel.textColor = .secondaryLabelColor
-        countLabel.setAccessibilityLabel("结果数量与选中项")
+        countLabel.setAccessibilityLabel(L10n.text("结果数量与选中项"))
         let hints = shortcutHints
         updateShortcutPresentation()
         hints.font = .systemFont(ofSize: 10)
@@ -867,11 +868,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         resultsView.reloadData()
         emptyStack.isHidden = !filteredRecords.isEmpty
         if query.isEmpty && !hasFilters {
-            emptyTitle.stringValue = "复制一点内容，从这里开始"
-            emptyDescription.stringValue = "在其他 App 中复制文本，再按 \(shortcutConfiguration.activation.displayName) 打开 ClipShelf。"
+            emptyTitle.stringValue = L10n.text("复制一点内容，从这里开始")
+            emptyDescription.stringValue = L10n.text("在其他 App 中复制文本，再按 \(shortcutConfiguration.activation.displayName) 打开 ClipShelf。")
         } else {
-            emptyTitle.stringValue = "没有找到相关内容"
-            emptyDescription.stringValue = "试试更短的关键词，或点击“清除条件”重新搜索全部内容。"
+            emptyTitle.stringValue = L10n.text("没有找到相关内容")
+            emptyDescription.stringValue = L10n.text("试试更短的关键词，或点击“清除条件”重新搜索全部内容。")
         }
         updateSelectionCount()
         updateFilterControls()
@@ -920,11 +921,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             self.resolve(record, forOutput: true) { self.onPaste?($0, self.outputPlainText([$0], requested: plain)) }
         }
         if manualOrder {
-            card.toolTip = "拖动以调整分组内顺序；按住 ⌥ 拖出内容，图片会作为 PNG 文件。"
-            card.setAccessibilityHelp("单击选择，双击粘贴；拖动调整分组内顺序，⌥ 拖出内容，图片转为 PNG 文件；⌥⌘左右箭头调整顺序。")
+            card.toolTip = L10n.text("拖动以调整分组内顺序；按住 ⌥ 拖出内容，图片会作为 PNG 文件。")
+            card.setAccessibilityHelp(L10n.text("单击选择，双击粘贴；拖动调整分组内顺序，⌥ 拖出内容，图片转为 PNG 文件；⌥⌘左右箭头调整顺序。"))
         } else if record.hasImageFileParts {
-            card.toolTip = "拖动保留图片格式；按住 ⌥ 拖出 PNG 文件。"
-            card.setAccessibilityHelp("单击选择，双击粘贴；拖动保留图片格式，按住 Option 拖出 PNG 文件。")
+            card.toolTip = L10n.text("拖动保留图片格式；按住 ⌥ 拖出 PNG 文件。")
+            card.setAccessibilityHelp(L10n.text("单击选择，双击粘贴；拖动保留图片格式，按住 Option 拖出 PNG 文件。"))
         }
         card.onPrepareDrag = { [weak self, weak card] event in
             guard let self, self.detailWindow == nil, let card, let gestureID = card.activeGestureID else { return }
@@ -967,10 +968,10 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                 }
             }
         }
-        card.onDragError = { [weak self] error in self?.statusLabel.stringValue = "无法拖出内容：\(error.localizedDescription)" }
+        card.onDragError = { [weak self] error in self?.statusLabel.stringValue = L10n.text("无法拖出内容：\(error.localizedDescription)") }
         if record.kind == .image { requestThumbnail(record, for: card) }
         let menu = NSMenu()
-        for (title, action) in [("粘贴", #selector(pasteFromMenu(_:))), ("以纯文本粘贴", #selector(pastePlainFromMenu(_:))), ("复制", #selector(copyFromMenu(_:))), (record.kind == .file ? "文件与位置…" : "预览此项", #selector(previewFromMenu(_:))), (record.kind == .file ? "查看文件后打开…" : "打开此项", #selector(openFromMenu(_:))), (record.kind == .file ? "管理文件位置…" : "编辑此项", #selector(editFromMenu(_:))), ("重命名此项", #selector(renameFromMenu(_:))), ("删除", #selector(deleteFromMenu(_:)))] {
+        for (title, action) in [(L10n.text("粘贴"), #selector(pasteFromMenu(_:))), (L10n.text("以纯文本粘贴"), #selector(pastePlainFromMenu(_:))), (L10n.text("复制"), #selector(copyFromMenu(_:))), (record.kind == .file ? L10n.text("文件与位置…") : L10n.text("预览此项"), #selector(previewFromMenu(_:))), (record.kind == .file ? L10n.text("查看文件后打开…") : L10n.text("打开此项"), #selector(openFromMenu(_:))), (record.kind == .file ? L10n.text("管理文件位置…") : L10n.text("编辑此项"), #selector(editFromMenu(_:))), (L10n.text("重命名此项"), #selector(renameFromMenu(_:))), (L10n.text("删除"), #selector(deleteFromMenu(_:)))] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             item.representedObject = record.id
@@ -982,37 +983,37 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         }
         if canReorderItems {
             menu.addItem(.separator())
-            for (title, action) in [("选中条目前移（⌥⌘←）", #selector(reorderEarlierFromMenu(_:))), ("选中条目后移（⌥⌘→）", #selector(reorderLaterFromMenu(_:)))] {
+            for (title, action) in [(L10n.text("选中条目前移（⌥⌘←）"), #selector(reorderEarlierFromMenu(_:))), (L10n.text("选中条目后移（⌥⌘→）"), #selector(reorderLaterFromMenu(_:)))] {
                 let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
                 item.target = self; item.representedObject = record.id; menu.addItem(item)
             }
         }
         card.menu = menu
         if record.kind == .file {
-            let relocate = NSMenuItem(title: "重新定位文件…", action: #selector(relocateFileFromMenu(_:)), keyEquivalent: "")
+            let relocate = NSMenuItem(title: L10n.text("重新定位文件…"), action: #selector(relocateFileFromMenu(_:)), keyEquivalent: "")
             relocate.target = self; relocate.representedObject = record.id
             menu.insertItem(relocate, at: 4)
         }
-        let shareItem = NSMenuItem(title: "分享此项…", action: #selector(shareFromMenu(_:)), keyEquivalent: "")
+        let shareItem = NSMenuItem(title: L10n.text("分享此项…"), action: #selector(shareFromMenu(_:)), keyEquivalent: "")
         shareItem.target = self
         shareItem.representedObject = record.id
         menu.insertItem(shareItem, at: max(0, menu.items.count - 1))
         // Validation also considers multi-selection, including off-page image records.
-        for (title, action) in [("作为图片文件粘贴", #selector(pasteImageFileFromMenu(_:))),
-                                ("复制为图片文件", #selector(copyImageFileFromMenu(_:)))] {
+        for (title, action) in [(L10n.text("作为图片文件粘贴"), #selector(pasteImageFileFromMenu(_:))),
+                                (L10n.text("复制为图片文件"), #selector(copyImageFileFromMenu(_:)))] {
             let fileItem = NSMenuItem(title: title, action: action, keyEquivalent: "")
             fileItem.target = self; fileItem.representedObject = record.id
             menu.insertItem(fileItem, at: 3)
         }
         let moveMenu = NSMenu()
-        for (name, id) in [("取消固定", Optional<UUID>.none)] + pinboards.map({ ($0.name, Optional($0.id)) }) {
+        for (name, id) in [(L10n.text("取消固定"), Optional<UUID>.none)] + pinboards.map({ ($0.name, Optional($0.id)) }) {
             let item = NSMenuItem(title: name, action: #selector(moveFromMenu(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = ["recordID": record.id.uuidString, "boardID": id?.uuidString ?? ""]
             item.state = record.pinboardID == id ? .on : .off
             moveMenu.addItem(item)
         }
-        let moveItem = NSMenuItem(title: "固定到分组", action: nil, keyEquivalent: "")
+        let moveItem = NSMenuItem(title: L10n.text("固定到分组"), action: nil, keyEquivalent: "")
         moveItem.submenu = moveMenu
         menu.insertItem(moveItem, at: max(0, menu.items.count - 1))
         return card
@@ -1052,7 +1053,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         cancelBoundaryNavigation()
         selectionRequestID = nil
         selection.invalidate()
-        selectionStatus = "选中内容已变化或无法读取，操作未执行；请重新选择。\(error.localizedDescription)"
+        selectionStatus = L10n.text("选中内容已变化或无法读取，操作未执行；请重新选择。\(error.localizedDescription)")
         statusLabel.stringValue = selectionStatus!
         updateSelectionAppearance()
     }
@@ -1259,9 +1260,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func updateSelectionCount() {
         orderingActions.isEnabled = canReorderItems && !selectedIDs.isEmpty
-        let count = onPageRequest != nil ? pageWindow.rangeDescription : "\(filteredRecords.count) 条"
+        let count = onPageRequest != nil ? pageWindow.rangeDescription : L10n.text("\(filteredRecords.count) 条")
         let selected = selection.references.count
-        countLabel.stringValue = selected > 1 || selection.isInvalid ? "\(count) · 已选 \(selected) 条\(selection.isInvalid ? "（已变化）" : "")" : count
+        countLabel.stringValue = selected > 1 || selection.isInvalid ? L10n.text("\(count) · 已选 \(selected) 条\(selection.isInvalid ? L10n.text("（已变化）") : "")") : count
     }
 
     private func loadPayload(_ id: UUID, completion: @escaping (ClipboardRecord?) -> Void) {
@@ -1290,15 +1291,15 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private func updatePageControls() {
         previousPageButton.isHidden = onPageRequest == nil || !hasPreviousResults
         previousPageButton.isEnabled = !queryPending
-        loadMoreButton.title = onPageRequest != nil ? "下一页" : "加载更多"
+        loadMoreButton.title = onPageRequest != nil ? L10n.text("下一页") : L10n.text("加载更多")
         loadMoreButton.isHidden = !usesRemoteQuery || !hasMoreResults
         loadMoreButton.isEnabled = !queryPending
-        loadMoreButton.toolTip = onPageRequest != nil ? "读取下一页；每页最多显示 300 条。方向键到边缘会自动读取相邻内容。" : nil
+        loadMoreButton.toolTip = onPageRequest != nil ? L10n.text("读取下一页；每页最多显示 300 条。方向键到边缘会自动读取相邻内容。") : nil
     }
 
     private func updateFilterControls() {
         let count = boardScope.filteredIDs.count
-        multiBoardButton.title = count == 0 ? "多板筛选…" : "已筛选 \(count) 个分组…"
+        multiBoardButton.title = count == 0 ? L10n.text("多板筛选…") : L10n.text("已筛选 \(count) 个分组…")
         multiBoardButton.toolTip = pinboards.filter { boardScope.filteredIDs.contains($0.id) }.map(\.name).joined(separator: "、")
         clearFiltersButton.isEnabled = hasFilters
         if boardScope.singleBoardID == nil { manualOrder = false }
@@ -1416,17 +1417,17 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         guard let id = item.representedObject as? UUID, !queryPending, boundaryNavigationID == nil, pageMatchesQuery else { return false }
         if selectedIDs.contains(id) { return !selection.isInvalid }
         guard filteredRecords.contains(where: { $0.id == id }) else {
-            statusLabel.stringValue = "菜单对应的条目已变化，请重新选择。"
+            statusLabel.stringValue = L10n.text("菜单对应的条目已变化，请重新选择。")
             return false
         }
         select(id, focusResults: true)
         return selectedIDs.contains(id)
     }
     private func stepSelectedItems(forward: Bool) {
-        guard canReorderItems else { statusLabel.stringValue = "请先选择一个分组，并切换为“分组内手动顺序”。"; return }
+        guard canReorderItems else { statusLabel.stringValue = L10n.text("请先选择一个分组，并切换为“分组内手动顺序”。"); return }
         if let onStepSelection, let boardID = boardScope.singleBoardID {
             let refs = selection.references
-            performSelectionMutation(refs, success: "已保存分组顺序") { completion in
+            performSelectionMutation(refs, success: L10n.text("已保存分组顺序")) { completion in
                 onStepSelection(refs, boardID, forward, completion)
             }
             return
@@ -1444,11 +1445,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         for id in plan.movingIDs { if let revision = dragRevisions[id] { versions[id] = revision } }
         guard versions.count == relevant.count,
               filteredRecords.filter({ relevant.contains($0.id) }).allSatisfy({ $0.pinboardID == boardID }) else {
-            statusLabel.stringValue = "内容已变化，请刷新后重试。"; issueQuery(resetLimit: false); return
+            statusLabel.stringValue = L10n.text("内容已变化，请刷新后重试。"); issueQuery(resetLimit: false); return
         }
         let requestID = UUID(), session = viewGeneration, query = queryGeneration, pageRequest = pageRequestID
         orderingRequestID = requestID
-        statusLabel.stringValue = "正在保存分组顺序…"
+        statusLabel.stringValue = L10n.text("正在保存分组顺序…")
         updateFilterControls()
         onReorderRecords(boardID, plan.movingIDs, plan.beforeID, versions) { [weak self] result in
             guard let self, self.orderingRequestID == requestID else { return }
@@ -1459,11 +1460,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                   self.pageRequestID == pageRequest else { return }
             switch result {
             case .success:
-                self.reorderStatus = "已保存分组顺序"
+                self.reorderStatus = L10n.text("已保存分组顺序")
                 self.statusLabel.stringValue = self.reorderStatus!
                 if self.boardScope.singleBoardID == boardID { self.pendingRevealID = self.selectedID }
             case .failure(let error):
-                self.reorderStatus = "顺序未更改，请刷新后重试。\(error.localizedDescription)"
+                self.reorderStatus = L10n.text("顺序未更改，请刷新后重试。\(error.localizedDescription)")
                 self.statusLabel.stringValue = self.reorderStatus!
             }
             // Storage is authoritative; no speculative reorder can overwrite a newer refresh.
@@ -1479,7 +1480,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         let generation = selection.generation, page = queryGeneration, pageRequest = pageRequestID
         orderingRequestID = requestID
         pendingActionID = nil
-        statusLabel.stringValue = "正在保存选中内容…"
+        statusLabel.stringValue = L10n.text("正在保存选中内容…")
         updateFilterControls()
         operation { [weak self] result in
             guard let self, self.orderingRequestID == requestID else { return }
@@ -1497,7 +1498,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                 self.updateSelectionAppearance()
                 self.refreshPage()
             } catch {
-                self.reorderStatus = "操作未完成，请重新选择后重试。\(error.localizedDescription)"
+                self.reorderStatus = L10n.text("操作未完成，请重新选择后重试。\(error.localizedDescription)")
                 self.statusLabel.stringValue = self.reorderStatus!
                 self.selection.invalidate()
                 self.selectionStatus = self.reorderStatus
@@ -1509,7 +1510,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private func moveReferences(_ refs: [ClipboardSelectionReference], to destination: UUID?) {
         if let onMoveSelection {
             let leavesScope = !boardScope.queryIDs.isEmpty && destination.map { !boardScope.queryIDs.contains($0) } != false
-            performSelectionMutation(refs, success: leavesScope ? "已移动；内容已离开当前筛选，已取消选择" : "已移动选中内容", clearAfterSuccess: leavesScope) { completion in
+            performSelectionMutation(refs, success: leavesScope ? L10n.text("已移动；内容已离开当前筛选，已取消选择") : L10n.text("已移动选中内容"), clearAfterSuccess: leavesScope) { completion in
                 onMoveSelection(refs, destination, completion)
             }
         } else {
@@ -1522,7 +1523,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         if let onReorderSelection {
             let anchor = before.flatMap { id in filteredRecords.first(where: { $0.id == id }).map(reference) }
             guard before == nil || anchor != nil else { return }
-            performSelectionMutation(refs, success: "已保存分组顺序") { completion in onReorderSelection(refs, board, anchor, completion) }
+            performSelectionMutation(refs, success: L10n.text("已保存分组顺序")) { completion in onReorderSelection(refs, board, anchor, completion) }
         } else {
             applyReorder(PanelReorderPlan(movingIDs: refs.map(\.id), beforeID: before),
                          dragRevisions: Dictionary(uniqueKeysWithValues: refs.map { ($0.id, $0.revision) }))
@@ -1531,9 +1532,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func reportReorderPlanningError(_ error: Error) {
         if error as? PanelReorderPlan.PlanningError == .unloadedBoundary {
-            statusLabel.stringValue = onPageRequest != nil ? "该方向还有未加载的内容，请先翻页，再调整顺序。" : "后面还有未加载的内容，请先点“加载更多”再移动到这里。"
+            statusLabel.stringValue = onPageRequest != nil ? L10n.text("该方向还有未加载的内容，请先翻页，再调整顺序。") : L10n.text("后面还有未加载的内容，请先点“加载更多”再移动到这里。")
         } else if error as? PanelReorderPlan.PlanningError != .noMovement {
-            statusLabel.stringValue = "当前选择已变化，请重新选择后排序。"
+            statusLabel.stringValue = L10n.text("当前选择已变化，请重新选择后排序。")
         }
     }
     private func insertionIndex(at point: NSPoint) -> Int {
@@ -1578,10 +1579,10 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         return boardScope.queryIDs.count <= 1
     }
     private func handleDrop(_ items: [NSPasteboardItem], source: Any?) {
-        guard boardScope.queryIDs.count <= 1 else { statusLabel.stringValue = "拖入前请选择一个目标分组，或清除多板筛选。"; return }
+        guard boardScope.queryIDs.count <= 1 else { statusLabel.stringValue = L10n.text("拖入前请选择一个目标分组，或清除多板筛选。"); return }
         if let card = ownedDraggedCard(source) {
             // Trust the in-process source object's IDs, never a pasteboard marker.
-            guard !manualOrder else { statusLabel.stringValue = "请将条目拖到卡片之间的插入标记处。"; return }
+            guard !manualOrder else { statusLabel.stringValue = L10n.text("请将条目拖到卡片之间的插入标记处。"); return }
             moveReferences(card.draggedReferences, to: boardScope.singleBoardID)
         } else if !(source is ClipboardCardView) {
             onDropItems?(items, boardScope.singleBoardID)
@@ -1620,7 +1621,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             } catch {
                 // A missing/unsafe file must still allow preview, repair, rename and
                 // deletion. Every future output revalidates the complete captured set.
-                if forOutput { statusLabel.stringValue = "无法输出内容：\(error.localizedDescription)" }
+                if forOutput { statusLabel.stringValue = L10n.text("无法输出内容：\(error.localizedDescription)") }
                 else { selectionFailed(error) }
             }
         }
@@ -1738,7 +1739,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         resolveReferences(selection.references) { [weak self] records in
             if let onDeleteRecords = self?.onDeleteRecords { onDeleteRecords(records) }
             else if records.count == 1, let record = records.first { self?.onDelete?(record) }
-            else { self?.statusLabel.stringValue = "当前入口不支持原子批量删除，操作未执行。" }
+            else { self?.statusLabel.stringValue = L10n.text("当前入口不支持原子批量删除，操作未执行。") }
         }
     }
 
@@ -1888,7 +1889,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private static func kindTitle(_ kind: ClipboardContentKind) -> String {
-        switch kind { case .text: return "文本"; case .link: return "链接"; case .image: return "图片"; case .file: return "文件"; case .color: return "颜色" }
+        switch kind { case .text: return L10n.text("文本"); case .link: return L10n.text("链接"); case .image: return L10n.text("图片"); case .file: return L10n.text("文件"); case .color: return L10n.text("颜色") }
     }
 
     private func issueQuery(resetLimit: Bool, preserveReveal: Bool = false, preserveStatus: Bool = false,
@@ -2027,7 +2028,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private func pageLoadFailed() {
         pendingRevealID = nil
         refreshAfterPageLoad = false
-        pageStatus = "内容已变化或暂时无法读取；保留当前页，请重试。"
+        pageStatus = L10n.text("内容已变化或暂时无法读取；保留当前页，请重试。")
         statusLabel.stringValue = pageStatus!
         updateFilterControls()
     }
@@ -2075,15 +2076,15 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         cancelBoundaryNavigation()
         guard let window else { return }
         let alert = NSAlert()
-        alert.messageText = "按复制时间筛选"
-        alert.addButton(withTitle: "应用")
-        alert.addButton(withTitle: "取消")
+        alert.messageText = L10n.text("按复制时间筛选")
+        alert.addButton(withTitle: L10n.text("应用"))
+        alert.addButton(withTitle: L10n.text("取消"))
         let start = NSDatePicker()
         let end = NSDatePicker()
         for picker in [start, end] { picker.datePickerStyle = .textFieldAndStepper; picker.datePickerElements = [.yearMonthDay, .hourMinute] }
         start.dateValue = copiedAfter ?? Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
         end.dateValue = copiedBefore ?? Date()
-        let fields = NSStackView(views: [NSTextField(labelWithString: "开始（含）"), start, NSTextField(labelWithString: "结束（含）"), end])
+        let fields = NSStackView(views: [NSTextField(labelWithString: L10n.text("开始（含）")), start, NSTextField(labelWithString: L10n.text("结束（含）")), end])
         fields.orientation = .vertical
         fields.alignment = .leading
         fields.spacing = 6
@@ -2092,7 +2093,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self else { return }
             guard response == .alertFirstButtonReturn else { self.datePopup.selectItem(at: self.lastDateIndex); return }
-            guard start.dateValue <= end.dateValue else { self.datePopup.selectItem(at: self.lastDateIndex); self.statusLabel.stringValue = "开始时间不能晚于结束时间"; return }
+            guard start.dateValue <= end.dateValue else { self.datePopup.selectItem(at: self.lastDateIndex); self.statusLabel.stringValue = L10n.text("开始时间不能晚于结束时间"); return }
             self.copiedAfter = start.dateValue
             self.copiedBefore = end.dateValue
             self.lastDateIndex = 4
@@ -2131,15 +2132,15 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         cancelBoundaryNavigation()
         guard let window else { return }
         let alert = NSAlert()
-        alert.messageText = board == nil ? "新建分组" : "编辑分组"
-        alert.informativeText = "固定的内容不受历史保留期限影响。"
-        alert.addButton(withTitle: "保存")
-        alert.addButton(withTitle: "取消")
+        alert.messageText = board == nil ? L10n.text("新建分组") : L10n.text("编辑分组")
+        alert.informativeText = L10n.text("固定的内容不受历史保留期限影响。")
+        alert.addButton(withTitle: L10n.text("保存"))
+        alert.addButton(withTitle: L10n.text("取消"))
         let name = NSTextField(string: board?.name ?? "")
-        name.placeholderString = "例如：常用回复、项目资料"
+        name.placeholderString = L10n.text("例如：常用回复、项目资料")
         let color = NSColorWell(frame: NSRect(x: 0, y: 0, width: 44, height: 26))
         color.color = ClipboardCardView.hexColor(board?.color ?? "#4F7CFF") ?? .controlAccentColor
-        color.setAccessibilityLabel("分组颜色")
+        color.setAccessibilityLabel(L10n.text("分组颜色"))
         let fields = NSStackView(views: [name, color])
         fields.orientation = .horizontal
         fields.spacing = 10
@@ -2148,7 +2149,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .alertFirstButtonReturn else { return }
             let value = name.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !value.isEmpty else { self.statusLabel.stringValue = "分组名称不能为空"; return }
+            guard !value.isEmpty else { self.statusLabel.stringValue = L10n.text("分组名称不能为空"); return }
             let hex = Self.hexString(color.color)
             if var board { board.name = value; board.color = hex; self.onUpdatePinboard?(board) }
             else { self.onCreatePinboard?(value, hex) }
@@ -2270,7 +2271,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private func showTextDetail(_ record: ClipboardRecord, editing: Bool, renameReference: ClipboardSelectionReference? = nil) {
         let renaming = renameReference != nil
         let detail = ShelfPanel(contentRect: NSRect(x: 0, y: 0, width: 620, height: 460), styleMask: [.titled, .closable, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
-        detail.title = renaming ? "重命名条目" : (editing ? "编辑剪贴板内容" : "预览剪贴板内容")
+        detail.title = renaming ? L10n.text("重命名条目") : (editing ? L10n.text("编辑剪贴板内容") : L10n.text("预览剪贴板内容"))
         detail.level = .floating; detail.hidesOnDeactivate = false
         detail.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         detail.isReleasedWhenClosed = false; detail.minSize = NSSize(width: 440, height: 320)
@@ -2281,7 +2282,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         detailPrepareReference = renameReference ?? .init(id: record.id, revision: record.revision)
         detailStructureError = editing && !renaming ? ClipboardEditPlan.editingError(original: record) : nil
         let root = NSView(); detail.contentView = root
-        let context = NSTextField(labelWithString: renaming ? "正在读取条目…" : "\(record.sourceApp ?? "剪贴板") · \(record.copiedAt.formatted(date: .abbreviated, time: .shortened))")
+        let context = NSTextField(labelWithString: renaming ? L10n.text("正在读取条目…") : "\(record.sourceApp ?? L10n.text("剪贴板")) · \(L10n.date(record.copiedAt))")
         detailContextLabel = context
         context.font = .systemFont(ofSize: 11); context.textColor = .secondaryLabelColor
         context.lineBreakMode = .byTruncatingTail
@@ -2296,7 +2297,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         editor.textContainer?.containerSize = NSSize(width: 580, height: CGFloat.greatestFiniteMagnitude)
         editor.minSize = .zero; editor.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         if !renaming { loadDetailContents(record, into: editor) }
-        editor.setAccessibilityLabel(renaming ? "条目名称" : (editing ? "编辑内容" : "内容预览"))
+        editor.setAccessibilityLabel(renaming ? L10n.text("条目名称") : (editing ? L10n.text("编辑内容") : L10n.text("内容预览")))
         editor.delegate = self; detailEditor = editor
         for name in [Notification.Name.NSUndoManagerDidUndoChange, Notification.Name.NSUndoManagerDidRedoChange] {
             detailUndoObservers.append(NotificationCenter.default.addObserver(forName: name, object: editor.draftUndoManager, queue: .main) { [weak self, weak editor] _ in
@@ -2309,21 +2310,21 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         initialDetailContents = NSAttributedString(attributedString: editor.attributedString())
         scroll.documentView = editor
         let htmlOnly = Self.detailRTF(record) == nil && (record.html != nil || record.parts.flatMap(\.representations).contains { $0.typeIdentifier == "public.html" })
-        let note = NSTextField(wrappingLabelWithString: renaming ? "名称用于查找和识别，不会修改粘贴的内容。留空可恢复自动名称。" : editing && htmlOnly ? "此条目仅有 HTML 格式；修改后将保存为文本及原生富文本。未修改保存会保留原格式。" : (editing ? "保存成功后更新当前条目。关闭未保存的草稿时可选择继续编辑。" : "内容只读；编辑不会立即粘贴到其他 App。"))
+        let note = NSTextField(wrappingLabelWithString: renaming ? L10n.text("名称用于查找和识别，不会修改粘贴的内容。留空可恢复自动名称。") : editing && htmlOnly ? L10n.text("此条目仅有 HTML 格式；修改后将保存为文本及原生富文本。未修改保存会保留原格式。") : (editing ? L10n.text("保存成功后更新当前条目。关闭未保存的草稿时可选择继续编辑。") : L10n.text("内容只读；编辑不会立即粘贴到其他 App。")))
         note.font = .systemFont(ofSize: 10); note.textColor = .secondaryLabelColor; note.maximumNumberOfLines = 3
         let error = NSTextField(wrappingLabelWithString: "")
         error.font = .systemFont(ofSize: 11); error.maximumNumberOfLines = 3
-        error.setAccessibilityLabel("编辑状态"); detailStatus = error
-        let cancel = NSButton(title: editing ? "放弃修改" : "关闭", target: self, action: editing ? #selector(discardDetail) : #selector(closeDetail))
+        error.setAccessibilityLabel(L10n.text("编辑状态")); detailStatus = error
+        let cancel = NSButton(title: editing ? L10n.text("放弃修改") : L10n.text("关闭"), target: self, action: editing ? #selector(discardDetail) : #selector(closeDetail))
         cancel.bezelStyle = .rounded
-        let primary = NSButton(title: editing ? "保存修改" : "编辑", target: self, action: editing ? #selector(saveDetail) : #selector(editDetail))
+        let primary = NSButton(title: editing ? L10n.text("保存修改") : L10n.text("编辑"), target: self, action: editing ? #selector(saveDetail) : #selector(editDetail))
         primary.bezelStyle = .rounded; detailPrimary = primary
         // Return is never a button equivalent: text may contain line breaks.
         let actions = NSStackView(views: [cancel, primary])
         if record.kind == .color && editing && !renaming {
             let picker = NSColorWell(frame: NSRect(x: 0, y: 0, width: 48, height: 25))
             picker.color = ClipboardEditPlan.color(from: record.text) ?? .controlAccentColor
-            picker.target = self; picker.action = #selector(colorChanged(_:)); picker.setAccessibilityLabel("选择颜色")
+            picker.target = self; picker.action = #selector(colorChanged(_:)); picker.setAccessibilityLabel(L10n.text("选择颜色"))
             detailColorWell = picker; actions.insertArrangedSubview(picker, at: 0)
         }
         actions.orientation = .horizontal; actions.spacing = 8
@@ -2356,17 +2357,17 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         let pdf = ShelfReadOnlyPDFView()
         pdf.autoScales = true; pdf.displayMode = .singlePageContinuous; pdf.displayDirection = .vertical
         pdf.displaysPageBreaks = true; pdf.backgroundColor = .underPageBackgroundColor
-        pdf.setAccessibilityLabel("只读 PDF 文稿预览")
+        pdf.setAccessibilityLabel(L10n.text("只读 PDF 文稿预览"))
         detailPDFView = pdf
-        let page = NSTextField(labelWithString: "正在读取 PDF…")
+        let page = NSTextField(labelWithString: L10n.text("正在读取 PDF…"))
         page.textColor = .secondaryLabelColor; page.font = .systemFont(ofSize: 11)
-        let previous = NSButton(title: "上一页", target: pdf, action: #selector(PDFView.goToPreviousPage(_:)))
-        let next = NSButton(title: "下一页", target: pdf, action: #selector(PDFView.goToNextPage(_:)))
-        let zoomOut = NSButton(title: "缩小", target: pdf, action: #selector(PDFView.zoomOut(_:)))
-        let zoomIn = NSButton(title: "放大", target: pdf, action: #selector(PDFView.zoomIn(_:)))
-        let close = NSButton(title: "返回列表", target: self, action: #selector(closeDetail)); close.keyEquivalent = "\u{1b}"
+        let previous = NSButton(title: L10n.text("上一页"), target: pdf, action: #selector(PDFView.goToPreviousPage(_:)))
+        let next = NSButton(title: L10n.text("下一页"), target: pdf, action: #selector(PDFView.goToNextPage(_:)))
+        let zoomOut = NSButton(title: L10n.text("缩小"), target: pdf, action: #selector(PDFView.zoomOut(_:)))
+        let zoomIn = NSButton(title: L10n.text("放大"), target: pdf, action: #selector(PDFView.zoomIn(_:)))
+        let close = NSButton(title: L10n.text("返回列表"), target: self, action: #selector(closeDetail)); close.keyEquivalent = "\u{1b}"
         let controls = NSStackView(views: [previous, next, zoomOut, zoomIn, close]); controls.spacing = 8
-        let note = NSTextField(labelWithString: "只读预览 · 保留原始 PDF · 不打开文稿内的外部链接")
+        let note = NSTextField(labelWithString: L10n.text("只读预览 · 保留原始 PDF · 不打开文稿内的外部链接"))
         note.font = .systemFont(ofSize: 10); note.textColor = .secondaryLabelColor
         let root = NSView(); detail.contentView = root
         for view in [controls, pdf, page, note] { view.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(view) }
@@ -2382,7 +2383,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         let updatePage: () -> Void = { [weak pdf, weak page, weak previous, weak next] in
             guard let pdf, let document = pdf.document else { return }
             let index = pdf.currentPage.map { document.index(for: $0) + 1 } ?? 1
-            page?.stringValue = "第 \(index) / \(document.pageCount) 页"
+            page?.stringValue = L10n.text("第 \(index) / \(document.pageCount) 页")
             previous?.isEnabled = pdf.canGoToPreviousPage; next?.isEnabled = pdf.canGoToNextPage
         }
         previous.isEnabled = false; next.isEnabled = false
@@ -2403,7 +2404,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             let prepared = ShelfPDFDocument(document: document)
             await MainActor.run { [weak self, weak detail, weak pdf, weak page] in
                 guard let self, let detail, self.detailWindow === detail, self.detailRecord?.id == record.id else { return }
-                guard let document = prepared.document, !document.isLocked, document.pageCount > 0 else { page?.stringValue = "PDF 已加密或无法读取；原始内容保留。"; return }
+                guard let document = prepared.document, !document.isLocked, document.pageCount > 0 else { page?.stringValue = L10n.text("PDF 已加密或无法读取；原始内容保留。"); return }
                 pdf?.document = document
                 updatePage()
             }
@@ -2586,7 +2587,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         guard detailIsEditing, let detail = detailWindow, let record = detailRecord,
               detailPrepareID == nil, detailSaveID == nil else { return }
         guard let onPrepareEdit else {
-            detailError = "当前模式无法开始编辑。原内容已保留。"; updateDetailEditingState(); return
+            detailError = L10n.text("当前模式无法开始编辑。原内容已保留。"); updateDetailEditingState(); return
         }
         let token = UUID(), session = detailSession
         let expected = detailPrepareReference ?? ClipboardSelectionReference(id: record.id, revision: record.revision)
@@ -2597,12 +2598,12 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             switch result {
             case .success(let snapshot):
                 guard snapshot.record.id == expected.id, snapshot.record.revision == expected.revision else {
-                    self.detailError = "条目已变化，请关闭后重新打开；没有覆盖原内容。"
+                    self.detailError = L10n.text("条目已变化，请关闭后重新打开；没有覆盖原内容。")
                     self.updateDetailEditingState(); return
                 }
                 self.detailSnapshot = snapshot; self.detailRecord = snapshot.record
                 self.detailStructureError = self.detailIsRenaming ? nil : ClipboardEditPlan.editingError(original: snapshot.record)
-                self.detailContextLabel?.stringValue = "\(snapshot.record.sourceApp ?? "剪贴板") · \(snapshot.record.copiedAt.formatted(date: .abbreviated, time: .shortened))"
+                self.detailContextLabel?.stringValue = "\(snapshot.record.sourceApp ?? L10n.text("剪贴板")) · \(L10n.date(snapshot.record.copiedAt))"
                 if let editor = self.detailEditor {
                     self.loadDetailContents(snapshot.record, into: editor)
                     self.initialDetailContents = NSAttributedString(attributedString: editor.attributedString())
@@ -2625,11 +2626,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         (editor as? ShelfEditTextView)?.locksEdits = !editable
         detailColorWell?.isEnabled = editable
         if let color = ClipboardEditPlan.color(from: editor.string), detailColorWell != nil { detailColorWell?.color = color }
-        detailPrimary?.title = detailSnapshot == nil && detailPrepareID == nil ? "重试读取" : (detailSaveID == nil ? "保存修改" : "正在保存…")
+        detailPrimary?.title = detailSnapshot == nil && detailPrepareID == nil ? L10n.text("重试读取") : (detailSaveID == nil ? L10n.text("保存修改") : L10n.text("正在保存…"))
         detailPrimary?.isEnabled = !busy && (detailSnapshot == nil ? onPrepareEdit != nil : (structural == nil && validation == nil && onEdit != nil))
         let message: String
-        if detailPrepareID != nil { message = "正在检查条目与编辑权限…" }
-        else if detailSaveID != nil { message = "正在保存，草稿暂时只读；放弃或关闭不会撤回已提交的保存。" }
+        if detailPrepareID != nil { message = L10n.text("正在检查条目与编辑权限…") }
+        else if detailSaveID != nil { message = L10n.text("正在保存，草稿暂时只读；放弃或关闭不会撤回已提交的保存。") }
         else { message = detailError ?? structural?.localizedDescription ?? validation?.localizedDescription ?? "" }
         detailStatus?.stringValue = message; detailStatus?.toolTip = message
         detailStatus?.textColor = busy ? .secondaryLabelColor : .labelColor
@@ -2665,9 +2666,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         if let confirmDiscardEdits { cancel = confirmDiscardEdits(detail, reply) }
         else {
             let alert = NSAlert()
-            alert.messageText = "保留当前修改继续编辑？"
-            alert.informativeText = detailSaveID == nil ? "放弃后会关闭此草稿，已保存的剪贴板内容不受影响。" : "保存请求已提交；关闭草稿不会撤回可能已经完成的保存。"
-            alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃修改")
+            alert.messageText = L10n.text("保留当前修改继续编辑？")
+            alert.informativeText = detailSaveID == nil ? L10n.text("放弃后会关闭此草稿，已保存的剪贴板内容不受影响。") : L10n.text("保存请求已提交；关闭草稿不会撤回可能已经完成的保存。")
+            alert.addButton(withTitle: L10n.text("继续编辑")); alert.addButton(withTitle: L10n.text("放弃修改"))
             alert.beginSheetModal(for: detail) { reply($0 == .alertSecondButtonReturn) }
             cancel = { [weak detail, weak alert] in
                 guard let detail, let alert, alert.window.sheetParent === detail else { return }
@@ -2736,7 +2737,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             switch result {
             case .success(let committed):
                 guard committed.id == snapshot.record.id, committed.revision > snapshot.record.revision else {
-                    self.detailError = "保存回执不匹配，请保留草稿并重试。"; self.updateDetailEditingState(); return
+                    self.detailError = L10n.text("保存回执不匹配，请保留草稿并重试。"); self.updateDetailEditingState(); return
                 }
                 let refs = self.selection.references.map { $0.id == committed.id && $0.revision == snapshot.record.revision ? committed : $0 }
                 try? self.selection.adoptCommitted(refs)

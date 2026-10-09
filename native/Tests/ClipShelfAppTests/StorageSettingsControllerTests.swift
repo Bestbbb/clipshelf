@@ -252,7 +252,8 @@ final class StorageSettingsControllerTests: XCTestCase {
         XCTAssertGreaterThan(removed.removedLogicalBytes, 0)
         XCTAssertTrue(messages[0].contains("已移除"))
         XCTAssertTrue(messages[0].contains("文件大小合计"))
-        XCTAssertTrue(messages[0].contains(ByteCountFormatter.string(fromByteCount: removed.removedLogicalBytes, countStyle: .file)))
+        XCTAssertTrue(messages[0].contains(removed.removedLogicalBytes.formatted(
+            .byteCount(style: .file).locale(Locale(identifier: "zh-Hans")))))
         XCTAssertFalse(messages[0].contains("释放")); XCTAssertFalse(messages[0].contains("可用空间"))
         XCTAssertEqual(controller.usage?.assetCount, 0)
         XCTAssertFalse(controller.window?.isVisible ?? true)

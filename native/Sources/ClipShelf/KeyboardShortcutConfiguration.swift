@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 import Carbon
 
@@ -106,9 +107,9 @@ struct ShortcutChord: Codable, Hashable, Sendable {
     func displayName(using translate: ShortcutKeyTranslator) -> String {
         let prefix = [ShortcutModifier.control, .option, .shift, .command]
             .filter { modifiers.contains($0.eventFlags) }.map(\.symbol).joined()
-        guard let fallback = Self.keyNames[keyCode] else { return prefix + "未知按键（\(keyCode)）" }
+        guard let fallback = Self.keyNames[keyCode] else { return prefix + L10n.text("未知按键（\(keyCode)）") }
         guard isPrintableKey else { return prefix + fallback }
-        guard let character = translate(keyCode, modifiers), !character.isEmpty else { return prefix + fallback + "（ANSI 键位）" }
+        guard let character = translate(keyCode, modifiers), !character.isEmpty else { return prefix + fallback + L10n.text("（ANSI 键位）") }
         return prefix + character.uppercased()
     }
 
@@ -139,15 +140,15 @@ struct ShortcutChord: Codable, Hashable, Sendable {
         18: "1", 19: "2", 20: "3", 21: "4", 22: "6", 23: "5", 24: "=", 25: "9", 26: "7",
         27: "−", 28: "8", 29: "0", 30: "]", 31: "O", 32: "U", 33: "[", 34: "I", 35: "P",
         36: "↩", 37: "L", 38: "J", 39: "'", 40: "K", 41: ";", 42: "\\", 43: ",", 44: "/",
-        45: "N", 46: "M", 47: ".", 48: "⇥", 49: "空格", 50: "`", 51: "⌫", 53: "⎋",
-        64: "F17", 65: "小键盘 .", 67: "小键盘 ×", 69: "小键盘 +", 71: "小键盘 Clear",
-        72: "音量 +", 73: "音量 −", 74: "静音", 75: "小键盘 ÷", 76: "⌤", 78: "小键盘 −",
-        79: "F18", 80: "F19", 81: "小键盘 =", 82: "小键盘 0", 83: "小键盘 1", 84: "小键盘 2",
-        85: "小键盘 3", 86: "小键盘 4", 87: "小键盘 5", 88: "小键盘 6", 89: "小键盘 7",
-        90: "F20", 91: "小键盘 8", 92: "小键盘 9", 93: "¥", 94: "_", 95: "小键盘 ,",
-        96: "F5", 97: "F6", 98: "F7", 99: "F3", 100: "F8", 101: "F9", 102: "英数",
+        45: "N", 46: "M", 47: ".", 48: "⇥", 49: L10n.text("空格"), 50: "`", 51: "⌫", 53: "⎋",
+        64: "F17", 65: L10n.text("小键盘 ."), 67: L10n.text("小键盘 ×"), 69: L10n.text("小键盘 +"), 71: L10n.text("小键盘 Clear"),
+        72: L10n.text("音量 +"), 73: L10n.text("音量 −"), 74: L10n.text("静音"), 75: L10n.text("小键盘 ÷"), 76: "⌤", 78: L10n.text("小键盘 −"),
+        79: "F18", 80: "F19", 81: L10n.text("小键盘 ="), 82: L10n.text("小键盘 0"), 83: L10n.text("小键盘 1"), 84: L10n.text("小键盘 2"),
+        85: L10n.text("小键盘 3"), 86: L10n.text("小键盘 4"), 87: L10n.text("小键盘 5"), 88: L10n.text("小键盘 6"), 89: L10n.text("小键盘 7"),
+        90: "F20", 91: L10n.text("小键盘 8"), 92: L10n.text("小键盘 9"), 93: "¥", 94: "_", 95: L10n.text("小键盘 ,"),
+        96: "F5", 97: "F6", 98: "F7", 99: "F3", 100: "F8", 101: "F9", 102: L10n.text("英数"),
         103: "F11", 104: "かな", 105: "F13", 106: "F16", 107: "F14", 109: "F10",
-        110: "菜单", 111: "F12", 113: "F15", 114: "Help", 115: "↖", 116: "⇞", 117: "⌦",
+        110: L10n.text("菜单"), 111: "F12", 113: "F15", 114: "Help", 115: "↖", 116: "⇞", 117: "⌦",
         118: "F4", 119: "↘", 120: "F2", 121: "⇟", 122: "F1", 123: "←", 124: "→", 125: "↓", 126: "↑"
     ]
     private static let functionKeyCodes: Set<UInt16> = [122, 120, 99, 118, 96, 97, 98, 100, 101, 109,
@@ -169,14 +170,14 @@ enum KeyboardShortcutError: Error, LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .unsupportedKeyCode(let code): return "不支持按键代码 \(code)，请重新录制快捷键。"
-        case .unsupportedModifiers: return "快捷键包含不支持的修饰键，请重新录制。"
-        case .unsupportedVersion(let version): return "无法读取快捷键设置版本 \(version)。"
-        case .duplicateShortcut(let first, let second): return "“\(first)”与“\(second)”使用了相同快捷键，请为它们选择不同组合。"
-        case .fixedCommandConflict(let action, let shortcut): return "“\(action)”的 \(shortcut) 与固定应用内命令冲突，请换一个组合。"
-        case .invalidGlobalShortcut(let action): return "“\(action)”是全局快捷键，请包含 Command、Control 或 Option，或使用 F1–F20。"
-        case .ambiguousModifiers: return "Quick Paste 和纯文本不能使用同一个修饰键，否则无法区分普通与纯文本输出。"
-        case .keyboardLayoutUnavailable: return "暂时无法读取当前键盘布局，无法确认此 Command 组合是否覆盖固定命令；请在键盘布局可用后重试。"
+        case .unsupportedKeyCode(let code): return L10n.text("不支持按键代码 \(code)，请重新录制快捷键。")
+        case .unsupportedModifiers: return L10n.text("快捷键包含不支持的修饰键，请重新录制。")
+        case .unsupportedVersion(let version): return L10n.text("无法读取快捷键设置版本 \(version)。")
+        case .duplicateShortcut(let first, let second): return L10n.text("“\(first)”与“\(second)”使用了相同快捷键，请为它们选择不同组合。")
+        case .fixedCommandConflict(let action, let shortcut): return L10n.text("“\(action)”的 \(shortcut) 与固定应用内命令冲突，请换一个组合。")
+        case .invalidGlobalShortcut(let action): return L10n.text("“\(action)”是全局快捷键，请包含 Command、Control 或 Option，或使用 F1–F20。")
+        case .ambiguousModifiers: return L10n.text("Quick Paste 和纯文本不能使用同一个修饰键，否则无法区分普通与纯文本输出。")
+        case .keyboardLayoutUnavailable: return L10n.text("暂时无法读取当前键盘布局，无法确认此 Command 组合是否覆盖固定命令；请在键盘布局可用后重试。")
         }
     }
 }
@@ -211,8 +212,8 @@ struct KeyboardShortcutConfiguration: Codable, Equatable, Sendable {
 
     func validate(using translate: ShortcutKeyTranslator) throws {
         guard quickPaste != plainText else { throw KeyboardShortcutError.ambiguousModifiers }
-        let actions = [("激活面板", activation), ("激活 Paste Stack", stack),
-                       ("上一个分组", previousPinboard), ("下一个分组", nextPinboard)]
+        let actions = [(L10n.text("激活面板"), activation), (L10n.text("激活 Paste Stack"), stack),
+                       (L10n.text("上一个分组"), previousPinboard), (L10n.text("下一个分组"), nextPinboard)]
         var seen: [ShortcutChord: String] = [:]
         for (index, (name, chord)) in actions.enumerated() {
             if let previous = seen[chord] { throw KeyboardShortcutError.duplicateShortcut(previous, name) }
@@ -227,7 +228,7 @@ struct KeyboardShortcutConfiguration: Codable, Equatable, Sendable {
 
     func validateGlobalShortcut(_ chord: ShortcutChord, using translate: ShortcutKeyTranslator) throws {
         guard quickPaste != plainText else { throw KeyboardShortcutError.ambiguousModifiers }
-        try validateChord(chord, name: "全局快捷键", isGlobal: true, using: translate)
+        try validateChord(chord, name: L10n.text("全局快捷键"), isGlobal: true, using: translate)
     }
 
     private func validateChord(_ chord: ShortcutChord, name: String, isGlobal: Bool, using translate: ShortcutKeyTranslator) throws {
@@ -305,15 +306,15 @@ struct KeyboardShortcutConfiguration: Codable, Equatable, Sendable {
     static func loadResult(from defaults: UserDefaults) -> (configuration: Self, warning: String?) {
         if let stored = defaults.object(forKey: storageKey) {
             guard let data = stored as? Data, data.count <= 16_384 else {
-                return (.defaults, "保存的快捷键设置无法读取，暂时使用默认值；原设置尚未覆盖。")
+                return (.defaults, L10n.text("保存的快捷键设置无法读取，暂时使用默认值；原设置尚未覆盖。"))
             }
             do { return (try JSONDecoder().decode(Self.self, from: data), nil) }
-            catch { return (.defaults, "保存的快捷键设置无法读取，暂时使用默认值；原设置尚未覆盖。\(error.localizedDescription)") }
+            catch { return (.defaults, L10n.text("保存的快捷键设置无法读取，暂时使用默认值；原设置尚未覆盖。\(error.localizedDescription)")) }
         }
         guard let legacy = defaults.object(forKey: "shortcutPreset") else { return (.defaults, nil) }
         guard let number = legacy as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
               [0.0, 1.0, 2.0].contains(number.doubleValue) else {
-            return (.defaults, "旧版快捷键预设无效，暂时使用默认值。")
+            return (.defaults, L10n.text("旧版快捷键预设无效，暂时使用默认值。"))
         }
         var configuration = Self.defaults
         let flags: [NSEvent.ModifierFlags] = [[.command, .shift], [.control, .option], [.command, .option]]

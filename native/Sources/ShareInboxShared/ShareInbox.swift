@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import CryptoKit
 import Darwin
 import Foundation
@@ -7,15 +8,15 @@ public enum ShareInboxError: Error, LocalizedError {
     case unconfigured, unauthorizedGroup, unavailableGroup, invalidData, tooLarge, confidential, cancelled, unavailableDestination, duplicateOperation
     public var errorDescription: String? {
         switch self {
-        case .unconfigured: return "分享扩展尚未配置 App Group。请使用配置了同组签名的 ClipShelf。"
-        case .unauthorizedGroup: return "当前签名没有所需 App Group 权限，未访问任何替代目录。"
-        case .unavailableGroup: return "无法访问共享收件箱，请检查主应用和扩展的签名与 App Group。"
-        case .invalidData: return "分享内容损坏或包含不支持的数据。"
-        case .tooLarge: return "一次最多分享 20 项、总计 64 MB；请减少内容后重试。"
-        case .confidential: return "分享内容带有机密或临时标记，未保存。"
-        case .cancelled: return "分享已取消，未保存。"
-        case .unavailableDestination: return "目标板或账号已改变，本次操作未完成。"
-        case .duplicateOperation: return "这个分享请求已存在，请勿重复提交。"
+        case .unconfigured: return L10n.text("分享扩展尚未配置 App Group。请使用配置了同组签名的 ClipShelf。")
+        case .unauthorizedGroup: return L10n.text("当前签名没有所需 App Group 权限，未访问任何替代目录。")
+        case .unavailableGroup: return L10n.text("无法访问共享收件箱，请检查主应用和扩展的签名与 App Group。")
+        case .invalidData: return L10n.text("分享内容损坏或包含不支持的数据。")
+        case .tooLarge: return L10n.text("一次最多分享 20 项、总计 64 MB；请减少内容后重试。")
+        case .confidential: return L10n.text("分享内容带有机密或临时标记，未保存。")
+        case .cancelled: return L10n.text("分享已取消，未保存。")
+        case .unavailableDestination: return L10n.text("目标板或账号已改变，本次操作未完成。")
+        case .duplicateOperation: return L10n.text("这个分享请求已存在，请勿重复提交。")
         }
     }
 }

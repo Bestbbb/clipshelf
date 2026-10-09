@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 import ClipShelfCore
 
@@ -10,10 +11,10 @@ final class SharingSettingsController: NSWindowController {
     private let sharingPresenter: CloudSharedBoardSharingPresenter
     private let preferences: UserDefaults
     private let readStates: @MainActor () async throws -> [SharedBoardState]
-    private let status = NSTextField(wrappingLabelWithString: "共享板默认关闭。私人历史不会随共享板公开。")
-    private let toggle = NSButton(title: "开启共享板…", target: nil, action: nil)
-    private let create = NSButton(title: "创建共享副本…", target: nil, action: nil)
-    private let join = NSButton(title: "接受邀请…", target: nil, action: nil)
+    private let status = NSTextField(wrappingLabelWithString: L10n.text("共享板默认关闭。私人历史不会随共享板公开。"))
+    private let toggle = NSButton(title: L10n.text("开启共享板…"), target: nil, action: nil)
+    private let create = NSButton(title: L10n.text("创建共享副本…"), target: nil, action: nil)
+    private let join = NSButton(title: L10n.text("接受邀请…"), target: nil, action: nil)
     private let rows = NSStackView()
     private let fileTransfers = OwnedFileTransferStatusView()
     private var fileItems: [OwnedFileTransferStatusItem] = []
@@ -38,11 +39,11 @@ final class SharingSettingsController: NSWindowController {
         sharingPresenter = CloudSharedBoardSharingPresenter(transport: transport)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 670),
                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "ClipShelf · 共享板"; window.isReleasedWhenClosed = false
+        window.title = L10n.text("ClipShelf · 共享板"); window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 680, height: 640)
         super.init(window: window)
         sharingPresenter.onChange = { [weak self] _ in self?.synchronize() }
-        sharingPresenter.onError = { [weak self] error in self?.status.stringValue = "成员管理未完成：\(error.localizedDescription)" }
+        sharingPresenter.onError = { [weak self] error in self?.status.stringValue = L10n.text("成员管理未完成：\(error.localizedDescription)") }
         sharingPresenter.onStopSharing = { [weak self] board in
             self?.pendingExternalStops.insert(board.boardID)
             self?.drainExternalStops()
@@ -52,7 +53,7 @@ final class SharingSettingsController: NSWindowController {
         join.target = self; join.action = #selector(joinShare)
         fileTransfers.onRetry = { [weak self] in self?.synchronize() }
         create.isEnabled = false; join.isEnabled = false; toggle.isEnabled = false
-        let description = NSTextField(wrappingLabelWithString: "共享会创建独立副本，原私有分组保留。持有邀请链接的 Apple Account 用户可按设定权限访问该共享副本；链接需由你自行发送。共享和私人历史同步是独立开关。")
+        let description = NSTextField(wrappingLabelWithString: L10n.text("共享会创建独立副本，原私有分组保留。持有邀请链接的 Apple Account 用户可按设定权限访问该共享副本；链接需由你自行发送。共享和私人历史同步是独立开关。"))
         description.textColor = .secondaryLabelColor
         let controls = NSStackView(views: [toggle, create, join]); controls.spacing = 12
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false
@@ -98,7 +99,7 @@ final class SharingSettingsController: NSWindowController {
 
     func offerInvitation(_ url: URL) {
         present()
-        guard enabled else { status.stringValue = "请先开启共享板，再通过“接受邀请”粘贴邀请链接。"; return }
+        guard enabled else { status.stringValue = L10n.text("请先开启共享板，再通过“接受邀请”粘贴邀请链接。"); return }
         confirmJoin(url)
     }
 
@@ -109,15 +110,15 @@ final class SharingSettingsController: NSWindowController {
                 try await self.coordinator.disable()
                 return {
                     self.enabled = false; self.preferences.set(false, forKey: "sharingEnabled")
-                    self.status.stringValue = "本机共享传输已关闭。已共享的云端内容继续存在；停止共享需单独操作。"
+                    self.status.stringValue = L10n.text("本机共享传输已关闭。已共享的云端内容继续存在；停止共享需单独操作。")
                 }
             }
             return
         }
         guard !busy else { return }
-        let alert = NSAlert(); alert.messageText = "开启这台 Mac 的共享板？"
-        alert.informativeText = "将连接系统设置中当前的 Apple Account。此时不会分享任何私有历史；创建共享副本和接受邀请分别需要你操作。"
-        alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "开启")
+        let alert = NSAlert(); alert.messageText = L10n.text("开启这台 Mac 的共享板？")
+        alert.informativeText = L10n.text("将连接系统设置中当前的 Apple Account。此时不会分享任何私有历史；创建共享副本和接受邀请分别需要你操作。")
+        alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("开启"))
         if alert.runModal() == .alertSecondButtonReturn { enable(expectedAccount: nil) }
     }
 
@@ -130,7 +131,7 @@ final class SharingSettingsController: NSWindowController {
                 self.timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
                     MainActor.assumeIsolated { self?.synchronize() }
                 }
-                self.status.stringValue = "共享已开启。选择分组创建共享副本，或接受邀请。"
+                self.status.stringValue = L10n.text("共享已开启。选择分组创建共享副本，或接受邀请。")
             }
         }
     }
@@ -139,44 +140,44 @@ final class SharingSettingsController: NSWindowController {
         guard enabled, !busy else { return }
         let sharedIDs = Set(states.map(\.id))
         let boards = ((try? store.pinboards()) ?? []).filter { !sharedIDs.contains($0.id) }
-        guard !boards.isEmpty else { status.stringValue = "请先在主面板创建一个私有分组并加入内容。"; return }
-        let alert = NSAlert(); alert.messageText = "创建独立共享副本"
-        alert.informativeText = "所选分组的当前内容会复制到新共享板并上传，原私有分组保留。后续编辑分别保存，不自动合并两个分组。"
+        guard !boards.isEmpty else { status.stringValue = L10n.text("请先在主面板创建一个私有分组并加入内容。"); return }
+        let alert = NSAlert(); alert.messageText = L10n.text("创建独立共享副本")
+        alert.informativeText = L10n.text("所选分组的当前内容会复制到新共享板并上传，原私有分组保留。后续编辑分别保存，不自动合并两个分组。")
         let board = NSPopUpButton(); board.addItems(withTitles: boards.map(\.name))
-        let edit = NSButton(checkboxWithTitle: "允许持有链接的参与者编辑（默认只读）", target: nil, action: nil)
+        let edit = NSButton(checkboxWithTitle: L10n.text("允许持有链接的参与者编辑（默认只读）"), target: nil, action: nil)
         let body = NSStackView(views: [board, edit]); body.orientation = .vertical; body.alignment = .leading; body.spacing = 12
         body.frame = NSRect(x: 0, y: 0, width: 440, height: 75); alert.accessoryView = body
-        alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "创建并上传")
+        alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("创建并上传"))
         guard alert.runModal() == .alertSecondButtonReturn, boards.indices.contains(board.indexOfSelectedItem) else { return }
         let id = boards[board.indexOfSelectedItem].id, allowEditing = edit.state == .on
         perform {
             _ = try await self.coordinator.createSharedCopy(boardID: id, allowEditing: allowEditing)
-            return { self.status.stringValue = "共享副本已创建。请从分组操作中复制邀请链接；不会自动发送邀请。" }
+            return { self.status.stringValue = L10n.text("共享副本已创建。请从分组操作中复制邀请链接；不会自动发送邀请。") }
         }
     }
 
     @objc private func joinShare() {
         guard enabled, !busy else { return }
-        let alert = NSAlert(); alert.messageText = "接受共享板邀请"
-        alert.informativeText = "粘贴 CloudKit 邀请链接。接受后，共享内容会下载到这台 Mac。"
+        let alert = NSAlert(); alert.messageText = L10n.text("接受共享板邀请")
+        alert.informativeText = L10n.text("粘贴 CloudKit 邀请链接。接受后，共享内容会下载到这台 Mac。")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 460, height: 28)); field.placeholderString = "https://www.icloud.com/share/…"
-        alert.accessoryView = field; alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "接受")
+        alert.accessoryView = field; alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("接受"))
         guard alert.runModal() == .alertSecondButtonReturn,
               let url = URL(string: field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
         accept(url)
     }
 
     private func confirmJoin(_ url: URL) {
-        let alert = NSAlert(); alert.messageText = "接受收到的共享板邀请？"
-        alert.informativeText = "将通过当前 Apple Account 接受此邀请并下载共享内容。"
-        alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "接受")
+        let alert = NSAlert(); alert.messageText = L10n.text("接受收到的共享板邀请？")
+        alert.informativeText = L10n.text("将通过当前 Apple Account 接受此邀请并下载共享内容。")
+        alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("接受"))
         if alert.runModal() == .alertSecondButtonReturn { accept(url) }
     }
 
     private func accept(_ url: URL) {
         perform {
             _ = try await self.coordinator.acceptShare(url: url)
-            return { self.status.stringValue = "已接受邀请；下载完整的内容可在分组中使用，未完成文件的状态见下方。" }
+            return { self.status.stringValue = L10n.text("已接受邀请；下载完整的内容可在分组中使用，未完成文件的状态见下方。") }
         }
     }
 
@@ -184,7 +185,7 @@ final class SharingSettingsController: NSWindowController {
         guard enabled, !busy else { return }
         perform {
             let errors = await self.coordinator.synchronizeAll()
-            return { self.status.stringValue = errors.isEmpty ? "共享板变更已处理；文件传输状态见下方。" : "\(errors.count) 个共享板尚未同步：\(errors.values.first ?? "请稍后重试。")" }
+            return { self.status.stringValue = errors.isEmpty ? L10n.text("共享板变更已处理；文件传输状态见下方。") : L10n.text("\(errors.count) 个共享板尚未同步：\(errors.values.first ?? L10n.text("请稍后重试。"))") }
         }
     }
 
@@ -196,13 +197,13 @@ final class SharingSettingsController: NSWindowController {
         transferReadGeneration &+= 1
         fileTransfers.update(fileItems, isRunning: true, enabled: enabled)
         create.isEnabled = false; join.isEnabled = false; toggle.isEnabled = enabled
-        status.stringValue = "正在处理共享操作…"
+        status.stringValue = L10n.text("正在处理共享操作…")
         task = Task { @MainActor [weak self] in
             guard let self else { return }
             let completion: Completion
             do { completion = try await action() }
             catch {
-                completion = { self.status.stringValue = "共享操作未完成：\(error.localizedDescription)" }
+                completion = { self.status.stringValue = L10n.text("共享操作未完成：\(error.localizedDescription)") }
             }
             guard current == self.generation, !Task.isCancelled else { return }
             let nextStates = (try? await self.readStates()) ?? []
@@ -211,7 +212,7 @@ final class SharingSettingsController: NSWindowController {
             completion()
             guard current == self.generation, !Task.isCancelled else { return }
             self.busy = false; self.toggle.isEnabled = true
-            self.toggle.title = self.enabled ? "关闭本机共享传输" : "开启共享板…"
+            self.toggle.title = self.enabled ? L10n.text("关闭本机共享传输") : L10n.text("开启共享板…")
             self.create.isEnabled = self.enabled; self.join.isEnabled = self.enabled
             self.renderRows()
             self.refreshFileTransfers()
@@ -250,29 +251,29 @@ final class SharingSettingsController: NSWindowController {
         pendingExternalStops.remove(id)
         perform {
             try await self.coordinator.sharingStoppedExternally(boardID: id)
-            return { self.status.stringValue = "系统已停止共享；可用缓存已保留为独立本地副本。" }
+            return { self.status.stringValue = L10n.text("系统已停止共享；可用缓存已保留为独立本地副本。") }
         }
     }
 
     private func renderRows() {
         rows.arrangedSubviews.forEach { rows.removeArrangedSubview($0); $0.removeFromSuperview() }
         let boards = (try? store.pinboards()) ?? []
-        if states.isEmpty { rows.addArrangedSubview(NSTextField(labelWithString: "尚无共享板")) }
+        if states.isEmpty { rows.addArrangedSubview(NSTextField(labelWithString: L10n.text("尚无共享板"))) }
         for (index, state) in states.enumerated() {
-            let role: String = switch state.access { case .owner: "所有者"; case .readWrite: "可编辑"; case .readOnly: "只读"; case .revoked: "已停止或被撤权" }
-            let name = boards.first { $0.id == state.id }?.name ?? "共享板 \(state.id.uuidString.prefix(8))"
+            let role: String = switch state.access { case .owner: L10n.text("所有者"); case .readWrite: L10n.text("可编辑"); case .readOnly: L10n.text("只读"); case .revoked: L10n.text("已停止或被撤权") }
+            let name = boards.first { $0.id == state.id }?.name ?? L10n.text("共享板 \(state.id.uuidString.prefix(8))")
             let label = NSTextField(wrappingLabelWithString: "\(name) · \(role)")
             let menu = NSPopUpButton(frame: .zero, pullsDown: true); menu.tag = index
-            menu.addItem(withTitle: "操作…")
-            for (title, tag) in [("复制邀请链接", 1), ("立即同步", 2), ("恢复未提交草稿到本地", 3)] {
+            menu.addItem(withTitle: L10n.text("操作…"))
+            for (title, tag) in [(L10n.text("复制邀请链接"), 1), (L10n.text("立即同步"), 2), (L10n.text("恢复未提交草稿到本地"), 3)] {
                 let item = NSMenuItem(title: title, action: nil, keyEquivalent: ""); item.tag = tag; menu.menu?.addItem(item)
             }
             if state.access == .owner {
-                for (title, tag) in [("管理成员与邀请…", 8), ("链接参与者设为只读", 4), ("允许链接参与者编辑", 5), ("停止共享…", 6)] {
+                for (title, tag) in [(L10n.text("管理成员与邀请…"), 8), (L10n.text("链接参与者设为只读"), 4), (L10n.text("允许链接参与者编辑"), 5), (L10n.text("停止共享…"), 6)] {
                     let item = NSMenuItem(title: title, action: nil, keyEquivalent: ""); item.tag = tag; menu.menu?.addItem(item)
                 }
             } else if state.access != .revoked {
-                let item = NSMenuItem(title: "退出共享板…", action: nil, keyEquivalent: ""); item.tag = 7; menu.menu?.addItem(item)
+                let item = NSMenuItem(title: L10n.text("退出共享板…"), action: nil, keyEquivalent: ""); item.tag = 7; menu.menu?.addItem(item)
             }
             menu.target = self; menu.action = #selector(boardAction(_:)); menu.autoenablesItems = false
             let row = NSStackView(views: [label, menu]); row.spacing = 12; rows.addArrangedSubview(row)
@@ -285,24 +286,24 @@ final class SharingSettingsController: NSWindowController {
         let state = states[sender.tag]
         var keepCopy = true
         if action == 5 || action == 6 || action == 7 {
-            let alert = NSAlert(); alert.messageText = action == 5 ? "允许持有链接的参与者编辑？" : (action == 6 ? "停止共享这个板？" : "退出这个共享板？")
-            alert.informativeText = action == 5 ? "持有链接的参与者可以修改和删除共享内容。" : "云端访问会改变。未提交修改会进入失败草稿，可单独恢复。"
-            let keep = NSButton(checkboxWithTitle: "在本机保留一份独立副本", target: nil, action: nil); keep.state = .on
+            let alert = NSAlert(); alert.messageText = action == 5 ? L10n.text("允许持有链接的参与者编辑？") : (action == 6 ? L10n.text("停止共享这个板？") : L10n.text("退出这个共享板？"))
+            alert.informativeText = action == 5 ? L10n.text("持有链接的参与者可以修改和删除共享内容。") : L10n.text("云端访问会改变。未提交修改会进入失败草稿，可单独恢复。")
+            let keep = NSButton(checkboxWithTitle: L10n.text("在本机保留一份独立副本"), target: nil, action: nil); keep.state = .on
             if action != 5 { keep.frame = NSRect(x: 0, y: 0, width: 390, height: 28); alert.accessoryView = keep }
-            alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "确认")
+            alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("确认"))
             guard alert.runModal() == .alertSecondButtonReturn else { return }
             keepCopy = keep.state == .on
         }
         perform {
-            var completionMessage = "操作已完成。"
+            var completionMessage = L10n.text("操作已完成。")
             var copiedLink: URL?
             switch action {
             case 1:
                 if let url = try await self.coordinator.invitationURL(boardID: state.id) { copiedLink = url }
-                else { throw SyncError.unavailable("邀请链接尚不可用。") }
+                else { throw SyncError.unavailable(L10n.text("邀请链接尚不可用。")) }
             case 2:
                 _ = try await self.coordinator.synchronize(boardID: state.id)
-                completionMessage = "共享板变更已处理；文件传输状态见下方。"
+                completionMessage = L10n.text("共享板变更已处理；文件传输状态见下方。")
             case 3:
                 let drafts = try await self.coordinator.failedDrafts(boardID: state.id)
                 for draft in drafts where draft.operation.record != nil {

@@ -1,0 +1,15 @@
+// Keep lookup keys aligned with the static App Intents and Info.plist definitions.
+"保存文本到 ClipShelf" = "Save Text to ClipShelf";
+"把文本或链接保存到历史或指定分组。不会改写系统剪贴板。" = "Save text or a link to history or a selected pinboard. The system clipboard is unchanged.";
+"文本" = "Text";
+"分组名称" = "Pinboard Name";
+"保存 ${text} 到 ClipShelf" = "Save ${text} to ClipShelf";
+"查找 ClipShelf 最近文本" = "Find Recent Text in ClipShelf";
+"查找本地内容、当前同步账号及仍可读取的共享板，排除过往账号缓存与撤销的共享。需单独允许快捷指令访问。" = "Search local content, the current sync account, and accessible shared pinboards. Previous account caches and revoked shares are excluded. Shortcuts access requires separate permission.";
+"搜索" = "Search";
+"从 ClipShelf 查找 ${query}" = "Find ${query} in ClipShelf";
+"获取 ClipShelf 第几条文本" = "Get Text at Position in ClipShelf";
+"从当前授权范围内的列表取得指定序号文本，从 1 开始。仅包含本地内容、当前账号及仍可读取的共享板。" = "Get text at a position in the currently authorized list, starting at 1. Includes only local content, the current account, and accessible shared pinboards.";
+"序号" = "Position";
+"获取 ClipShelf 第 ${index} 条文本" = "Get text at position ${index} in ClipShelf";
+"查找最近文本" = "Find Recent Text";

@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 import ClipShelfCore
 import Quartz
@@ -42,14 +43,14 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
     private let chooseApplication: ApplicationPicker?
     private let presentApplicationMenu: ApplicationMenuPresenter?
     private let table = NSTableView()
-    private let path = NSTextField(wrappingLabelWithString: "正在读取文件位置…")
+    private let path = NSTextField(wrappingLabelWithString: L10n.text("正在读取文件位置…"))
     private let explanation = NSTextField(wrappingLabelWithString: "")
     private let status = NSTextField(wrappingLabelWithString: "")
-    private let preview = NSButton(title: "预览所选文件", target: nil, action: nil)
-    private let open = NSButton(title: "打开所选文件", target: nil, action: nil)
-    private let openWith = NSButton(title: "打开方式…", target: nil, action: nil)
-    private let repair = NSButton(title: "重新定位…", target: nil, action: nil)
-    private let refreshButton = NSButton(title: "刷新状态", target: nil, action: nil)
+    private let preview = NSButton(title: L10n.text("预览所选文件"), target: nil, action: nil)
+    private let open = NSButton(title: L10n.text("打开所选文件"), target: nil, action: nil)
+    private let openWith = NSButton(title: L10n.text("打开方式…"), target: nil, action: nil)
+    private let repair = NSButton(title: L10n.text("重新定位…"), target: nil, action: nil)
+    private let refreshButton = NSButton(title: L10n.text("刷新状态"), target: nil, action: nil)
     private var presented = false
     private var requestID: UUID?
     private var pickerID: UUID?
@@ -89,7 +90,7 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
         self.chooseApplication = chooseApplication; self.presentApplicationMenu = presentApplicationMenu
         let panel = window ?? FileReferencePanel(contentRect: NSRect(x: 0, y: 0, width: 720, height: 540),
             styleMask: [.titled, .closable, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.title = "文件与位置 · \(record.title)"
+        panel.title = L10n.text("文件与位置 · \(record.title)")
         panel.level = .floating; panel.hidesOnDeactivate = false; panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.minSize = NSSize(width: 620, height: 450)
@@ -172,17 +173,17 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
     private func requestSnapshot(after: @escaping (ClipboardFileRepairSnapshot) -> Void) {
         guard contextIsCurrent, !isBusy else { return }
         closeQuickLook()
-        guard let onSnapshot else { fail("当前模式无法读取文件状态，请关闭后重试。"); return }
+        guard let onSnapshot else { fail(L10n.text("当前模式无法读取文件状态，请关闭后重试。")); return }
         let token = UUID(), expected = reference
         requestID = token; snapshotIsCurrent = false
-        setStatus("正在检查文件状态…"); updateActions()
+        setStatus(L10n.text("正在检查文件状态…")); updateActions()
         onSnapshot(expected) { [weak self] result in
             guard let self, self.contextIsCurrent, self.requestID == token, self.reference == expected else { return }
             self.requestID = nil
             switch result {
             case .success(let next):
                 guard next.record.id == expected.id, next.record.revision == expected.revision else {
-                    self.fail("条目已变化，请关闭后重新打开。"); return
+                    self.fail(L10n.text("条目已变化，请关闭后重新打开。")); return
                 }
                 self.install(next)
                 self.setStatus("")
@@ -198,7 +199,7 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
             guard let self else { return }
             do { _ = try self.publications?.publish(fileURL: url, purpose: .externalOpen) }
             catch { self.fail(error.localizedDescription); return }
-            if !self.openURL(url) { self.fail("系统未能打开此文件，请刷新状态后重试。") }
+            if !self.openURL(url) { self.fail(L10n.text("系统未能打开此文件，请刷新状态后重试。")) }
         }
     }
     private func performAvailable(_ action: @escaping (URL) -> Void) {
@@ -206,7 +207,7 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
         requestSnapshot { [weak self] next in
             guard let self, let current = self.selectedFile, Self.sameSlot(current, file),
                   current.rawURL == file.rawURL, current.status == .available, let url = current.url else {
-                self?.setStatus("所选文件状态已改变，请检查位置；操作未执行。"); return
+                self?.setStatus(L10n.text("所选文件状态已改变，请检查位置；操作未执行。")); return
             }
             guard next.record.id == self.reference.id else { return }
             action(url)
@@ -219,11 +220,11 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
         requestSnapshot { [weak self] next in
             guard let self, let current = self.selectedFile, Self.sameSlot(current, file),
                   current.rawURL == file.rawURL, current.status == .available, let url = current.url else {
-                self?.setStatus("所选文件状态已改变；未查询打开方式，请检查位置。"); return
+                self?.setStatus(L10n.text("所选文件状态已改变；未查询打开方式，请检查位置。")); return
             }
             let intent = ApplicationIntent(reference: self.reference, snapshot: next, file: current)
             self.applicationIntent = intent
-            self.setStatus("正在查找本机可打开此文件的应用…"); self.updateActions()
+            self.setStatus(L10n.text("正在查找本机可打开此文件的应用…")); self.updateActions()
             self.applicationOpener.applications(for: url) { [weak self] result in
                 guard let self, self.applicationIntentIsCurrent(intent) else { return }
                 switch result {
@@ -241,10 +242,10 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
     }
 
     private func showApplications(_ applications: [FileOpeningApplication], intent: ApplicationIntent) {
-        let menu = NSMenu(title: "打开方式")
+        let menu = NSMenu(title: L10n.text("打开方式"))
         menu.autoenablesItems = false
         if applications.isEmpty {
-            let empty = NSMenuItem(title: "没有推荐应用", action: nil, keyEquivalent: "")
+            let empty = NSMenuItem(title: L10n.text("没有推荐应用"), action: nil, keyEquivalent: "")
             empty.isEnabled = false; menu.addItem(empty)
         }
         for application in applications {
@@ -254,10 +255,10 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
             menu.addItem(item)
         }
         menu.addItem(.separator())
-        let other = NSMenuItem(title: "其他应用…", action: #selector(selectApplication(_:)), keyEquivalent: "")
+        let other = NSMenuItem(title: L10n.text("其他应用…"), action: #selector(selectApplication(_:)), keyEquivalent: "")
         other.target = self; other.representedObject = ApplicationMenuChoice(intentID: intent.id, application: nil)
         menu.addItem(other)
-        setStatus("仅使用所选应用打开此文件，不更改系统默认应用。")
+        setStatus(L10n.text("仅使用所选应用打开此文件，不更改系统默认应用。"))
         let closed = { [weak self] in
             guard let self, self.applicationIntent?.id == intent.id, self.pickerID == nil else { return }
             self.applicationIntent = nil; self.cancelApplicationMenu = nil; self.updateActions()
@@ -308,15 +309,15 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
                   next.sharingConfiguration == intent.snapshot.sharingConfiguration,
                   let current = self.selectedFile, Self.sameSlot(current, intent.file),
                   current.rawURL == intent.file.rawURL, current.status == .available, let url = current.url else {
-                self?.setStatus("文件或当前账户状态已改变；未打开，请重新选择。"); return
+                self?.setStatus(L10n.text("文件或当前账户状态已改变；未打开，请重新选择。")); return
             }
             let token = UUID(); self.requestID = token
-            self.setStatus("正在使用 \(application.name) 打开所选文件…"); self.updateActions()
+            self.setStatus(L10n.text("正在使用 \(application.name) 打开所选文件…")); self.updateActions()
             self.applicationOpener.open(file: url, using: application) { [weak self] result in
                 guard let self, self.contextIsCurrent, self.requestID == token, self.reference == intent.reference else { return }
                 self.requestID = nil; self.updateActions()
                 switch result {
-                case .success: self.setStatus("已交给 \(application.name) 打开。")
+                case .success: self.setStatus(L10n.text("已交给 \(application.name) 打开。"))
                 case .failure(let error): self.setStatus(error.localizedDescription)
                 }
             }
@@ -330,8 +331,8 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
 
     private func presentApplicationPicker(_ parent: NSWindow, reply: @escaping (URL?) -> Void) -> () -> Void {
         let picker = NSOpenPanel()
-        picker.title = "选择打开此文件的应用"; picker.prompt = "使用此应用"
-        picker.message = "仅打开所选文件，不更改系统默认应用。"
+        picker.title = L10n.text("选择打开此文件的应用"); picker.prompt = L10n.text("使用此应用")
+        picker.message = L10n.text("仅打开所选文件，不更改系统默认应用。")
         picker.allowedContentTypes = [.applicationBundle]
         picker.canChooseFiles = true; picker.canChooseDirectories = false
         picker.treatsFilePackagesAsDirectories = false; picker.allowsMultipleSelection = false
@@ -368,7 +369,7 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
         guard contextIsCurrent, !isBusy, snapshotIsCurrent, snapshot == old, selectedFile == file else { return }
         let token = UUID(), expected = reference
         requestID = token; snapshotIsCurrent = false; closeQuickLook()
-        setStatus(file.isOwned ? "正在重建已保存文件的打开副本…" : "正在保存文件位置…"); updateActions()
+        setStatus(file.isOwned ? L10n.text("正在重建已保存文件的打开副本…") : L10n.text("正在保存文件位置…")); updateActions()
         operation { [weak self] result in
             guard let self, self.contextIsCurrent, self.requestID == token, self.reference == expected else { return }
             self.requestID = nil
@@ -381,11 +382,11 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
                 }
                 guard next.record.id == expected.id, next.record.revision >= expected.revision,
                       let repaired else {
-                    self.fail("操作回执对应的条目已变化，请关闭后重新打开。"); return
+                    self.fail(L10n.text("操作回执对应的条目已变化，请关闭后重新打开。")); return
                 }
                 self.reference = .init(id: next.record.id, revision: next.record.revision)
                 self.install(next, selected: repaired)
-                self.setStatus(file.isOwned ? "已处理保存副本；可查看当前状态，再明确选择预览或打开。" : "文件位置已更新。未自动打开或粘贴。")
+                self.setStatus(file.isOwned ? L10n.text("已处理保存副本；可查看当前状态，再明确选择预览或打开。") : L10n.text("文件位置已更新。未自动打开或粘贴。"))
             case .failure(let error): self.fail(error.localizedDescription)
             }
         }
@@ -393,9 +394,9 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
 
     private func presentPicker(_ parent: NSWindow, file: ClipboardFileReference, reply: @escaping (URL?) -> Void) -> () -> Void {
         let picker = NSOpenPanel()
-        picker.title = "重新定位所选文件或文件夹"
-        picker.message = "选择此文件的新位置；其他文件不变。"
-        picker.prompt = "使用此位置"
+        picker.title = L10n.text("重新定位所选文件或文件夹")
+        picker.message = L10n.text("选择此文件的新位置；其他文件不变。")
+        picker.prompt = L10n.text("使用此位置")
         picker.canChooseFiles = true; picker.canChooseDirectories = true; picker.allowsMultipleSelection = false
         picker.canCreateDirectories = false
         // Do not probe a stale network path simply to choose an initial directory.
@@ -429,39 +430,39 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
         openWith.isEnabled = preview.isEnabled
         refreshButton.isEnabled = contextIsCurrent && !isBusy
         table.isEnabled = !isBusy
-        repair.title = file?.isOwned == true ? "从已保存原件重建打开副本" : "重新定位…"
+        repair.title = file?.isOwned == true ? L10n.text("从已保存原件重建打开副本") : L10n.text("重新定位…")
         repair.isEnabled = usable && file.map { $0.isOwned ? ($0.status == .missing && onRestoreOwned != nil) : (snapshot?.isReadOnly == false && onRelocate != nil) } == true
         guard let file else {
-            path.stringValue = snapshot == nil ? "正在读取文件位置…" : "此条目没有文件引用。"
-            explanation.stringValue = "文件与文件夹按原剪贴板对象顺序显示。"
+            path.stringValue = snapshot == nil ? L10n.text("正在读取文件位置…") : L10n.text("此条目没有文件引用。")
+            explanation.stringValue = L10n.text("文件与文件夹按原剪贴板对象顺序显示。")
             return
         }
-        path.stringValue = file.url?.path ?? "无效文件地址（保留原始引用）"
+        path.stringValue = file.url?.path ?? L10n.text("无效文件地址（保留原始引用）")
         path.toolTip = file.url?.absoluteString
-        let identity = "第 \(table.selectedRow + 1) 项文件"
-        let ownership = file.isOwned ? "ClipShelf 保存的文件；打开的是独立副本。" : "外部文件引用；ClipShelf 不持有原文件的备份。"
-        let readOnly = snapshot?.isReadOnly == true && !file.isOwned ? " 当前共享内容为只读，不能重新定位。" : ""
-        let special = file.status == .unsafeProjection ? " 打开副本的路径不安全，不自动覆盖或重建。" : ""
+        let identity = L10n.text("第 \(table.selectedRow + 1) 项文件")
+        let ownership = file.isOwned ? L10n.text("ClipShelf 保存的文件；打开的是独立副本。") : L10n.text("外部文件引用；ClipShelf 不持有原文件的备份。")
+        let readOnly = snapshot?.isReadOnly == true && !file.isOwned ? L10n.text(" 当前共享内容为只读，不能重新定位。") : ""
+        let special = file.status == .unsafeProjection ? L10n.text(" 打开副本的路径不安全，不自动覆盖或重建。") : ""
         explanation.stringValue = "\(identity) · \(Self.statusName(file.status))\n\(ownership)\(readOnly)\(special)"
     }
 
     static func statusName(_ value: ClipboardFileAvailability) -> String {
         switch value {
-        case .available: return "可用"
-        case .missing: return "位置缺失"
-        case .unreadable: return "不可访问"
-        case .invalidURL: return "地址无效"
-        case .unsafeProjection: return "打开副本路径不安全"
+        case .available: return L10n.text("可用")
+        case .missing: return L10n.text("位置缺失")
+        case .unreadable: return L10n.text("不可访问")
+        case .invalidURL: return L10n.text("地址无效")
+        case .unsafeProjection: return L10n.text("打开副本路径不安全")
         }
     }
     func numberOfRows(in tableView: NSTableView) -> Int { snapshot?.files.count ?? 0 }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard let snapshot, snapshot.files.indices.contains(row) else { return nil }
         let file = snapshot.files[row]
-        let text = tableColumn?.identifier.rawValue == "status" ? Self.statusName(file.status) : "\(row + 1). \(file.url?.lastPathComponent ?? "无效文件地址")"
+        let text = tableColumn?.identifier.rawValue == "status" ? Self.statusName(file.status) : "\(row + 1). \(file.url?.lastPathComponent ?? L10n.text("无效文件地址"))"
         let label = NSTextField(labelWithString: text)
         label.lineBreakMode = .byTruncatingMiddle
-        label.setAccessibilityLabel("第 \(row + 1) 项文件，\(text)")
+        label.setAccessibilityLabel(L10n.text("第 \(row + 1) 项文件，\(text)"))
         return label
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -476,28 +477,28 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
     private func buildInterface() {
         guard let window else { return }
         let root = NSView(); window.contentView = root
-        let heading = NSTextField(labelWithString: "所有文件位置")
+        let heading = NSTextField(labelWithString: L10n.text("所有文件位置"))
         heading.font = .systemFont(ofSize: 14, weight: .semibold)
-        let name = NSTableColumn(identifier: .init("name")); name.title = "文件 / 文件夹"; name.width = 480; name.minWidth = 160
-        let availability = NSTableColumn(identifier: .init("status")); availability.title = "状态"; availability.width = 165; availability.minWidth = 155
+        let name = NSTableColumn(identifier: .init("name")); name.title = L10n.text("文件 / 文件夹"); name.width = 480; name.minWidth = 160
+        let availability = NSTableColumn(identifier: .init("status")); availability.title = L10n.text("状态"); availability.width = 165; availability.minWidth = 155
         table.addTableColumn(name); table.addTableColumn(availability)
         table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         table.dataSource = self; table.delegate = self; table.rowHeight = 30
         table.allowsMultipleSelection = false; table.allowsEmptySelection = false
         table.usesAlternatingRowBackgroundColors = true
-        table.setAccessibilityLabel("文件位置列表")
+        table.setAccessibilityLabel(L10n.text("文件位置列表"))
         let scroll = NSScrollView(); scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder
         path.isSelectable = true; path.maximumNumberOfLines = 2; path.lineBreakMode = .byTruncatingMiddle
-        path.font = .monospacedSystemFont(ofSize: 11, weight: .regular); path.setAccessibilityLabel("所选文件完整路径")
+        path.font = .monospacedSystemFont(ofSize: 11, weight: .regular); path.setAccessibilityLabel(L10n.text("所选文件完整路径"))
         explanation.font = .systemFont(ofSize: 11); explanation.textColor = .secondaryLabelColor
-        explanation.maximumNumberOfLines = 3; explanation.setAccessibilityLabel("所选文件状态与归属")
-        status.font = .systemFont(ofSize: 11); status.maximumNumberOfLines = 3; status.setAccessibilityLabel("文件操作状态")
+        explanation.maximumNumberOfLines = 3; explanation.setAccessibilityLabel(L10n.text("所选文件状态与归属"))
+        status.font = .systemFont(ofSize: 11); status.maximumNumberOfLines = 3; status.setAccessibilityLabel(L10n.text("文件操作状态"))
         preview.target = self; preview.action = #selector(previewSelected)
         open.target = self; open.action = #selector(openSelected)
         openWith.target = self; openWith.action = #selector(openWithSelected)
         repair.target = self; repair.action = #selector(repairSelected)
         refreshButton.target = self; refreshButton.action = #selector(refresh)
-        let close = NSButton(title: "返回列表", target: self, action: #selector(closeWindow)); close.keyEquivalent = "\u{1b}"
+        let close = NSButton(title: L10n.text("返回列表"), target: self, action: #selector(closeWindow)); close.keyEquivalent = "\u{1b}"
         let actions = NSStackView(views: [preview, open, openWith]); actions.spacing = 8
         let footer = NSStackView(views: [repair, refreshButton, close]); footer.spacing = 8
         for view in [heading, scroll, path, explanation, actions, status, footer] { view.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(view) }

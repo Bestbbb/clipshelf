@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import Foundation
 
 public enum SyncEntityKind: String, Codable, Sendable { case clipboard, pinboard }
@@ -87,11 +88,11 @@ public enum SyncError: Error, LocalizedError {
     case unavailable(String)
     public var errorDescription: String? {
         switch self {
-        case .disabled: return "Synchronization is disabled."
-        case .accountChanged: return "The synchronization account changed; this operation was stopped."
-        case .invalidOperation: return "The synchronization operation is invalid."
-        case .namespaceConflict: return "This item belongs to a different synchronization account."
-        case .invalidCursor: return "The synchronization cursor is invalid."
+        case .disabled: return L10n.text("Synchronization is disabled.")
+        case .accountChanged: return L10n.text("The synchronization account changed; this operation was stopped.")
+        case .invalidOperation: return L10n.text("The synchronization operation is invalid.")
+        case .namespaceConflict: return L10n.text("This item belongs to a different synchronization account.")
+        case .invalidCursor: return L10n.text("The synchronization cursor is invalid.")
         case .unavailable(let reason): return reason
         }
     }
@@ -126,7 +127,7 @@ public actor SyncCoordinator {
     }
 
     public func synchronize(accountID: String) async throws -> SyncRunSummary {
-        guard !running else { throw SyncError.unavailable("A synchronization pass is already running.") }
+        guard !running else { throw SyncError.unavailable(L10n.text("A synchronization pass is already running.")) }
         running = true; defer { running = false }
         let configuration = try store.syncConfiguration()
         guard configuration.accountID == accountID else { throw SyncError.accountChanged }
@@ -178,7 +179,7 @@ public actor SyncCoordinator {
                 catch { try checkAccount(); throw error }
                 try checkAccount()
                 try store.applyRemoteChanges(accountID: accountID, changes: batch.operations, nextCursor: batch.cursor)
-                if capable == nil, try store.hasPendingOwnedFileOperations(namespace: accountID) { throw SyncError.unavailable("此同步服务不支持托管文件传输，请升级后重试。") }
+                if capable == nil, try store.hasPendingOwnedFileOperations(namespace: accountID) { throw SyncError.unavailable(L10n.text("此同步服务不支持托管文件传输，请升级后重试。")) }
                 downloaded += batch.operations.count; batches += 1
                 try await downloadFiles()
                 if !batch.hasMore { break }
@@ -195,7 +196,7 @@ public actor SyncCoordinator {
                 attempted.insert(operation.operationID)
                 var ready = true
                 for file in operation.ownedFiles?.files ?? [] {
-                    guard let capable, let context else { throw SyncError.unavailable("此同步服务不支持托管文件传输，请升级后重试。") }
+                    guard let capable, let context else { throw SyncError.unavailable(L10n.text("此同步服务不支持托管文件传输，请升级后重试。")) }
                     if try store.syncOwnedUploadIsComplete(operationID: operation.operationID, file: file, context: context) { continue }
                     guard file.byteCount <= maximumTransferBytes - bytes else { ready = false; continue }
                     bytes += file.byteCount

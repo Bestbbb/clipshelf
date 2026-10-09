@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import CryptoKit
 import Foundation
 import Security
@@ -99,12 +100,12 @@ final class MCPAuthorizationStore {
         case invalidGrant, tooManyClients, unknownClient, corruptedStorage, randomFailure, keychain(OSStatus)
         var errorDescription: String? {
             switch self {
-            case .invalidGrant: return "请填写客户端名称，并明确选择读取权限和访问范围。"
-            case .tooManyClients: return "MCP 客户端数量已达上限，请先撤销不用的客户端。"
-            case .unknownClient: return "找不到该 MCP 客户端授权。"
-            case .corruptedStorage: return "MCP 授权记录无法读取，服务保持关闭。"
-            case .randomFailure: return "无法生成安全的 MCP 凭证。"
-            case .keychain(let status): return "无法访问 MCP 钥匙串记录（\(status)）。"
+            case .invalidGrant: return L10n.text("请填写客户端名称，并明确选择读取权限和访问范围。")
+            case .tooManyClients: return L10n.text("MCP 客户端数量已达上限，请先撤销不用的客户端。")
+            case .unknownClient: return L10n.text("找不到该 MCP 客户端授权。")
+            case .corruptedStorage: return L10n.text("MCP 授权记录无法读取，服务保持关闭。")
+            case .randomFailure: return L10n.text("无法生成安全的 MCP 凭证。")
+            case .keychain(let status): return L10n.text("无法访问 MCP 钥匙串记录（\(status)）。")
             }
         }
     }

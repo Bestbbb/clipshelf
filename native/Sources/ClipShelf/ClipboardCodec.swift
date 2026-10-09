@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 import ClipShelfCore
 import UniformTypeIdentifiers
@@ -6,9 +7,9 @@ enum ClipboardCodecError: LocalizedError {
     case tooLarge, unavailableFile, noContent
     var errorDescription: String? {
         switch self {
-        case .tooLarge: return "内容超过本次采集的 64 MB 上限。"
-        case .unavailableFile: return "文件已移动或不可访问，请在“文件与位置…”中查看并重新定位。"
-        case .noContent: return "没有可用的剪贴板表示。"
+        case .tooLarge: return L10n.text("内容超过本次采集的 64 MB 上限。")
+        case .unavailableFile: return L10n.text("文件已移动或不可访问，请在“文件与位置…”中查看并重新定位。")
+        case .noContent: return L10n.text("没有可用的剪贴板表示。")
         }
     }
 }

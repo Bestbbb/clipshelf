@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import ClipShelfCore
 import CryptoKit
 import Darwin
@@ -26,29 +27,29 @@ actor ShareInboxService {
             if !failures.isEmpty { throw LegacyMigrationIncomplete(failures: failures, migratedRecords: migratedRecords) }
         }
         var snapshotNotice: String {
-            migratedRecords == 0 ? "" : "已将 \(migratedRecords) 条旧分享文件保存为迁移时快照，未核对最初分享摘要。"
+            migratedRecords == 0 ? "" : L10n.text("已将 \(migratedRecords) 条旧分享文件保存为迁移时快照，未核对最初分享摘要。")
         }
     }
     struct LegacyMigrationIncomplete: LocalizedError, Sendable {
         let failures: [LegacyMigrationFailure]
         let migratedRecords: Int
         var errorDescription: String? {
-            let progress = migratedRecords == 0 ? "" : "其中 \(migratedRecords) 条已保存为迁移时快照，未核对最初分享摘要。\n"
-            return "有 \(failures.count) 项旧分享文件无法迁移，本次备份或恢复已停止。\n" + progress + failures.prefix(5).map { failure in
-                let prefix = failure.recordID.map { "条目 \($0.uuidString.prefix(8))：" } ?? "导入收据："
+            let progress = migratedRecords == 0 ? L10n.text("") : L10n.text("其中 \(migratedRecords) 条已保存为迁移时快照，未核对最初分享摘要。\n")
+            return L10n.text("有 \(failures.count) 项旧分享文件无法迁移，本次备份或恢复已停止。\n") + progress + failures.prefix(5).map { failure in
+                let prefix = failure.recordID.map { L10n.text("条目 \($0.uuidString.prefix(8))：") } ?? L10n.text("导入收据：")
                 return prefix + failure.message
-            }.joined(separator: "\n")
+            }.joined(separator: L10n.text("\n"))
         }
     }
     private enum LegacyMigrationError: LocalizedError {
         case invalidReceipt, incompleteReceipt, unprovenFile, unreadableFile, changedFile
         var errorDescription: String? {
             switch self {
-            case .invalidReceipt: return "旧导入收据无效，无法证明文件归属。"
-            case .incompleteReceipt: return "该项导入曾中断且尚未确认；请先检查系统分享收件箱。"
-            case .unprovenFile: return "当前文件引用不再匹配原导入记录的受控目录，未接管外部文件。"
-            case .unreadableFile: return "旧文件缺失、不可读，或路径包含链接；原记录保留。"
-            case .changedFile: return "旧文件在读取期间改变，未保存不一致快照；请重试。"
+            case .invalidReceipt: return L10n.text("旧导入收据无效，无法证明文件归属。")
+            case .incompleteReceipt: return L10n.text("该项导入曾中断且尚未确认；请先检查系统分享收件箱。")
+            case .unprovenFile: return L10n.text("当前文件引用不再匹配原导入记录的受控目录，未接管外部文件。")
+            case .unreadableFile: return L10n.text("旧文件缺失、不可读，或路径包含链接；原记录保留。")
+            case .changedFile: return L10n.text("旧文件在读取期间改变，未保存不一致快照；请重试。")
             }
         }
     }
@@ -62,9 +63,9 @@ actor ShareInboxService {
         case receiptMismatch, uncertainCommit, unsupportedType
         var errorDescription: String? {
             switch self {
-            case .receiptMismatch: return "分享请求与已有导入凭据不一致，未再次导入。"
-            case .uncertainCommit: return "上次导入被中断且无法确认结果，已保留内容；请明确重试后恢复。"
-            case .unsupportedType: return "分享包含暂不支持的数据类型，原内容保留在收件箱。"
+            case .receiptMismatch: return L10n.text("分享请求与已有导入凭据不一致，未再次导入。")
+            case .uncertainCommit: return L10n.text("上次导入被中断且无法确认结果，已保留内容；请明确重试后恢复。")
+            case .unsupportedType: return L10n.text("分享包含暂不支持的数据类型，原内容保留在收件箱。")
             }
         }
     }
@@ -163,7 +164,7 @@ actor ShareInboxService {
                 }
                 try directory.remove(id)
             } catch {
-                failures.append(Failure(operationID: id, message: (error as? LocalizedError)?.errorDescription ?? "导入未完成，内容仍保留在收件箱。"))
+                failures.append(Failure(operationID: id, message: (error as? LocalizedError)?.errorDescription ?? L10n.text("导入未完成，内容仍保留在收件箱。")))
             }
         }
         return ImportReport(imported: imported, alreadyImported: existing, failures: failures)
@@ -241,12 +242,12 @@ actor ShareInboxService {
                         report.migratedRecords += 1
                     } catch {
                         report.failures.append(LegacyMigrationFailure(operationID: operationID, recordID: recordID,
-                            message: (error as? LocalizedError)?.errorDescription ?? "旧文件迁移失败，原记录和文件保留。"))
+                            message: (error as? LocalizedError)?.errorDescription ?? L10n.text("旧文件迁移失败，原记录和文件保留。")))
                     }
                 }
             } catch {
                 report.failures.append(LegacyMigrationFailure(operationID: operationID, recordID: nil,
-                    message: (error as? LocalizedError)?.errorDescription ?? "旧导入收据不可读取或无效。"))
+                    message: (error as? LocalizedError)?.errorDescription ?? L10n.text("旧导入收据不可读取或无效。")))
             }
         }
         return report
@@ -323,7 +324,7 @@ actor ShareInboxService {
         guard allowImports else { return ShareInboxCatalog(contextBinding: binding, destinations: []) }
         let shared = try sharing.accountID.map { try store.sharedBoards(accountID: $0) } ?? []
         let writableShared = Set(shared.filter { $0.access.canWrite }.map(\.id))
-        var destinations = [ShareInboxDestination(boardID: nil, name: "剪贴板历史")]
+        var destinations = [ShareInboxDestination(boardID: nil, name: L10n.text("剪贴板历史"))]
         for board in try store.pinboards() {
             let namespace = try store.pinboardNamespace(id: board.id)
             if namespace?.hasPrefix("shared:") == true {
@@ -362,7 +363,7 @@ actor ShareInboxService {
                 if identifier == "public.html" { html = data }
             }
         }
-        let record = ClipboardRecord(id: recordID, text: text, sourceApp: "系统分享", sourceBundleID: nil,
+        let record = ClipboardRecord(id: recordID, text: text, sourceApp: L10n.text("系统分享"), sourceBundleID: nil,
             copiedAt: envelope.createdAt, rtf: rtf, html: html, parts: [.init(representations: representations)],
             pinboardID: envelope.destination.boardID, isInHistory: !envelope.destination.isShared)
         return (record, ownedFiles)

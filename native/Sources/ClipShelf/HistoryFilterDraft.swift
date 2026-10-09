@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import Foundation
 import ClipShelfCore
 
@@ -35,9 +36,9 @@ struct HistoryFilterDraft {
 
     func availabilityNotice(options: HistoryFilterOptions) -> String? {
         var messages: [String] = []
-        if let source = query.sourceBundleID, options.sources[source] == nil { messages.append("所选来源 App 暂不可用；保留该条件，结果可能为空。") }
+        if let source = query.sourceBundleID, options.sources[source] == nil { messages.append(L10n.text("所选来源 App 暂不可用；保留该条件，结果可能为空。")) }
         if case .device(let id) = query.deviceFilter, id != options.localDeviceID, options.devices[id] == nil {
-            messages.append("所选设备暂不可用；保留该条件，结果可能为空。")
+            messages.append(L10n.text("所选设备暂不可用；保留该条件，结果可能为空。"))
         }
         return messages.isEmpty ? nil : messages.joined(separator: "\n")
     }
@@ -46,10 +47,10 @@ struct HistoryFilterDraft {
         case invalidDate, reversedDates, unavailablePinboards(Int), manualOrderRequiresOneBoard
         var errorDescription: String? {
             switch self {
-            case .invalidDate: return "日期无效，请重新选择。"
-            case .reversedDates: return "开始时间不能晚于结束时间。"
-            case .unavailablePinboards(let count): return "有 \(count) 个已选分组已不可用，请取消勾选后再应用。"
-            case .manualOrderRequiresOneBoard: return "分组内手动顺序需要且仅需要一个分组；请选择单个分组，或改为“最近复制”。"
+            case .invalidDate: return L10n.text("日期无效，请重新选择。")
+            case .reversedDates: return L10n.text("开始时间不能晚于结束时间。")
+            case .unavailablePinboards(let count): return L10n.text("有 \(count) 个已选分组已不可用，请取消勾选后再应用。")
+            case .manualOrderRequiresOneBoard: return L10n.text("分组内手动顺序需要且仅需要一个分组；请选择单个分组，或改为“最近复制”。")
             }
         }
     }

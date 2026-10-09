@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 import Foundation
 
@@ -17,9 +18,9 @@ enum FileApplicationError: LocalizedError {
     case invalidFile, unavailableApplication, cannotOpen
     var errorDescription: String? {
         switch self {
-        case .invalidFile: return "文件位置无效，请刷新后重试。"
-        case .unavailableApplication: return "所选应用已不可用，请重新选择已安装的应用。"
-        case .cannotOpen: return "系统未能使用所选应用打开文件，请重试或选择其他应用。"
+        case .invalidFile: return L10n.text("文件位置无效，请刷新后重试。")
+        case .unavailableApplication: return L10n.text("所选应用已不可用，请重新选择已安装的应用。")
+        case .cannotOpen: return L10n.text("系统未能使用所选应用打开文件，请重试或选择其他应用。")
         }
     }
 }
@@ -80,7 +81,7 @@ final class FileApplicationOpener {
                     let duplicate = counts[name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil), default: 0] > 1
                     let isDefault = url == defaultURL
                     return FileOpeningApplication(url: url, name: name, isDefault: isDefault,
-                        menuTitle: name + (isDefault ? "（默认）" : "") + (duplicate ? " — \(url.path)" : ""))
+                        menuTitle: name + (isDefault ? L10n.text("（默认）") : "") + (duplicate ? " — \(url.path)" : ""))
                 }
             })
         }

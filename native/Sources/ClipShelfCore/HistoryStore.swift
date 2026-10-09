@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import CSQLite
 import Foundation
 
@@ -26,27 +27,27 @@ public enum HistoryStoreError: Error, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .invalidDatabaseURL: return "History requires a local file URL."
-        case .unsupportedSchemaVersion(let version): return "History uses an unsupported schema version (\(version))."
-        case .invalidTimestamp: return "The clipboard capture time is invalid."
-        case .invalidStoredRecord: return "A history record could not be decoded."
-        case .valueTooLarge: return "The clipboard representation is too large to store."
-        case .corruptAttachment: return "A clipboard attachment is missing or failed its integrity check."
-        case .invalidOwnedFile: return "托管文件的名称、内容或归属无效，未保存任何部分内容。"
-        case .corruptOwnedFile: return "托管文件原件缺失、被修改或包含不安全路径，未继续操作。"
-        case .recordNotFound: return "This clipboard item no longer exists."
-        case .pinboardNotFound: return "This pinboard no longer exists."
-        case .invalidPinboard: return "A pinboard needs a name and a six-digit color."
-        case .invalidPinboardOrder: return "The new order must contain every current pinboard exactly once. Reload the pinboards and try again."
-        case .invalidPinboardItemOrder: return "分组内容或排序位置已改变。请重新加载；分页重排应使用移动条目操作，不能以部分列表覆盖整个分组。"
-        case .invalidSelection: return "选择列表无效，或已撤销的操作不属于当前资料库。请重新选择。"
-        case .invalidPageRequest: return "首尾定位不能同时指定分页偏移或条目锚点，请重新加载列表。"
-        case .selectionPayloadTooLarge: return "选中内容超过本次读取的容量限制，未执行任何输出。请减少选中内容后重试。"
-        case .staleRevision: return "This item changed while it was being edited. Reload it before saving."
-        case .invalidBackup: return "This backup is damaged, too large, or uses an unsupported format."
-        case .backupExists: return "A file already exists at the backup destination."
-        case .syncedProfileRequiresLocalMerge: return "此资料库曾与同步账号或共享板关联，不能用备份整体替换。请选择合并，备份会导入为独立本地副本；恢复不会删除云端内容。"
-        case .database(let code, let message): return "History database error \(code): \(message)"
+        case .invalidDatabaseURL: return L10n.text("History requires a local file URL.")
+        case .unsupportedSchemaVersion(let version): return L10n.text("History uses an unsupported schema version (\(version)).")
+        case .invalidTimestamp: return L10n.text("The clipboard capture time is invalid.")
+        case .invalidStoredRecord: return L10n.text("A history record could not be decoded.")
+        case .valueTooLarge: return L10n.text("The clipboard representation is too large to store.")
+        case .corruptAttachment: return L10n.text("A clipboard attachment is missing or failed its integrity check.")
+        case .invalidOwnedFile: return L10n.text("托管文件的名称、内容或归属无效，未保存任何部分内容。")
+        case .corruptOwnedFile: return L10n.text("托管文件原件缺失、被修改或包含不安全路径，未继续操作。")
+        case .recordNotFound: return L10n.text("This clipboard item no longer exists.")
+        case .pinboardNotFound: return L10n.text("This pinboard no longer exists.")
+        case .invalidPinboard: return L10n.text("A pinboard needs a name and a six-digit color.")
+        case .invalidPinboardOrder: return L10n.text("The new order must contain every current pinboard exactly once. Reload the pinboards and try again.")
+        case .invalidPinboardItemOrder: return L10n.text("分组内容或排序位置已改变。请重新加载；分页重排应使用移动条目操作，不能以部分列表覆盖整个分组。")
+        case .invalidSelection: return L10n.text("选择列表无效，或已撤销的操作不属于当前资料库。请重新选择。")
+        case .invalidPageRequest: return L10n.text("首尾定位不能同时指定分页偏移或条目锚点，请重新加载列表。")
+        case .selectionPayloadTooLarge: return L10n.text("选中内容超过本次读取的容量限制，未执行任何输出。请减少选中内容后重试。")
+        case .staleRevision: return L10n.text("This item changed while it was being edited. Reload it before saving.")
+        case .invalidBackup: return L10n.text("This backup is damaged, too large, or uses an unsupported format.")
+        case .backupExists: return L10n.text("A file already exists at the backup destination.")
+        case .syncedProfileRequiresLocalMerge: return L10n.text("此资料库曾与同步账号或共享板关联，不能用备份整体替换。请选择合并，备份会导入为独立本地副本；恢复不会删除云端内容。")
+        case .database(let code, let message): return L10n.text("History database error \(code): \(message)")
         }
     }
 }
@@ -90,7 +91,7 @@ public final class HistoryStore: @unchecked Sendable {
             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil
         )
         guard status == SQLITE_OK, let connection else {
-            let message = connection.map { String(cString: sqlite3_errmsg($0)) } ?? "Unable to open database."
+            let message = connection.map { String(cString: sqlite3_errmsg($0)) } ?? L10n.text("Unable to open database.")
             if let connection { sqlite3_close_v2(connection) }
             throw HistoryStoreError.database(code: status, message: message)
         }

@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import Foundation
 
 public struct HistoryCleanupSummary: Equatable, Sendable {
@@ -41,8 +42,8 @@ public enum HistoryCleanupError: Error, LocalizedError {
     case invalidPlan, changed
     public var errorDescription: String? {
         switch self {
-        case .invalidPlan: return "这次清理确认已使用或不属于当前资料库，请重新确认。"
-        case .changed: return "待清理条目、所属账号或权限已变化，未清理任何内容，请重新确认范围。"
+        case .invalidPlan: return L10n.text("这次清理确认已使用或不属于当前资料库，请重新确认。")
+        case .changed: return L10n.text("待清理条目、所属账号或权限已变化，未清理任何内容，请重新确认范围。")
         }
     }
 }

@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import ClipShelfCore
 import Foundation
 
@@ -89,7 +90,7 @@ actor CloudSharingCoordinator {
         // Capture a complete local copy before the server action if the user chose to keep one.
         if keepLocalCopy { _ = try store.copyBoardToLocal(boardID: boardID) }
         try await transport.stopSharing(state.descriptor)
-        try finishLeaving(state, reason: "所有者已停止共享")
+        try finishLeaving(state, reason: L10n.text("所有者已停止共享"))
     }
 
     /// The system sharing presenter already deleted the CKShare. Never issue another cloud deletion.
@@ -100,7 +101,7 @@ actor CloudSharingCoordinator {
         if keepLocalCopy, try store.pinboards().contains(where: { $0.id == boardID }) {
             _ = try store.copyBoardToLocal(boardID: boardID)
         }
-        try finishLeaving(state, reason: "已通过系统分享窗口停止共享")
+        try finishLeaving(state, reason: L10n.text("已通过系统分享窗口停止共享"))
     }
 
     func leave(boardID: UUID, keepLocalCopy: Bool = false) async throws {
@@ -108,7 +109,7 @@ actor CloudSharingCoordinator {
         guard state.access != .owner else { throw SharedBoardError.readOnly }
         if keepLocalCopy { _ = try store.copyBoardToLocal(boardID: boardID) }
         try await transport.leave(state.descriptor)
-        try finishLeaving(state, reason: "已退出共享板")
+        try finishLeaving(state, reason: L10n.text("已退出共享板"))
     }
 
     func failedDrafts(boardID: UUID) throws -> [FailedSharedDraft] {

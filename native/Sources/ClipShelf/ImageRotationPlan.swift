@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import ClipShelfCore
 import CoreGraphics
 import Foundation
@@ -9,11 +10,11 @@ enum ImageRotationError: Error, LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .noImage: return "这条记录没有可旋转的图片。"
-        case .invalidImage: return "图片无法完整解码，原内容未修改。"
-        case .imageTooLarge: return "图片的总像素或输出大小超过旋转限制，原内容未修改。"
-        case .unsupportedAnimation: return "暂时无法完整保留这种图片的全部帧或播放时序，原内容未修改。"
-        case .encodingFailed: return "旋转后的图片无法完整保存，原内容未修改。"
+        case .noImage: return L10n.text("这条记录没有可旋转的图片。")
+        case .invalidImage: return L10n.text("图片无法完整解码，原内容未修改。")
+        case .imageTooLarge: return L10n.text("图片的总像素或输出大小超过旋转限制，原内容未修改。")
+        case .unsupportedAnimation: return L10n.text("暂时无法完整保留这种图片的全部帧或播放时序，原内容未修改。")
+        case .encodingFailed: return L10n.text("旋转后的图片无法完整保存，原内容未修改。")
         }
     }
 }

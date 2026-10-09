@@ -489,6 +489,16 @@ schema v12 增加托管文件保留与回收日志，wire v2 和逻辑备份 sch
 
 正式发布脚本在干净源码上构建通用架构的 App、分享扩展及更新 helpers，检查实际包身份、版本、App Group、entitlements、签名团队、hardened runtime、动态库路径和 App Intents 元数据。Developer ID 导出通过公证、staple 与 Gatekeeper 检查后，才生成更新 ZIP 与签名 appcast，并用包内公钥独立验证归档签名。脚本只生成本地交付目录，不自动发布或安装；生产签名身份、provisioning profiles、更新私钥、公证凭据和线上 feed 尚需正式环境配置。发布管线不得把剪贴板样本、凭据或用户数据库打入安装包。[发布检查清单](RELEASE_CHECKLIST.md)、[Sparkle 分发说明](https://sparkle-project.org/documentation/)
 
+### 12.1 界面语言与分发资源 F13
+
+当前已实现英语、简体中文、繁体中文及「跟随系统」选项。`ClipShelfLocalization` 在主程序创建 AppKit 应用和业务服务之前配置，运行期固定语言；保存偏好只在下次启动生效，不自动重启，也不重建编辑草稿、同步或更新服务。界面语言不改写历史正文、用户标题、分组名称或原始文件内容。「跟随系统」按偏好列表匹配受支持语言，没有匹配项时使用英语。
+
+语言偏好写入当前运行配置的应用域；显式选择同时设置该域的 `AppleLanguages`，跟随系统只移除该域覆盖，不修改全局语言。具有实际签名授权的 App Group 时同步共享语言选择；演示和隔离验证模式禁用保存。分享扩展从自身包加载资源，并只读取其获授权的 App Group 偏好。App Intents 的静态标题、参数及 Shortcuts 短语使用独立 `.strings` 表，冷启动动作另行初始化动态错误文案；系统菜单使用对应本地化表。系统宿主、扩展或第三方框架可能缓存语言，不承诺保存后跨进程立即刷新。
+
+动态文案采用随包 JSON 目录和独立插值参数；模板验证参数编号及转义花括号，用户文本作为参数插入后不再次解释为模板或格式串。主 App 与分享扩展各自携带 `ClipShelf_ClipShelfLocalization.bundle`，缺资源不得依赖开发机器的绝对构建路径。发布校验检查三语键集合、参数、静态表和包内路径；`verify-localization.py --runtime` 将应用复制到临时交付位置，逐语言执行专用无 UI 诊断进程，确认实际从复制后的包加载资源，不创建常规应用、资料库或后台服务。命令见[构建与发布](BUILD_AND_RELEASE.md)。
+
+这仍不是 F13 全部完成：Paste 公开声明的其余 13 种语言尚未覆盖，包含希伯来语的 RTL 布局与键盘方向适配也未实现。系统按应用语言选择、Services/Shortcuts 菜单资源和真实签名分享扩展的宿主显示与偏好刷新仍待实机验收；资源校验不能替代这些验证。
+
 <a id="acceptance"></a>
 
 ## 13 性能与兼容验收

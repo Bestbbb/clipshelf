@@ -10,11 +10,11 @@ signed public release are still being developed and verified.
 ## Build and run
 
 Requires macOS 14 or later and Xcode with its Swift toolchain. Development is
-currently tested on Apple silicon with Xcode 26.5. No third-party Swift packages
-are needed for the local app.
+currently tested on Apple silicon with Xcode 26.5. SwiftPM downloads the pinned
+Sparkle update framework; its license is included in the app bundle.
 
 ```sh
-swift test --package-path native
+swift test --disable-keychain --disable-netrc --package-path native
 ./scripts/build-macos.sh
 open build/ClipShelf.app
 ```
@@ -23,6 +23,10 @@ Launch adds the menu bar item. The first time you open history or start recordin
 the welcome flow lets you start or postpone capture. Open the panel with **⌘⇧V**,
 or from the menu bar. Direct paste requires Accessibility
 permission; without it, the app copies the selected content for manual pasting.
+
+The interface supports English, Simplified Chinese and Traditional Chinese.
+Choose **Language…** from the menu or welcome dialog; saving takes effect on the
+next launch and preserves current work. Full language parity is still in progress.
 
 To inspect the interface using synthetic samples without clipboard recording:
 
@@ -61,6 +65,7 @@ private screenshots, or signing material into issues or test fixtures.
 - [Build, cloud configuration and release status](docs/BUILD_AND_RELEASE.md)
 - [Local MCP and OAuth integration](docs/MCP.md)
 - [System Share Extension setup](docs/SHARE_EXTENSION.md)
+- [Interface languages and localization checks](docs/LOCALIZATION.md)
 - [Reproducible local-history performance measurements](native/Benchmarks/README.md)
 
 The current scope is full macOS parity, including sync between Macs. iPhone and

@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import Foundation
 
 public enum SharedBoardAccess: String, Codable, Sendable {
@@ -44,11 +45,11 @@ public enum SharedBoardError: Error, LocalizedError {
     case readOnly, revoked, accountChanged, notRegistered, remotePermissionDenied
     public var errorDescription: String? {
         switch self {
-        case .readOnly: return "此共享板当前为只读，未提交修改。"
-        case .revoked: return "此共享板的访问权限已撤销，未提交的修改保留在失败草稿中。"
-        case .accountChanged: return "共享板绑定的 iCloud 账号已改变。"
-        case .notRegistered: return "此共享板尚未登记到当前账号。"
-        case .remotePermissionDenied: return "CloudKit 拒绝了共享板写入，修改已保留为失败草稿。"
+        case .readOnly: return L10n.text("此共享板当前为只读，未提交修改。")
+        case .revoked: return L10n.text("此共享板的访问权限已撤销，未提交的修改保留在失败草稿中。")
+        case .accountChanged: return L10n.text("共享板绑定的 iCloud 账号已改变。")
+        case .notRegistered: return L10n.text("此共享板尚未登记到当前账号。")
+        case .remotePermissionDenied: return L10n.text("CloudKit 拒绝了共享板写入，修改已保留为失败草稿。")
         }
     }
 }
@@ -77,7 +78,7 @@ public actor SharedBoardCoordinator {
     public init(store: HistoryStore, transport: any SharedBoardTransport, maximumTransferBytes: Int = SyncOwnedFileLimits.maximumPassBytes) { self.store = store; self.transport = transport; self.maximumTransferBytes = max(0, min(maximumTransferBytes, SyncOwnedFileLimits.maximumPassBytes)) }
 
     public func synchronize(_ board: SharedBoardDescriptor) async throws -> SyncRunSummary {
-        guard running.insert(board.boardID).inserted else { throw SyncError.unavailable("此共享板正在同步。") }
+        guard running.insert(board.boardID).inserted else { throw SyncError.unavailable(L10n.text("此共享板正在同步。")) }
         defer { running.remove(board.boardID) }
         let configuration = try store.sharingConfiguration()
         do {
@@ -88,11 +89,11 @@ public actor SharedBoardCoordinator {
             case .readOnly:
                 try store.updateSharedAccess(boardID: board.boardID, accountID: board.accountID, access: .readOnly)
                 try store.rejectPendingSharedEdits(boardID: board.boardID, accountID: board.accountID,
-                                                  reason: "共享权限已变为只读")
+                                                  reason: L10n.text("共享权限已变为只读"))
             case .revoked, .remotePermissionDenied:
                 try store.updateSharedAccess(boardID: board.boardID, accountID: board.accountID, access: .revoked)
                 try store.rejectPendingSharedEdits(boardID: board.boardID, accountID: board.accountID,
-                                                  reason: "服务端共享访问已撤销", clearCachedContent: true)
+                                                  reason: L10n.text("服务端共享访问已撤销"), clearCachedContent: true)
             default: break
             }
             throw error
@@ -117,7 +118,7 @@ public actor SharedBoardCoordinator {
         expectedAccessGeneration = try store.synchronized { try store.ownedAccessGeneration(board.namespace) }
         if !access.canWrite {
             try store.rejectPendingSharedEdits(boardID: board.boardID, accountID: board.accountID,
-                                              reason: access == .revoked ? "共享访问已撤销" : "共享权限已变为只读", clearCachedContent: access == .revoked)
+                                              reason: access == .revoked ? L10n.text("共享访问已撤销") : L10n.text("共享权限已变为只读"), clearCachedContent: access == .revoked)
             if access == .revoked { throw SharedBoardError.revoked }
         }
         let capable = transport as? any SharedBoardOwnedFileTransport
@@ -161,7 +162,7 @@ public actor SharedBoardCoordinator {
                 do { batch = try await transport.pull(board: board, after: cursor, limit: 100) } catch { try checkAccount(); throw error }
                 try checkAccount()
                 try store.applySharedChanges(boardID: board.boardID, accountID: board.accountID, changes: batch.operations, nextCursor: batch.cursor)
-                if capable == nil, try store.hasPendingOwnedFileOperations(namespace: board.namespace) { throw SyncError.unavailable("此共享服务不支持托管文件传输，请升级后重试。") }
+                if capable == nil, try store.hasPendingOwnedFileOperations(namespace: board.namespace) { throw SyncError.unavailable(L10n.text("此共享服务不支持托管文件传输，请升级后重试。")) }
                 downloaded += batch.operations.count; batches += 1
                 try await downloadFiles()
                 if !batch.hasMore { return }
@@ -179,7 +180,7 @@ public actor SharedBoardCoordinator {
                     attempted.insert(operation.operationID)
                     var ready = true
                     for file in operation.ownedFiles?.files ?? [] {
-                        guard let capable, let context else { throw SyncError.unavailable("此共享服务不支持托管文件传输，请升级后重试。") }
+                        guard let capable, let context else { throw SyncError.unavailable(L10n.text("此共享服务不支持托管文件传输，请升级后重试。")) }
                         if try store.syncOwnedUploadIsComplete(operationID: operation.operationID, file: file, context: context) { continue }
                         guard file.byteCount <= maximumTransferBytes - bytes else { ready = false; continue }
                         bytes += file.byteCount

@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 
 private final class ShortcutSettingsDocumentView: NSView {
@@ -20,15 +21,15 @@ final class ShortcutSettingsController: NSWindowController, NSWindowDelegate {
     private var recorders: [ShortcutRecorderView] = []
     private let quickPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let plainPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let alwaysPlain = NSButton(checkboxWithTitle: "始终以纯文本粘贴（文件和图片保持原格式）", target: nil, action: nil)
-    private let applyButton = NSButton(title: "保存", target: nil, action: nil)
+    private let alwaysPlain = NSButton(checkboxWithTitle: L10n.text("始终以纯文本粘贴（文件和图片保持原格式）"), target: nil, action: nil)
+    private let applyButton = NSButton(title: L10n.text("保存"), target: nil, action: nil)
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
 
     init(activateApplication: (@MainActor () -> Void)? = nil) {
         self.activateApplication = activateApplication ?? { NSApp.activate(ignoringOtherApps: true) }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 690, height: 640),
                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "ClipShelf 快捷键"
+        window.title = L10n.text("ClipShelf 快捷键")
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 620, height: 360)
         super.init(window: window)
@@ -103,14 +104,14 @@ final class ShortcutSettingsController: NSWindowController, NSWindowDelegate {
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
-        scroll.setAccessibilityLabel("快捷键设置内容")
+        scroll.setAccessibilityLabel(L10n.text("快捷键设置内容"))
         let document = ShortcutSettingsDocumentView()
         document.translatesAutoresizingMaskIntoConstraints = false
         scroll.documentView = document
         root.addSubview(scroll)
-        let heading = NSTextField(labelWithString: "快捷键与粘贴")
+        let heading = NSTextField(labelWithString: L10n.text("快捷键与粘贴"))
         heading.font = .systemFont(ofSize: 22, weight: .semibold)
-        let description = NSTextField(wrappingLabelWithString: "唤起面板与 Paste Stack 是全局快捷键；切换分组仅在结果列表中生效。点击快捷键框开始录制，Esc 取消录制。")
+        let description = NSTextField(wrappingLabelWithString: L10n.text("唤起面板与 Paste Stack 是全局快捷键；切换分组仅在结果列表中生效。点击快捷键框开始录制，Esc 取消录制。"))
         description.textColor = .secondaryLabelColor
         description.font = .systemFont(ofSize: 12)
         let stack = NSStackView(views: [heading, description])
@@ -130,8 +131,8 @@ final class ShortcutSettingsController: NSWindowController, NSWindowDelegate {
         ])
 
         let fields: [(String, ShortcutChord)] = [
-            ("唤起 / 收起面板", draft.activation), ("开启 Paste Stack", draft.stack),
-            ("上一个分组", draft.previousPinboard), ("下一个分组", draft.nextPinboard)
+            (L10n.text("唤起 / 收起面板"), draft.activation), (L10n.text("开启 Paste Stack"), draft.stack),
+            (L10n.text("上一个分组"), draft.previousPinboard), (L10n.text("下一个分组"), draft.nextPinboard)
         ]
         for (index, field) in fields.enumerated() {
             let recorder = ShortcutRecorderView(title: field.0, chord: field.1)
@@ -160,37 +161,37 @@ final class ShortcutSettingsController: NSWindowController, NSWindowDelegate {
             }
             popup.target = self; popup.action = #selector(modifiersChanged)
         }
-        quickPopup.setAccessibilityLabel("Quick Paste 单个修饰键")
-        plainPopup.setAccessibilityLabel("纯文本单个修饰键")
-        stack.addArrangedSubview(row("Quick Paste 修饰键", control: quickPopup))
-        stack.addArrangedSubview(row("纯文本修饰键", control: plainPopup))
+        quickPopup.setAccessibilityLabel(L10n.text("Quick Paste 单个修饰键"))
+        plainPopup.setAccessibilityLabel(L10n.text("纯文本单个修饰键"))
+        stack.addArrangedSubview(row(L10n.text("Quick Paste 修饰键"), control: quickPopup))
+        stack.addArrangedSubview(row(L10n.text("纯文本修饰键"), control: plainPopup))
         alwaysPlain.target = self; alwaysPlain.action = #selector(alwaysPlainChanged)
-        alwaysPlain.setAccessibilityLabel("始终以纯文本粘贴")
+        alwaysPlain.setAccessibilityLabel(L10n.text("始终以纯文本粘贴"))
         stack.addArrangedSubview(alwaysPlain)
-        let quickHelp = NSTextField(wrappingLabelWithString: "在结果列表按住 Quick Paste 修饰键显示 1–9 编号；再加纯文本修饰键可直接粘贴纯文本。纯文本修饰键也用于 Return 和双击。")
+        let quickHelp = NSTextField(wrappingLabelWithString: L10n.text("在结果列表按住 Quick Paste 修饰键显示 1–9 编号；再加纯文本修饰键可直接粘贴纯文本。纯文本修饰键也用于 Return 和双击。"))
         quickHelp.font = .systemFont(ofSize: 11); quickHelp.textColor = .secondaryLabelColor
         stack.addArrangedSubview(quickHelp)
         quickHelp.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
-        let fixedHeading = NSTextField(labelWithString: "固定快捷键")
+        let fixedHeading = NSTextField(labelWithString: L10n.text("固定快捷键"))
         fixedHeading.font = .systemFont(ofSize: 12, weight: .semibold)
-        let fixed = NSTextField(wrappingLabelWithString: "Return 粘贴 · Space 预览 · ←/→ 选择 · Shift-←/→ 扩选 · ⌘A 全选结果\n⌘C 复制 · Delete 删除 · ⌘Z 撤销 · ⌘E 编辑 · ⌘R 重命名 · ⌘O 打开\n⌘F 搜索 / 全部筛选 · ⌘G 定位 · ⌘N 新建文本 · ⇧⌘N 新建分组 · ⌘, 设置\n⌥⌘←/→ 调整分组内顺序 · ⌘↑/↓ 全部结果首尾 · ⌘T 暂停 / 继续记录")
+        let fixed = NSTextField(wrappingLabelWithString: L10n.text("Return 粘贴 · Space 预览 · ←/→ 选择 · Shift-←/→ 扩选 · ⌘A 全选结果\n⌘C 复制 · Delete 删除 · ⌘Z 撤销 · ⌘E 编辑 · ⌘R 重命名 · ⌘O 打开\n⌘F 搜索 / 全部筛选 · ⌘G 定位 · ⌘N 新建文本 · ⇧⌘N 新建分组 · ⌘, 设置\n⌥⌘←/→ 调整分组内顺序 · ⌘↑/↓ 全部结果首尾 · ⌘T 暂停 / 继续记录"))
         fixed.font = .systemFont(ofSize: 11); fixed.textColor = .secondaryLabelColor
-        fixed.setAccessibilityLabel("固定应用内快捷键说明")
+        fixed.setAccessibilityLabel(L10n.text("固定应用内快捷键说明"))
         stack.addArrangedSubview(fixedHeading); stack.addArrangedSubview(fixed)
         fixed.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
         errorLabel.font = .systemFont(ofSize: 11); errorLabel.textColor = .systemRed
         errorLabel.maximumNumberOfLines = 3
-        errorLabel.setAccessibilityLabel("快捷键设置错误")
+        errorLabel.setAccessibilityLabel(L10n.text("快捷键设置错误"))
         errorLabel.heightAnchor.constraint(equalToConstant: 42).isActive = true
         errorLabel.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(errorLabel)
 
-        let defaults = NSButton(title: "恢复默认", target: self, action: #selector(restoreDefaults))
-        let trial = NSButton(title: "试用唤起面板", target: self, action: #selector(tryActivation))
-        trial.toolTip = "打开面板检查位置与操作，不改写剪贴板。"
-        let cancel = NSButton(title: "取消", target: self, action: #selector(cancelChanges))
+        let defaults = NSButton(title: L10n.text("恢复默认"), target: self, action: #selector(restoreDefaults))
+        let trial = NSButton(title: L10n.text("试用唤起面板"), target: self, action: #selector(tryActivation))
+        trial.toolTip = L10n.text("打开面板检查位置与操作，不改写剪贴板。")
+        let cancel = NSButton(title: L10n.text("取消"), target: self, action: #selector(cancelChanges))
         cancel.keyEquivalent = "\u{1b}"
         let apply = applyButton
         apply.target = self; apply.action = #selector(applyChanges)
@@ -266,7 +267,7 @@ final class ShortcutSettingsController: NSWindowController, NSWindowDelegate {
     @objc private func applyChanges() {
         stopRecording()
         guard validateDraftInline() else { return }
-        guard let onApply else { errorLabel.stringValue = "设置尚未就绪，请稍后重试。"; return }
+        guard let onApply else { errorLabel.stringValue = L10n.text("设置尚未就绪，请稍后重试。"); return }
         switch onApply(draft, draftAlwaysPlainText) {
         case .success: registrationMessage = nil; errorLabel.stringValue = ""; finishDraftSession()
         case .failure(let error): errorLabel.stringValue = error.localizedDescription

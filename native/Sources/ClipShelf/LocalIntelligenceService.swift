@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import ClipShelfCore
 import CryptoKit
 import Foundation
@@ -50,9 +51,9 @@ final class LocalIntelligenceService {
 
         var errorDescription: String? {
             switch self {
-            case .invalidImage: return "无法读取这份图片数据。"
-            case .unsupportedLanguages: return "当前系统不支持所请求的文字识别语言。"
-            case .imageTooLarge: return "图片尺寸超出本机识别上限，原图仍保留。"
+            case .invalidImage: return L10n.text("无法读取这份图片数据。")
+            case .unsupportedLanguages: return L10n.text("当前系统不支持所请求的文字识别语言。")
+            case .imageTooLarge: return L10n.text("图片尺寸超出本机识别上限，原图仍保留。")
             }
         }
     }

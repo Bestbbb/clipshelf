@@ -1,0 +1,2 @@
+// Keep lookup keys aligned with the static App Intents and Info.plist definitions.
+"Find recent text in ${applicationName}" = "在 ${applicationName} 中查找最近文本";

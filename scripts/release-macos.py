@@ -183,6 +183,8 @@ def main():
          "-exportOptionsPlist", manifest["paths"]["exportOptionsPlist"]], "Export Developer ID app", log)
     app = output / "export/ClipShelf.app"
     verify_bundle(app, manifest, log)
+    run([sys.executable, ROOT / "scripts/verify-localization.py", "--app", app,
+         "--share-extension", "--runtime"], "Verify delivered app and Share Extension localizations", log)
     submission = output / "notary-submission.zip"
     run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", app, submission], "Package notarization submission", log)
     response = run(["xcrun", "notarytool", "submit", submission, "--keychain-profile", env["CLIPSHELF_NOTARY_KEYCHAIN_PROFILE"],

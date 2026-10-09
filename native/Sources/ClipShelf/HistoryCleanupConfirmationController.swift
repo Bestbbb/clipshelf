@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 import ClipShelfCore
 
@@ -24,14 +25,14 @@ final class HistoryCleanupConfirmationController: NSWindowController, NSWindowDe
     private var state = State.ready
     private var completion: ((Bool) -> Void)?
     private var confirmButton: NSButton?
-    private let cancelButton = NSButton(title: "取消", target: nil, action: nil)
+    private let cancelButton = NSButton(title: L10n.text("取消"), target: nil, action: nil)
 
     init(request: HistoryCleanupRequest, summary: HistoryCleanupSummary) {
         self.request = request
         self.summary = summary
         let panel = HistoryCleanupPanel(contentRect: NSRect(x: 0, y: 0, width: 560, height: 540),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        panel.title = "历史清理确认"
+        panel.title = L10n.text("历史清理确认")
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
         panel.minSize = NSSize(width: 420, height: 320)
@@ -115,7 +116,7 @@ final class HistoryCleanupConfirmationController: NSWindowController, NSWindowDe
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
-        scroll.setAccessibilityLabel("历史清理影响摘要")
+        scroll.setAccessibilityLabel(L10n.text("历史清理影响摘要"))
         let document = HistoryCleanupDocumentView()
         document.translatesAutoresizingMaskIntoConstraints = false
         scroll.documentView = document
@@ -141,34 +142,34 @@ final class HistoryCleanupConfirmationController: NSWindowController, NSWindowDe
         let heading: String, scope: String, confirmTitle: String
         switch request {
         case .clearHistory:
-            heading = summary.affectedCount == 0 ? "没有可清理的历史" : "清空剪贴板历史？"
-            scope = "范围：当前全部剪贴板历史。分组中已固定的内容仍会保留。"
-            confirmTitle = "确认清空历史"
+            heading = summary.affectedCount == 0 ? L10n.text("没有可清理的历史") : L10n.text("清空剪贴板历史？")
+            scope = L10n.text("范围：当前全部剪贴板历史。分组中已固定的内容仍会保留。")
+            confirmTitle = L10n.text("确认清空历史")
         case .retention(let days):
-            heading = "更改历史保留期限？"
-            scope = "将历史保留期限设为 \(days) 天，并立即清理超过期限的历史；之后会按此期限自动清理。"
-            confirmTitle = "确认更改期限"
+            heading = L10n.text("更改历史保留期限？")
+            scope = L10n.text("将历史保留期限设为 \(days) 天，并立即清理超过期限的历史；之后会按此期限自动清理。")
+            confirmTitle = L10n.text("确认更改期限")
         case .automatic(let days):
-            heading = "历史清理规则"
-            scope = "当前规则：保留最近 \(days) 天的历史。以下是本次超过期限的内容。"
-            confirmTitle = "确认清理"
+            heading = L10n.text("历史清理规则")
+            scope = L10n.text("当前规则：保留最近 \(days) 天的历史。以下是本次超过期限的内容。")
+            confirmTitle = L10n.text("确认清理")
         }
-        add(heading, label: "清理标题", emphasis: true)
-        add(scope, label: "清理范围")
-        add("删除 \(summary.deletedCount) 条未固定记录。", label: "删除记录数量")
-        add("\(summary.preservedPinnedCount) 条固定记录仅移出历史，仍保留在分组中。", label: "保留固定记录数量")
-        add("以上受影响记录中，\(summary.privateSyncCount) 条关联私有同步，\(summary.sharedSyncCount) 条关联共享分组。同步关联数已包含在上面的数量中，不是额外删除。", label: "清理同步影响")
-        add("这些关联记录的变化会影响同步内容及共享参与者。离线只会延后同步，暂时停用传输也不代表仅在本机清理。", label: "同步范围说明")
-        add("另有 \(summary.excludedCount) 条因旧账号、只读权限或访问已撤销等原因保留，本次不会修改。", label: "不修改记录数量")
+        add(heading, label: L10n.text("清理标题"), emphasis: true)
+        add(scope, label: L10n.text("清理范围"))
+        add(L10n.text("删除 \(summary.deletedCount) 条未固定记录。"), label: L10n.text("删除记录数量"))
+        add(L10n.text("\(summary.preservedPinnedCount) 条固定记录仅移出历史，仍保留在分组中。"), label: L10n.text("保留固定记录数量"))
+        add(L10n.text("以上受影响记录中，\(summary.privateSyncCount) 条关联私有同步，\(summary.sharedSyncCount) 条关联共享分组。同步关联数已包含在上面的数量中，不是额外删除。"), label: L10n.text("清理同步影响"))
+        add(L10n.text("这些关联记录的变化会影响同步内容及共享参与者。离线只会延后同步，暂时停用传输也不代表仅在本机清理。"), label: L10n.text("同步范围说明"))
+        add(L10n.text("另有 \(summary.excludedCount) 条因旧账号、只读权限或访问已撤销等原因保留，本次不会修改。"), label: L10n.text("不修改记录数量"))
         if summary.affectedCount == 0 {
             let emptyMessage: String
-            if case .retention = request { emptyMessage = "当前没有需要清理的内容；仍可确认更改保留期限。" }
-            else { emptyMessage = "本次不会删除记录或将固定内容移出历史。" }
-            add(emptyMessage, label: "空清理说明")
+            if case .retention = request { emptyMessage = L10n.text("当前没有需要清理的内容；仍可确认更改保留期限。") }
+            else { emptyMessage = L10n.text("本次不会删除记录或将固定内容移出历史。") }
+            add(emptyMessage, label: L10n.text("空清理说明"))
         }
-        add("清理不能通过撤销恢复，也不保证立即释放磁盘空间。", label: "不可撤销说明")
+        add(L10n.text("清理不能通过撤销恢复，也不保证立即释放磁盘空间。"), label: L10n.text("不可撤销说明"))
 
-        cancelButton.title = permitsConfirmation ? "取消" : "关闭"
+        cancelButton.title = permitsConfirmation ? L10n.text("取消") : L10n.text("关闭")
         cancelButton.target = self
         cancelButton.action = #selector(cancelCleanup)
         // Return is deliberately the non-destructive default; Tab reaches the

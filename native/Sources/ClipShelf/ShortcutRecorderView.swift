@@ -1,3 +1,4 @@
+import ClipShelfLocalization
 import AppKit
 
 /// Records a draft shortcut. Validation, registration and persistence belong to settings.
@@ -115,10 +116,10 @@ import AppKit
         let modifierText: String = [
             (NSEvent.ModifierFlags.control, "⌃"), (.option, "⌥"), (.shift, "⇧"), (.command, "⌘")
         ].compactMap { heldModifiers.contains($0.0) ? $0.1 : nil }.joined()
-        title = isRecording ? (modifierText.isEmpty ? "按下快捷键…" : "\(modifierText) + 按键…") : chord.displayName
-        let help = isRecording ? "正在录制\(actionTitle)快捷键。按 Escape 取消；只按修饰键不会保存。" : "按空格、Return 或点击以录制\(actionTitle)快捷键。"
+        title = isRecording ? (modifierText.isEmpty ? L10n.text("按下快捷键…") : L10n.text("\(modifierText) + 按键…")) : chord.displayName
+        let help = isRecording ? L10n.text("正在录制\(actionTitle)快捷键。按 Escape 取消；只按修饰键不会保存。") : L10n.text("按空格、Return 或点击以录制\(actionTitle)快捷键。")
         toolTip = help
-        setAccessibilityValue(isRecording ? "正在录制，\(title)" : chord.displayName)
+        setAccessibilityValue(isRecording ? L10n.text("正在录制，\(title)") : chord.displayName)
         setAccessibilityHelp(help)
     }
 }
