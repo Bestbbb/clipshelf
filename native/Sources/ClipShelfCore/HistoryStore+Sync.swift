@@ -233,11 +233,12 @@ extension HistoryStore {
         }
         sqlite3_finalize(statement)
         for (kind, id, action) in dirty {
-            let record = kind == .clipboard && action == .upsert ? try itemWithoutLock(id: id) : nil
-            let inheritedNamespace = try record?.pinboardID.flatMap { try syncNamespace(kind: .pinboard, id: $0) }
+            // Namespace decisions need only placement. Purely local moves must not decode attachments.
+            let placement = kind == .clipboard && action == .upsert ? try orderingItem(id: id) : nil
+            let inheritedNamespace = try placement?.boardID.flatMap { try syncNamespace(kind: .pinboard, id: $0) }
             let existingNamespace = try syncNamespace(kind: kind, id: id)
             let localOnly = try isSyncLocalOnly(kind: kind, id: id)
-            let localOnlyBoard = try record?.pinboardID.map { try isSyncLocalOnly(kind: .pinboard, id: $0) } ?? false
+            let localOnlyBoard = try placement?.boardID.map { try isSyncLocalOnly(kind: .pinboard, id: $0) } ?? false
             if localOnly || localOnlyBoard {
                 guard existingNamespace == nil, inheritedNamespace == nil else { throw SyncError.namespaceConflict }
                 try markSyncLocalOnly(kind: kind, id: id)
@@ -248,8 +249,9 @@ extension HistoryStore {
                 guard try sharingConfigurationWithoutLock().accountID == state.descriptor.accountID else { throw SharedBoardError.accountChanged }
                 guard state.access.canWrite else { throw state.access == .revoked ? SharedBoardError.revoked : SharedBoardError.readOnly }
                 if kind == .pinboard, action == .delete, state.access != .owner { throw SharedBoardError.readOnly }
-                if let record, record.pinboardID != state.descriptor.boardID { throw SyncError.namespaceConflict }
+                if let placement, placement.boardID != state.descriptor.boardID { throw SyncError.namespaceConflict }
             }
+            let record = kind == .clipboard && action == .upsert ? try itemWithoutLock(id: id) : nil
             try setSyncNamespace(kind: kind, id: id, accountID: accountID)
             let hasOrderMarker = try syncScalar("SELECT entity_id FROM sync_order_dirty WHERE entity_id = ?", [id.uuidString]) != nil
             var head = try syncHead(accountID: accountID, kind: kind, id: id, table: "sync_content_heads")

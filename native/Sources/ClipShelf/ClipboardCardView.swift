@@ -58,6 +58,7 @@ struct ClipboardCardContent {
 final class ClipboardCardView: NSButton, NSDraggingSource {
     let record: ClipboardCardContent
     var onSelect: (() -> Void)?
+    var onClick: ((NSEvent) -> Void)?
     var onOpen: (() -> Void)?
     var onPrepareDrag: ((NSEvent) -> Void)?
     var onDragError: ((Error) -> Void)?
@@ -65,6 +66,9 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     private(set) var draggedRecordIDs: [UUID] = []
     private(set) var draggedRecordRevisions: [UUID: Int] = [:]
     var dragOriginID: UUID?
+    private(set) var dragScopeID: UUID?
+    private(set) var dragSelectionID: UUID?
+    private(set) var draggedReferences: [ClipboardSelectionReference] = []
     var isSelected = false { didSet { updateAppearance() } }
 
     static let recordIDType = NSPasteboard.PasteboardType("io.github.bestbbb.clipshelf.record-id")
@@ -247,7 +251,11 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
 
     override func mouseUp(with event: NSEvent) {
         trace("mouseUp event=\(event.eventNumber)")
-        if !isDragging { resetDragGesture() }
+        if !isDragging {
+            let wasClick = activeGestureID != nil && latestDragEvent == nil
+            resetDragGesture()
+            if wasClick { onClick?(event) }
+        }
     }
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
@@ -267,19 +275,26 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     }
 
     func prepareOrderingDrag(contents: [ClipboardCardContent], originID: UUID) {
-        guard activeGestureID != nil else { return }
+        prepareOrderingDrag(references: contents.map { ClipboardSelectionReference(id: $0.id, revision: $0.revision) }, originID: originID)
+    }
+
+    func prepareOrderingDrag(references: [ClipboardSelectionReference], originID: UUID,
+                             scopeID: UUID? = nil, selectionID: UUID? = nil) {
+        guard activeGestureID != nil, !references.isEmpty,
+              Set(references.map(\.id)).count == references.count else { return }
         dragKind = .ordering
-        dragOriginID = originID
-        draggedRecordIDs = contents.map(\.id)
-        draggedRecordRevisions = Dictionary(uniqueKeysWithValues: contents.map { ($0.id, $0.revision) })
-        preparedWriters = Self.orderingDragItems(for: contents)
+        dragOriginID = originID; dragScopeID = scopeID; dragSelectionID = selectionID
+        draggedReferences = references
+        draggedRecordIDs = references.map(\.id)
+        draggedRecordRevisions = Dictionary(uniqueKeysWithValues: references.map { ($0.id, $0.revision) })
+        preparedWriters = Self.orderingDragItems(for: references)
         trace("prepareOrderingDrag")
     }
 
-    func preparePayloadDrag(originID: UUID) {
+    func preparePayloadDrag(originID: UUID, scopeID: UUID? = nil, selectionID: UUID? = nil) {
         guard activeGestureID != nil else { return }
         dragKind = .payload
-        dragOriginID = originID
+        dragOriginID = originID; dragScopeID = scopeID; dragSelectionID = selectionID
         trace("preparePayloadDrag")
     }
 
@@ -290,6 +305,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         guard activeGestureID == gestureID, dragKind == .payload, !isDragging else { return false }
         do {
             preparedWriters = try Self.payloadDragItems(for: records)
+            draggedReferences = records.map { ClipboardSelectionReference(id: $0.id, revision: $0.revision) }
             draggedRecordIDs = records.map(\.id)
             draggedRecordRevisions = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0.revision) })
             startPreparedDragIfReady()
@@ -302,11 +318,15 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     }
 
     static func orderingDragItems(for contents: [ClipboardCardContent]) -> [NSPasteboardItem] {
-        contents.map { content in
-            let item = NSPasteboardItem()
-            item.setString(content.id.uuidString, forType: recordIDType)
-            return item
-        }
+        orderingDragItems(for: contents.map { ClipboardSelectionReference(id: $0.id, revision: $0.revision) })
+    }
+
+    static func orderingDragItems(for references: [ClipboardSelectionReference]) -> [NSPasteboardItem] {
+        guard !references.isEmpty else { return [] }
+        // The source object holds the complete refs. Native dragging receives one constant marker.
+        let item = NSPasteboardItem()
+        item.setString("clipshelf-selection", forType: recordIDType)
+        return [item]
     }
 
     static func payloadDragItems(for records: [ClipboardRecord]) throws -> [NSPasteboardItem] {
@@ -363,9 +383,12 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         preparedWriters = []
         latestDragEvent = nil
         isDragging = false
+        draggedReferences = []
         draggedRecordIDs = []
         draggedRecordRevisions = [:]
         dragOriginID = nil
+        dragScopeID = nil
+        dragSelectionID = nil
     }
 
     override func updateTrackingAreas() {

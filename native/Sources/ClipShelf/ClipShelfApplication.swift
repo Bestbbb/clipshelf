@@ -59,7 +59,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     private var suspensionReasons = Set<String>()
     private var outsideMonitor: Any?
     private var sessionSuspended = false
-    private let historyUndo = UndoManager()
+    private let historyUndo: UndoManager = {
+        let manager = UndoManager(); manager.levelsOfUndo = 10; manager.groupsByEvent = false; return manager
+    }()
+    private lazy var selectionUndoHistory = SelectionUndoHistory(manager: historyUndo)
+    private var selectionMutationInProgress = false
     private var isTerminating = false
     private let defaultExclusions = ["com.1password.1password", "com.agilebits.onepassword7",
                                      "com.bitwarden.desktop", "com.apple.Passwords"]
@@ -278,13 +282,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             if self.paste.copy(record) { self.setStatus("内容已复制，可在目标应用按 ⌘V。") }
         }
         panel.onDelete = { [weak self] record in
-            guard let self else { return }
-            if self.demo { self.records.removeAll { $0.id == record.id }; self.refresh(); return }
-            do {
-                try self.store?.delete(id: record.id); self.remember([record]); self.reload()
-                Task { try? await self.ocrCache.remove(recordID: record.id) }
-            }
-            catch { self.setStatus("删除失败，原记录仍保留。") }
+            self?.deleteSelection([record])
         }
         panel.onPauseToggle = { [weak self] in self?.toggleRecording() }
         panel.onPermissions = { [weak self] in self?.enableDirectPaste() }
@@ -298,16 +296,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             if self.paste.copy(selected) { self.setStatus("已复制 \(selected.count) 项。") }
         }
         panel.onDeleteRecords = { [weak self] selected in
-            guard let self else { return }
-            if self.demo { self.records.removeAll { item in selected.contains { $0.id == item.id } }; self.refresh(); return }
-            do {
-                for record in selected {
-                    try self.store?.delete(id: record.id)
-                    Task { try? await self.ocrCache.remove(recordID: record.id) }
-                }
-                self.remember(selected); self.reload()
-            }
-            catch { self.setStatus("部分内容未能删除，请刷新后检查。") }
+            self?.deleteSelection(selected)
         }
         panel.onEdit = { [weak self] record, text, rtf in
             guard let self else { return }
@@ -324,52 +313,72 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             panel.onPageRequest = { [weak self] request, completion in
                 self?.loadPage(request, completion: completion)
             }
+            panel.onSelectionSnapshot = { [weak self] query, completion in
+                self?.readSelection({ try $0.selectionSnapshot(query) }, completion: completion)
+            }
+            panel.onValidateSelection = { [weak self] references, completion in
+                self?.readSelection({ try $0.validateSelection(references) }, completion: completion)
+            }
+            panel.resolveSelection = { [weak self] references, completion in
+                self?.readSelection({ try $0.resolveSelection(references) }, completion: completion)
+            }
+            panel.onMoveSelection = { [weak self] references, boardID, completion in
+                self?.moveSelection({ try $0.moveSelection(references, to: boardID) }, completion: completion)
+            }
+            panel.onReorderSelection = { [weak self] references, boardID, before, completion in
+                self?.moveSelection({ try $0.moveSelection(references, to: boardID, before: before) }, completion: completion)
+            }
+            panel.onStepSelection = { [weak self] references, boardID, forward, completion in
+                self?.moveSelection({ try $0.stepSelection(references, boardID: boardID, forward: forward) }, completion: completion)
+            }
         }
         panel.onCreatePinboard = { [weak self] name, color in
-            guard let self, !self.demo else { return }
+            guard let self, !self.demo, self.mutationIsAvailable() else { return }
             do { _ = try self.store?.createPinboard(name: name, color: color); self.reload() }
             catch { self.setStatus("无法创建分组，请检查名称与颜色。") }
         }
         panel.onUpdatePinboard = { [weak self] board in
-            guard let self, !self.demo else { return }
+            guard let self, !self.demo, self.mutationIsAvailable() else { return }
             do { try self.store?.updatePinboard(board); self.reload() }
             catch { self.setStatus("无法更新分组，请重试。") }
         }
         panel.onReorderPinboards = { [weak self] ids in
-            guard let self, !self.demo else { return }
+            guard let self, !self.demo, self.mutationIsAvailable() else { return }
             do { try self.store?.reorderPinboards(ids: ids); self.reload() }
             catch { self.setStatus("分组列表已改变，顺序未保存；请刷新后重试。"); self.reload() }
         }
         panel.onReorderRecords = { [weak self] boardID, ids, beforeID, revisions, completion in
-            guard let self, !self.demo, let store = self.store else {
+            guard let self, !self.demo else {
                 completion(.failure(HistoryStoreError.recordNotFound)); return
             }
-            Task { @MainActor in
-                do {
-                    try await Task.detached(priority: .userInitiated) {
-                        try store.move(recordIDs: ids, to: boardID, before: beforeID, expectedRevisions: revisions)
-                    }.value
-                    completion(.success(()))
-                } catch { completion(.failure(error)) }
+            let references = ids.compactMap { id in revisions[id].map { ClipboardSelectionReference(id: id, revision: $0) } }
+            guard references.count == ids.count else { completion(.failure(HistoryStoreError.recordNotFound)); return }
+            let anchor = beforeID.flatMap { id in revisions[id].map { ClipboardSelectionReference(id: id, revision: $0) } }
+            guard beforeID == nil || anchor != nil else { completion(.failure(HistoryStoreError.recordNotFound)); return }
+            self.moveSelection({ store in
+                try store.moveSelection(references, to: boardID, before: anchor)
+            }) { result in
+                completion(result.map { _ in () })
             }
         }
         panel.onDeletePinboard = { [weak self] board in self?.deletePinboard(board) }
         panel.onMoveRecords = { [weak self] selected, boardID in
             guard let self, !self.demo else { return }
-            do {
-                try self.store?.move(recordIDs: selected.map(\.id), to: boardID,
-                                     expectedRevisions: Dictionary(uniqueKeysWithValues: selected.map { ($0.id, $0.revision) }))
-                self.remember(selected); self.reload()
+            let references = selected.map { ClipboardSelectionReference(id: $0.id, revision: $0.revision) }
+            self.moveSelection({ try $0.moveSelection(references, to: boardID) }) { [weak self] result in
+                if case .failure = result { self?.setStatus("内容已改变或无法移动，本次移动未保存；请刷新后重试。") }
             }
-            catch { self.setStatus("内容已改变或无法移动，本次移动未保存；请刷新后重试。"); self.reload() }
         }
         panel.onExtractText = { [weak self] record in self?.extractText(record) }
         panel.onRotateImage = { [weak self] record in self?.rotateImage(record) }
         panel.onOpenRecord = { [weak self] record in self?.openRecord(record) }
         panel.onSettings = { [weak self] in self?.showSettings() }
-        panel.onUndo = { [weak self] in self?.historyUndo.undo() }
+        panel.onUndo = { [weak self] in
+            guard let self, !self.selectionMutationInProgress else { return }
+            self.historyUndo.undo()
+        }
         panel.onDropItems = { [weak self] items, boardID in
-            guard let self, !self.demo else { return }
+            guard let self, !self.demo, self.mutationIsAvailable() else { return }
             do {
                 if var record = try ClipboardCodec.record(from: items, sourceApp: "拖入", sourceBundleID: nil) {
                     record.pinboardID = boardID
@@ -545,6 +554,101 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func readSelection<Value: Sendable>(
+        _ operation: @escaping @Sendable (HistoryStore) throws -> Value,
+        completion: @escaping (Result<Value, Error>) -> Void
+    ) {
+        guard let store else { completion(.failure(HistoryStoreError.recordNotFound)); return }
+        Task { @MainActor in
+            do { completion(.success(try await Task.detached(priority: .userInitiated) { try operation(store) }.value)) }
+            catch { completion(.failure(error)) }
+        }
+    }
+
+    private func moveSelection(
+        _ operation: @escaping @Sendable (HistoryStore) throws -> HistorySelectionMoveUndo,
+        completion: @escaping (Result<[ClipboardSelectionReference], Error>) -> Void
+    ) {
+        guard let store else { completion(.failure(HistoryStoreError.recordNotFound)); return }
+        guard !selectionMutationInProgress else { completion(.failure(SelectionOperationError.busy)); return }
+        selectionMutationInProgress = true
+        Task { @MainActor in
+            defer { selectionMutationInProgress = false }
+            do {
+                let undo = try await Task.detached(priority: .userInitiated) { try operation(store) }.value
+                selectionUndoHistory.register(.move(undo)) { [weak self] in self?.undoSelection($0, store: store) }
+                completion(.success(undo.references))
+                reload()
+            } catch { completion(.failure(error)) }
+        }
+    }
+
+    private func deleteSelection(_ selected: [ClipboardRecord]) {
+        guard !selected.isEmpty else { return }
+        if demo {
+            let ids = Set(selected.map(\.id))
+            records.removeAll { ids.contains($0.id) }
+            refresh()
+            return
+        }
+        guard let store else { return }
+        guard !selectionMutationInProgress else { setStatus(SelectionOperationError.busy.localizedDescription); return }
+        guard SelectionUndoTicket.payloadSize(selected) <= selectionUndoHistory.maximumPayloadBytes else {
+            setStatus("所选内容过大，无法保留整批撤销；请缩小选择后重试。")
+            return
+        }
+        selectionMutationInProgress = true
+        let references = selected.map { ClipboardSelectionReference(id: $0.id, revision: $0.revision) }
+        Task { @MainActor in
+            defer { selectionMutationInProgress = false }
+            do {
+                let undo = try await Task.detached(priority: .userInitiated) { try store.deleteSelection(references) }.value
+                selectionUndoHistory.register(.deletion(selected, undo)) { [weak self] in self?.undoSelection($0, store: store) }
+                reload()
+            } catch {
+                setStatus("所选内容已改变或不可删除；本次整批删除未保存。")
+                reload()
+            }
+        }
+    }
+
+    private func undoSelection(_ ticket: SelectionUndoTicket, store: HistoryStore) {
+        guard !selectionMutationInProgress else { return }
+        selectionMutationInProgress = true
+        let action = ticket.action
+        Task { @MainActor in
+            defer { selectionMutationInProgress = false }
+            do {
+                let receipt = try await Task.detached(priority: .userInitiated) {
+                    switch action {
+                    case .move(let undo): return try store.undoSelectionMove(undo)
+                    case .deletion(let records, let undo): return try store.restoreDeletedSelection(records, undo: undo)
+                    case .edit(let undo): return try store.undoSelectionEdit(undo)
+                    }
+                }.value
+                selectionUndoHistory.remove(ticket)
+                if selectionUndoHistory.rebaseActions(using: store, receipt: receipt) > 0 {
+                    setStatus("已撤销；部分更早的撤销记录已失效。")
+                }
+                reload()
+            } catch {
+                selectionUndoHistory.remove(ticket)
+                setStatus("本次撤销已失效，相关内容、分组或同步状态已改变；没有部分恢复。")
+                reload()
+            }
+        }
+    }
+
+    private enum SelectionOperationError: Error, LocalizedError {
+        case busy
+        var errorDescription: String? { "正在完成上一项修改或撤销，请稍后再试。" }
+    }
+
+    private func mutationIsAvailable() -> Bool {
+        guard !selectionMutationInProgress else { setStatus(SelectionOperationError.busy.localizedDescription); return false }
+        return true
+    }
+
     private func requestOCRCleanup(store: HistoryStore) {
         ocrCleanupRequested = true
         guard ocrCleanupTask == nil else { return }
@@ -647,7 +751,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func newText() {
-        guard !demo, store != nil else { return }
+        guard !demo, store != nil, mutationIsAvailable() else { return }
         cancelSuggestions()
         panel.dismiss()
         let alert = NSAlert()
@@ -662,7 +766,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         alert.accessoryView = scroll
         alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "取消")
         NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn, !text.string.isEmpty {
+        if alert.runModal() == .alertFirstButtonReturn, !text.string.isEmpty, mutationIsAvailable() {
             do {
                 _ = try store?.create(ClipboardRecord(text: text.string, sourceApp: "ClipShelf",
                                                       sourceBundleID: Bundle.main.bundleIdentifier))
@@ -710,21 +814,24 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             if let index = records.firstIndex(where: { $0.id == record.id }) { records[index] = record; refresh() }
             return
         }
+        guard mutationIsAvailable(), let store else { return }
         do {
-            if let previous = try store?.item(id: record.id) { remember([previous]) }
-            _ = try store?.update(record: record); reload()
+            let undo = try store.editSelectionRecord(record)
+            selectionUndoHistory.register(.edit(undo)) { [weak self] in self?.undoSelection($0, store: store) }
+            reload()
         }
+        catch HistoryStoreError.selectionPayloadTooLarge { setStatus("内容过大，无法保留完整撤销；本次编辑未保存。") }
         catch { setStatus("内容已发生变化或保存失败，请重新打开后编辑。") }
     }
 
     private func deletePinboard(_ board: Pinboard) {
-        guard !demo else { return }
+        guard !demo, mutationIsAvailable() else { return }
         let alert = NSAlert(); alert.messageText = "删除「\(board.name)」？"
         alert.informativeText = "可以仅移除分组并把内容保留在历史中，也可以删除分组及其全部内容。后者不可撤销。"
         alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "仅移除分组，保留内容")
         alert.addButton(withTitle: "删除分组及全部内容")
         let choice = alert.runModal()
-        guard choice != .alertFirstButtonReturn else { return }
+        guard choice != .alertFirstButtonReturn, mutationIsAvailable() else { return }
         do {
             try store?.deletePinboard(id: board.id, deleteItems: choice == .alertThirdButtonReturn); reload()
             if choice == .alertThirdButtonReturn { Task { try? await ocrCache.clear() } }
@@ -870,24 +977,6 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             }
         }
         catch { statusMessage = "历史清理未完成，原有内容保留。" }
-    }
-
-    private func remember(_ originals: [ClipboardRecord]) {
-        guard !originals.isEmpty else { return }
-        historyUndo.levelsOfUndo = 10
-        historyUndo.registerUndo(withTarget: self) { target in
-            MainActor.assumeIsolated {
-                do {
-                    for var record in originals {
-                        if let current = try target.store?.item(id: record.id) {
-                            record.revision = current.revision
-                            _ = try target.store?.update(record: record)
-                        } else { _ = try target.store?.create(record, preserveOrigin: true) }
-                    }
-                    target.reload()
-                } catch { target.setStatus("撤销未完成：相关分组或内容已发生变化。") }
-            }
-        }
     }
 
     private func openRecord(_ record: ClipboardRecord) {
@@ -1076,7 +1165,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func restoreBackup() {
-        guard !demo, let store else { return }
+        guard !demo, let store, mutationIsAvailable() else { return }
         cancelSuggestions()
         panel.dismiss()
         let open = NSOpenPanel(); open.allowsMultipleSelection = false; open.canChooseDirectories = false
@@ -1096,19 +1185,23 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         let alert = NSAlert(); alert.messageText = "如何恢复备份？"
         alert.informativeText = "合并会保留现有内容，并将备份导入为独立本地内容；不会自动上传或传播云端删除。有关联同步数据的档案只允许合并。纯本地档案可替换；执行前会在本机数据目录保存未加密恢复副本。"
         alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "合并"); alert.addButton(withTitle: "替换")
-        let choice = alert.runModal(); guard choice != .alertFirstButtonReturn else { return }
+        let choice = alert.runModal(); guard choice != .alertFirstButtonReturn, mutationIsAvailable() else { return }
         let mode: BackupRestoreMode = choice == .alertSecondButtonReturn ? .merge : .replace
         let password = secret
+        selectionMutationInProgress = true
         Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.selectionMutationInProgress = false }
             do {
                 let result = try await Task.detached {
                     if let password { return try EncryptedBackupService.restore(store: store, from: url, password: password, mode: mode) }
                     return try store.restoreBackup(from: url, mode: mode)
                 }.value
+                self.selectionUndoHistory.removeAll()
                 let scope = result.restoredAsLocalOnly ? "恢复内容仅保存在本机，尚未上传。" : ""
-                try? await self?.ocrCache.clear()
-                self?.reload(); self?.setStatus("已恢复 \(result.importedRecords) 条内容。\(scope)恢复前副本保存在本机数据目录。")
-            } catch { self?.showError("恢复失败", detail: "\(error.localizedDescription)\n现有数据保留。") }
+                try? await self.ocrCache.clear()
+                self.reload(); self.setStatus("已恢复 \(result.importedRecords) 条内容。\(scope)恢复前副本保存在本机数据目录。")
+            } catch { self.showError("恢复失败", detail: "\(error.localizedDescription)\n现有数据保留。") }
         }
     }
 

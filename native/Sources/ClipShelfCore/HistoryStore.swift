@@ -14,6 +14,8 @@ public enum HistoryStoreError: Error, LocalizedError {
     case invalidPinboardOrder
     case invalidPinboardItemOrder
     case staleRevision
+    case invalidSelection
+    case selectionPayloadTooLarge
     case invalidBackup
     case backupExists
     case syncedProfileRequiresLocalMerge
@@ -32,6 +34,8 @@ public enum HistoryStoreError: Error, LocalizedError {
         case .invalidPinboard: return "A pinboard needs a name and a six-digit color."
         case .invalidPinboardOrder: return "The new order must contain every current pinboard exactly once. Reload the pinboards and try again."
         case .invalidPinboardItemOrder: return "分组内容或排序位置已改变。请重新加载；分页重排应使用移动条目操作，不能以部分列表覆盖整个分组。"
+        case .invalidSelection: return "选择列表无效，或已撤销的操作不属于当前资料库。请重新选择。"
+        case .selectionPayloadTooLarge: return "选中内容超过本次读取的容量限制，未执行任何输出。请减少选中内容后重试。"
         case .staleRevision: return "This item changed while it was being edited. Reload it before saving."
         case .invalidBackup: return "This backup is damaged, too large, or uses an unsupported format."
         case .backupExists: return "A file already exists at the backup destination."
@@ -46,6 +50,7 @@ public final class HistoryStore: @unchecked Sendable {
     public let databaseURL: URL
     let database: OpaquePointer
     private let lock = NSLock()
+    let selectionStoreIdentity = UUID()
     var syncSchemaReady = false
     var trigramSearchAvailable = false
     let recordsLocalOrigin: Bool
@@ -275,7 +280,7 @@ public final class HistoryStore: @unchecked Sendable {
 
     func prepareSearch(_ query: HistoryQuery, metadataOnly: Bool, offset: Int,
                        integrationScope: (SyncConfiguration, SyncConfiguration)? = nil, offsetFor recordID: UUID? = nil,
-                       countOnly: Bool = false) throws -> OpaquePointer {
+                       countOnly: Bool = false, selectionOnly: Bool = false) throws -> OpaquePointer {
             var clauses = [query.includePinned ? "(is_in_history = 1 OR pinboard_id IS NOT NULL)" : "is_in_history = 1"]
             var strings: [String] = []
             if !query.text.isEmpty {
@@ -316,6 +321,8 @@ public final class HistoryStore: @unchecked Sendable {
             let sql: String
             if countOnly {
                 sql = "SELECT count(*) FROM clipboard_records WHERE \(clauses.joined(separator: " AND "))"
+            } else if selectionOnly {
+                sql = "SELECT id, revision FROM clipboard_records WHERE \(clauses.joined(separator: " AND ")) ORDER BY \(ordering)"
             } else if recordID != nil {
                 sql = "SELECT position FROM (SELECT id, row_number() OVER (ORDER BY \(ordering)) - 1 AS position FROM clipboard_records WHERE \(clauses.joined(separator: " AND "))) WHERE id = ?"
             } else {
@@ -327,7 +334,7 @@ public final class HistoryStore: @unchecked Sendable {
             var index: Int32 = 1
             for value in strings { try bind(value, at: index, to: statement); index += 1 }
             for date in dates { try check(sqlite3_bind_double(statement, index, date.timeIntervalSinceReferenceDate)); index += 1 }
-            if countOnly { /* Count uses only the shared filter bindings. */ }
+            if countOnly || selectionOnly { /* Unbounded projections use only the shared filter bindings. */ }
             else if let recordID { try bind(recordID.uuidString, at: index, to: statement) }
             else {
                 try check(sqlite3_bind_int64(statement, index, Int64(clamping: query.limit)))
@@ -339,30 +346,39 @@ public final class HistoryStore: @unchecked Sendable {
 
     /// Optimistic revision checking prevents an editor from overwriting a concurrent change.
     @discardableResult
-    public func update(record: ClipboardRecord) throws -> ClipboardRecord {
+    public func update(record: ClipboardRecord, expectedSyncConfiguration: SyncConfiguration? = nil,
+                       expectedSharingConfiguration: SyncConfiguration? = nil) throws -> ClipboardRecord {
         try validate(record)
         return try synchronized {
             try transaction {
+                if let expectedSyncConfiguration {
+                    guard try syncConfigurationWithoutLock() == expectedSyncConfiguration else { throw SyncError.accountChanged }
+                }
+                if let expectedSharingConfiguration {
+                    guard try sharingConfigurationWithoutLock() == expectedSharingConfiguration else { throw SyncError.accountChanged }
+                }
                 guard let current = try itemWithoutLock(id: record.id) else { throw HistoryStoreError.recordNotFound }
-                guard current.revision == record.revision else { throw HistoryStoreError.staleRevision }
-                var next = record
-                next.revision = current.revision + 1
-                next.originDeviceID = current.originDeviceID
-                next.originDeviceName = current.originDeviceName
-                next.originDeviceConflict = current.originDeviceConflict
-                if next.pinboardID == current.pinboardID {
-                    next.pinboardOrder = current.pinboardOrder
-                } else {
-                    next.pinboardOrder = nil
-                    next = try assigningNewPinboardOrder(next)
-                }
-                if !current.hasSameContents(as: record), current.ocrText == record.ocrText {
-                    next.ocrText = nil
-                }
-                try replaceContents(next)
-                return next
+                return try updateWithoutLock(record: record, current: current)
             }
         }
+    }
+
+    func updateWithoutLock(record: ClipboardRecord, current: ClipboardRecord) throws -> ClipboardRecord {
+        guard current.id == record.id, current.revision == record.revision else { throw HistoryStoreError.staleRevision }
+        var next = record
+        next.revision = current.revision + 1
+        next.originDeviceID = current.originDeviceID
+        next.originDeviceName = current.originDeviceName
+        next.originDeviceConflict = current.originDeviceConflict
+        if next.pinboardID == current.pinboardID {
+            next.pinboardOrder = current.pinboardOrder
+        } else {
+            next.pinboardOrder = nil
+            next = try assigningNewPinboardOrder(next)
+        }
+        if !current.hasSameContents(as: record), current.ocrText == record.ocrText { next.ocrText = nil }
+        try replaceContents(next)
+        return next
     }
 
     public func pinboards() throws -> [Pinboard] {

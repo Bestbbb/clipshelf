@@ -13,7 +13,8 @@ final class ClipboardCardDragTests: XCTestCase {
         let records = [ClipboardRecord(text: "first", revision: 7), ClipboardRecord(text: "second", revision: 11)]
         let contents = records.map(ClipboardCardContent.init)
         let items = ClipboardCardView.orderingDragItems(for: contents)
-        XCTAssertEqual(items.map { $0.string(forType: ClipboardCardView.recordIDType) }, records.map { $0.id.uuidString })
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items.first?.string(forType: ClipboardCardView.recordIDType), "clipshelf-selection")
         XCTAssertTrue(items.allSatisfy { $0.types == [ClipboardCardView.recordIDType] })
         let card = ClipboardCardView(record: contents[0], position: 0)
         card.mouseDown(with: event(.leftMouseDown))

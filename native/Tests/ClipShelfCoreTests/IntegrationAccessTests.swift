@@ -64,4 +64,46 @@ final class IntegrationAccessTests: XCTestCase {
         try store.configureSync(accountID: nil)
         XCTAssertEqual(try store.searchIntegrationMetadata(query, expectedSyncConfiguration: store.syncConfiguration(), expectedSharingConfiguration: sharing).map(\.id), [local.id])
     }
+
+    func testAtomicUpdateRejectsPrivateAccountABAWithoutAdoptingLocalContent() throws {
+        let first = try store(), second = try store()
+        let original = try first.create(ClipboardRecord(text: "local original"))
+        try first.configureSync(accountID: "A", includeLocalData: false)
+        let sync = try first.syncConfiguration(), sharing = try first.sharingConfiguration()
+        try second.configureSync(accountID: "B"); try second.configureSync(accountID: "A")
+        var edited = original; edited.text = "stale edit"
+        XCTAssertThrowsError(try first.update(record: edited, expectedSyncConfiguration: sync, expectedSharingConfiguration: sharing)) { error in
+            guard case SyncError.accountChanged = error else { return XCTFail("Expected account generation rejection, got \(error)") }
+        }
+        XCTAssertEqual(try first.item(id: original.id), original)
+        XCTAssertEqual(try first.pendingSyncOperations(accountID: "A"), [])
+        // The private-only optional gate also checks independently of the sharing gate.
+        XCTAssertThrowsError(try first.update(record: edited, expectedSyncConfiguration: sync))
+    }
+
+    func testAtomicUpdateRejectsSharingAccountABAIndependently() throws {
+        let first = try store(), second = try store()
+        let original = try first.create(ClipboardRecord(text: "original"))
+        try first.configureSharing(accountID: "A")
+        let sharing = try first.sharingConfiguration()
+        try second.configureSharing(accountID: "B"); try second.configureSharing(accountID: "A")
+        var edited = original; edited.text = "stale sharing consent"
+        XCTAssertThrowsError(try first.update(record: edited, expectedSharingConfiguration: sharing))
+        XCTAssertEqual(try first.item(id: original.id), original)
+    }
+
+    func testConfigurationBoundEditAndUndoStillRejectExternalBodyRevision() throws {
+        let first = try store(), second = try store()
+        let original = try first.create(ClipboardRecord(text: "original"))
+        let sync = try first.syncConfiguration(), sharing = try first.sharingConfiguration()
+        var edited = original; edited.text = "saved edit"
+        let saved = try first.update(record: edited, expectedSyncConfiguration: sync, expectedSharingConfiguration: sharing)
+        var external = saved; external.text = "other connection edit"
+        let latest = try second.update(record: external)
+        var undo = original; undo.revision = saved.revision
+        XCTAssertThrowsError(try first.update(record: undo, expectedSyncConfiguration: sync, expectedSharingConfiguration: sharing)) { error in
+            guard case HistoryStoreError.staleRevision = error else { return XCTFail("Expected exact revision rejection, got \(error)") }
+        }
+        XCTAssertEqual(try first.item(id: original.id), latest)
+    }
 }

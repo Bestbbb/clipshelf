@@ -51,7 +51,12 @@ struct RepresentationStorage {
                       representation.byteCount <= Self.maximumRepresentationBytes else {
                     throw HistoryStoreError.corruptAttachment
                 }
-                let data = try Data(contentsOf: url(for: representation.digest), options: .mappedIfSafe)
+                let file = try url(for: representation.digest)
+                let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+                guard let size = attributes[.size] as? NSNumber, size.int64Value == Int64(representation.byteCount) else {
+                    throw HistoryStoreError.corruptAttachment
+                }
+                let data = try Data(contentsOf: file, options: .mappedIfSafe)
                 guard data.count == representation.byteCount, Self.digest(data) == representation.digest else {
                     throw HistoryStoreError.corruptAttachment
                 }

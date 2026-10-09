@@ -21,9 +21,7 @@ private final class ShelfReadOnlyPDFView: PDFView {
 private struct ShelfPDFDocument: @unchecked Sendable { let document: PDFDocument? }
 
 private struct PanelRetainedSelection {
-    let selectedID: UUID?
-    let selectedIDs: Set<UUID>
-    let anchorID: UUID?
+    let generation: UUID
 }
 
 private final class ResultsFocusView: NSCollectionView {
@@ -99,6 +97,13 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     var onQueryChange: ((HistoryQuery) -> Void)?
     /// Reads one bounded metadata window; completion must return on main.
     var onPageRequest: ((PanelPageRequest, @escaping (Result<PanelHistoryPage, Error>) -> Void) -> Void)?
+    /// All callbacks complete on main. Selection snapshots contain IDs/versions, never payloads.
+    var onSelectionSnapshot: ((HistoryQuery, @escaping (Result<HistorySelectionSnapshot, Error>) -> Void) -> Void)?
+    var onValidateSelection: (([ClipboardSelectionReference], @escaping (Result<Void, Error>) -> Void) -> Void)?
+    var resolveSelection: (([ClipboardSelectionReference], @escaping (Result<[ClipboardRecord], Error>) -> Void) -> Void)?
+    var onMoveSelection: (([ClipboardSelectionReference], UUID?, @escaping (Result<[ClipboardSelectionReference], Error>) -> Void) -> Void)?
+    var onReorderSelection: (([ClipboardSelectionReference], UUID, ClipboardSelectionReference?, @escaping (Result<[ClipboardSelectionReference], Error>) -> Void) -> Void)?
+    var onStepSelection: (([ClipboardSelectionReference], UUID, Bool, @escaping (Result<[ClipboardSelectionReference], Error>) -> Void) -> Void)?
     var onCreatePinboard: ((String, String) -> Void)?
     var onUpdatePinboard: ((Pinboard) -> Void)?
     var onReorderPinboards: (([UUID]) -> Void)?
@@ -143,6 +148,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private var manualOrder = false
     private var orderingRequestID: UUID?
     private var reorderStatus: String?
+    private var selectionStatus: String?
     private var pageStatus: String?
     private var pendingRevealID: UUID?
     private let insertionLine = NSView()
@@ -176,9 +182,12 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private var records: [ClipboardCardContent] = []
     private var filteredRecords: [ClipboardCardContent] = []
     private var cardViews: [ClipboardCardView] { resultsView.visibleItems().compactMap { ($0 as? ClipboardCollectionItem)?.card } }
-    private var selectedID: UUID?
-    private var selectedIDs: Set<UUID> = []
-    private var selectionAnchorID: UUID?
+    private var selection = PanelSelectionState()
+    private var selectedID: UUID? { selection.focusID }
+    private var selectedIDs: Set<UUID> { selection.selectedIDs }
+    private var scopeGeneration = UUID()
+    private var selectionRequestID: UUID?
+    private var validationRequestID: UUID?
     private var eventMonitor: Any?
     private var detailWindow: NSPanel?
     private var linkPreview: LinkPreviewController?
@@ -259,9 +268,10 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         sourcePopup.selectItem(at: 0)
         devicePopup.selectItem(at: 0)
         datePopup.selectItem(at: 0)
-        selectedID = self.records.first?.id
-        selectedIDs = Set(self.records.first.map { [$0.id] } ?? [])
-        selectionAnchorID = selectedID
+        selection.clear()
+        scopeGeneration = UUID()
+        selectionRequestID = nil
+        validationRequestID = nil
         statusLabel.stringValue = status ?? "本机保存 · 随时取用"
         reloadResults(resetScroll: true)
         let visible = (screen ?? NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
@@ -290,14 +300,14 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         updateContents(metadata.map(ClipboardCardContent.init), status: status)
     }
 
-    func updateStatus(_ status: String) { statusLabel.stringValue = pageStatus ?? reorderStatus ?? status }
+    func updateStatus(_ status: String) { statusLabel.stringValue = selectionStatus ?? pageStatus ?? reorderStatus ?? status }
 
     /// Refresh the current window after storage changes without rereading a growing prefix.
     func refreshPage(status: String? = nil) {
         if let status { updateStatus(status) }
         guard isVisible, onPageRequest != nil else { return }
         if queryPending || !pageMatchesQuery { refreshAfterPageLoad = true; return }
-        let retained = PanelRetainedSelection(selectedID: selectedID, selectedIDs: selectedIDs, anchorID: selectionAnchorID)
+        let retained = PanelRetainedSelection(generation: selection.generation)
         var anchor: PanelPageAnchor?
         if let selectedID, let primary = filteredRecords.firstIndex(where: { $0.id == selectedID }) {
             let indices = filteredRecords.indices.filter { selectedIDs.contains(filteredRecords[$0].id) }
@@ -314,6 +324,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         self.records = Array(contents.prefix(resultLimit))
         if let status { statusLabel.stringValue = reorderStatus ?? status }
         reloadResults()
+        validateCurrentSelection()
         if let id = pendingRevealID {
             if filteredRecords.contains(where: { $0.id == id }) {
                 pendingRevealID = nil
@@ -412,6 +423,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         pageRequestID = nil
         queryPending = false
         refreshAfterPageLoad = false
+        selectionRequestID = nil
+        validationRequestID = nil
+        scopeGeneration = UUID()
         viewGeneration = UUID()
         pendingActionID = nil
         thumbnailJobs.removeAll()
@@ -655,7 +669,16 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private var isComposing: Bool { (window?.firstResponder as? NSTextView)?.hasMarkedText() == true }
     private var isEditingSearch: Bool { searchField.currentEditor() === window?.firstResponder || window?.firstResponder === searchField }
     private var selectedRecord: ClipboardCardContent? { filteredRecords.first(where: { $0.id == selectedID }) }
-    private var selectedRecords: [ClipboardCardContent] { filteredRecords.filter { selectedIDs.contains($0.id) } }
+    private func reference(_ content: ClipboardCardContent) -> ClipboardSelectionReference {
+        ClipboardSelectionReference(id: content.id, revision: content.revision)
+    }
+    private var currentQuery: HistoryQuery {
+        HistoryQuery(text: searchField.stringValue, kind: selectedKind, sourceBundleID: selectedSourceID,
+                     copiedAfter: copiedAfter, copiedBefore: copiedBefore, pinboardIDs: boardScope.queryIDs,
+                     includePinned: true, limit: resultLimit,
+                     sortOrder: manualOrder && boardScope.singleBoardID != nil ? .pinboard : .recent,
+                     deviceFilter: selectedDeviceFilter)
+    }
 
     private func reloadResults(resetScroll: Bool = false, allowAutomaticSelection: Bool = true) {
         let previousOrigin = resetScroll ? NSPoint.zero : scrollView.contentView.bounds.origin
@@ -669,9 +692,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             && (copiedAfter == nil || $0.copiedAt >= copiedAfter!)
             && (copiedBefore == nil || $0.copiedAt <= copiedBefore!)
         }
-        if !filteredRecords.contains(where: { $0.id == selectedID }) { selectedID = allowAutomaticSelection ? filteredRecords.first?.id : nil }
-        selectedIDs.formIntersection(Set(filteredRecords.map(\.id)))
-        if selectedIDs.isEmpty, let selectedID { selectedIDs.insert(selectedID) }
+        if selection.references.isEmpty, !selection.isInvalid, allowAutomaticSelection, let first = filteredRecords.first {
+            selection.selectSingle(reference(first))
+        }
         resultsView.reloadData()
         emptyStack.isHidden = !filteredRecords.isEmpty
         if query.isEmpty && !hasFilters {
@@ -711,6 +734,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             }
             self.select(record.id, focusResults: true, extending: modifiers.contains(.shift), toggling: modifiers.contains(.command))
         }
+        card.onClick = { [weak self] event in
+            guard let self, !event.modifierFlags.contains(.shift), !event.modifierFlags.contains(.command),
+                  self.selectedIDs.count > 1, self.selectedIDs.contains(record.id) else { return }
+            self.select(record.id, focusResults: true)
+        }
         card.onOpen = { [weak self] in
             guard let self else { return }
             self.select(record.id, focusResults: true)
@@ -723,14 +751,17 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         }
         card.onPrepareDrag = { [weak self, weak card] event in
             guard let self, let card, let gestureID = card.activeGestureID else { return }
-            let contents = self.selectedIDs.contains(record.id) ? self.selectedRecords : [record]
-            ClipboardDragTrace.log("panel prepare manual=\(self.manualOrder) option=\(event.modifierFlags.contains(.option)) canReorder=\(self.canReorderItems) queryPending=\(self.queryPending) requestPending=\(self.orderingRequestID != nil) count=\(contents.count)")
+            guard !self.selection.isInvalid, self.selectionRequestID == nil else { return }
+            let refs = self.selectedIDs.contains(record.id) ? self.selection.references : [self.reference(record)]
+            ClipboardDragTrace.log("panel prepare manual=\(self.manualOrder) option=\(event.modifierFlags.contains(.option)) canReorder=\(self.canReorderItems) queryPending=\(self.queryPending) requestPending=\(self.orderingRequestID != nil) count=\(refs.count)")
             if self.manualOrder && !event.modifierFlags.contains(.option) {
                 guard self.canReorderItems else { return }
-                card.prepareOrderingDrag(contents: contents, originID: self.viewGeneration)
+                card.prepareOrderingDrag(references: refs, originID: self.viewGeneration,
+                                         scopeID: self.scopeGeneration, selectionID: self.selection.generation)
             } else {
-                card.preparePayloadDrag(originID: self.viewGeneration)
-                self.resolve(contents) { [weak card] records in
+                card.preparePayloadDrag(originID: self.viewGeneration, scopeID: self.scopeGeneration,
+                                        selectionID: self.selection.generation)
+                self.resolveReferences(refs) { [weak card] records in
                     card?.providePreparedPayload(records: records, gestureID: gestureID)
                 }
             }
@@ -738,7 +769,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         card.onDragError = { [weak self] error in self?.statusLabel.stringValue = "无法拖出内容：\(error.localizedDescription)" }
         if record.kind == .image { requestThumbnail(record, for: card) }
         let menu = NSMenu()
-        for (title, action) in [("粘贴", #selector(pasteFromMenu(_:))), ("以纯文本粘贴", #selector(pastePlainFromMenu(_:))), ("复制", #selector(copyFromMenu(_:))), ("预览", #selector(previewFromMenu(_:))), ("打开", #selector(openFromMenu(_:))), ("编辑", #selector(editFromMenu(_:))), ("重命名", #selector(renameFromMenu(_:))), ("删除", #selector(deleteFromMenu(_:)))] {
+        for (title, action) in [("粘贴", #selector(pasteFromMenu(_:))), ("以纯文本粘贴", #selector(pastePlainFromMenu(_:))), ("复制", #selector(copyFromMenu(_:))), ("预览此项", #selector(previewFromMenu(_:))), ("打开此项", #selector(openFromMenu(_:))), ("编辑此项", #selector(editFromMenu(_:))), ("重命名此项", #selector(renameFromMenu(_:))), ("删除", #selector(deleteFromMenu(_:)))] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             item.representedObject = record.id
@@ -752,12 +783,12 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             }
         }
         card.menu = menu
-        let shareItem = NSMenuItem(title: "分享…", action: #selector(shareFromMenu(_:)), keyEquivalent: "")
+        let shareItem = NSMenuItem(title: "分享此项…", action: #selector(shareFromMenu(_:)), keyEquivalent: "")
         shareItem.target = self
         shareItem.representedObject = record.id
         menu.insertItem(shareItem, at: max(0, menu.items.count - 1))
         if record.kind == .image {
-            let fileItem = NSMenuItem(title: "复制为图片文件", action: #selector(copyImageFileFromMenu(_:)), keyEquivalent: "")
+            let fileItem = NSMenuItem(title: "复制此项为图片文件", action: #selector(copyImageFileFromMenu(_:)), keyEquivalent: "")
             fileItem.target = self
             fileItem.representedObject = record.id
             menu.insertItem(fileItem, at: 3)
@@ -776,25 +807,121 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         return card
     }
 
-    private func select(_ id: UUID, focusResults: Bool, extending: Bool = false, toggling: Bool = false) {
-        reorderStatus = nil
-        if extending,
-           let anchor = filteredRecords.firstIndex(where: { $0.id == (selectionAnchorID ?? selectedID) }),
-           let next = filteredRecords.firstIndex(where: { $0.id == id }) {
-            selectedIDs = Set(filteredRecords[min(anchor, next)...max(anchor, next)].map(\.id))
-        } else if toggling {
-            if selectedIDs.contains(id) { selectedIDs.remove(id) } else { selectedIDs.insert(id) }
-            selectionAnchorID = id
-        } else {
-            selectedIDs = [id]
-            selectionAnchorID = id
-        }
-        selectedID = id
-        if toggling, !selectedIDs.contains(id) { selectedID = filteredRecords.first(where: { selectedIDs.contains($0.id) })?.id }
-        for card in cardViews { card.isSelected = selectedIDs.contains(card.record.id) }
+    private func updateSelectionAppearance(focusResults: Bool = false, revealID: UUID? = nil) {
+        let ids = selectedIDs
+        for card in cardViews { card.isSelected = ids.contains(card.record.id) }
         updateSelectionCount()
         if focusResults { window?.makeFirstResponder(resultsView) }
-        if let index = filteredRecords.firstIndex(where: { $0.id == id }) { revealItem(at: index) }
+        if let id = revealID, let index = filteredRecords.firstIndex(where: { $0.id == id }) { revealItem(at: index) }
+    }
+
+    private func select(_ id: UUID, focusResults: Bool, extending: Bool = false, toggling: Bool = false) {
+        guard !queryPending, pageMatchesQuery,
+              let ref = filteredRecords.first(where: { $0.id == id }).map(reference) ?? selection.reference(id) else { return }
+        reorderStatus = nil
+        if !extending && !toggling {
+            selectionRequestID = nil
+            pendingActionID = nil
+            selection.selectSingle(ref)
+            selectionStatus = nil
+            updateSelectionAppearance(focusResults: focusResults, revealID: id)
+            return
+        }
+        ensureSelectionUniverse(including: ref) { [weak self] in
+            guard let self else { return }
+            do {
+                try self.selection.select(ref: ref, toggle: toggling, extend: extending)
+                self.updateSelectionAppearance(focusResults: focusResults, revealID: id)
+            } catch { self.selectionFailed(error) }
+        }
+    }
+
+    private func selectionFailed(_ error: Error) {
+        selectionRequestID = nil
+        selection.invalidate()
+        selectionStatus = "选中内容已变化或无法读取，操作未执行；请重新选择。\(error.localizedDescription)"
+        statusLabel.stringValue = selectionStatus!
+        updateSelectionAppearance()
+    }
+
+    /// Rebuilding a universe may include new captures, but preserves only the explicitly chosen IDs.
+    private func ensureSelectionUniverse(including ref: ClipboardSelectionReference? = nil, action: @escaping () -> Void) {
+        guard !selection.isInvalid, selectionRequestID == nil, isVisible, !queryPending, pageMatchesQuery else { return }
+        if selection.universe != nil, ref.map({ selection.reference($0.id) == $0 }) ?? true { action(); return }
+        selection.beginChange()
+        pendingActionID = nil
+        validationRequestID = nil
+        let requestID = UUID(), session = viewGeneration, scope = scopeGeneration, generation = selection.generation
+        selectionRequestID = requestID
+        let chosen = selection.references
+        func valid() -> Bool {
+            isVisible && viewGeneration == session && scopeGeneration == scope && selection.generation == generation && selectionRequestID == requestID
+        }
+        func capture() {
+            guard valid() else { return }
+            requestSelectionSnapshot { [weak self] result in
+                guard let self, valid() else { return }
+                self.selectionRequestID = nil
+                do {
+                    let snapshot = try result.get()
+                    try self.selection.installUniverse(snapshot.references)
+                    if let ref, self.selection.reference(ref.id) != ref { throw PanelSelectionState.SelectionError.staleSelection }
+                    action()
+                } catch { self.selectionFailed(error) }
+            }
+        }
+        if chosen.isEmpty { capture() }
+        else {
+            validateReferences(chosen) { [weak self] result in
+                guard let self, valid() else { return }
+                switch result { case .success: capture(); case .failure(let error): self.selectionFailed(error) }
+            }
+        }
+    }
+
+    private func requestSelectionSnapshot(_ completion: @escaping (Result<HistorySelectionSnapshot, Error>) -> Void) {
+        if let onSelectionSnapshot { onSelectionSnapshot(currentQuery, completion); return }
+        // Demo/local mode owns every record. A paginated caller must provide the global callback.
+        guard !usesRemoteQuery else { completion(.failure(PanelSelectionState.SelectionError.missingUniverse)); return }
+        completion(.success(HistorySelectionSnapshot(references: filteredRecords.map(reference))))
+    }
+
+    private func selectAllResults() {
+        guard isVisible, !queryPending, pageMatchesQuery else { return }
+        selection.beginChange()
+        pendingActionID = nil
+        validationRequestID = nil
+        let requestID = UUID(), session = viewGeneration, scope = scopeGeneration, generation = selection.generation
+        selectionRequestID = requestID
+        pendingActionID = nil
+        requestSelectionSnapshot { [weak self] result in
+            guard let self, self.isVisible, self.viewGeneration == session, self.scopeGeneration == scope,
+                  self.selection.generation == generation, self.selectionRequestID == requestID else { return }
+            self.selectionRequestID = nil
+            do { try self.selection.selectAll(try result.get().references); self.selectionStatus = nil; self.updateSelectionAppearance() }
+            catch { self.selectionFailed(error) }
+        }
+    }
+
+    private func validateReferences(_ references: [ClipboardSelectionReference], completion: @escaping (Result<Void, Error>) -> Void) {
+        if let onValidateSelection { onValidateSelection(references, completion); return }
+        let visible = Dictionary(uniqueKeysWithValues: filteredRecords.map { ($0.id, $0.revision) })
+        guard references.allSatisfy({ ref in inlineRecords[ref.id]?.revision == ref.revision || visible[ref.id] == ref.revision }) else {
+            completion(.failure(PanelSelectionState.SelectionError.staleSelection)); return
+        }
+        completion(.success(()))
+    }
+
+    private func validateCurrentSelection() {
+        guard !selection.references.isEmpty, !selection.isInvalid, orderingRequestID == nil else { return }
+        let requestID = UUID(), session = viewGeneration, scope = scopeGeneration, generation = selection.generation
+        validationRequestID = requestID
+        validateReferences(selection.references) { [weak self] result in
+            guard let self, self.isVisible, self.viewGeneration == session, self.scopeGeneration == scope,
+                  self.selection.generation == generation, self.validationRequestID == requestID else { return }
+            self.validationRequestID = nil
+            if case .failure(let error) = result { self.selectionFailed(error) }
+        }
     }
 
     private func revealItem(at index: Int) {
@@ -812,24 +939,35 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func moveSelection(_ offset: Int, extending: Bool = false) {
         guard !filteredRecords.isEmpty, !queryPending else { return }
-        let old = filteredRecords.firstIndex(where: { $0.id == selectedID }) ?? 0
-        let crossesWindow = old + offset < 0 ? hasPreviousResults : old + offset >= filteredRecords.count && hasMoreResults
-        if crossesWindow, onPageRequest != nil {
-            if extending {
-                statusLabel.stringValue = "多选限当前页；请先翻页，再选择需要的内容。"
-                return
+        if extending {
+            ensureSelectionUniverse { [weak self] in
+                guard let self, let id = self.selection.rangeTarget(delta: offset), let ref = self.selection.reference(id) else { return }
+                do {
+                    try self.selection.select(ref: ref, toggle: false, extend: true)
+                    self.updateSelectionAppearance(focusResults: true, revealID: id)
+                    if !self.filteredRecords.contains(where: { $0.id == id }) {
+                        self.issueQuery(resetLimit: false, anchor: PanelPageAnchor(recordID: id, displacement: 0),
+                                        retainedSelection: PanelRetainedSelection(generation: self.selection.generation))
+                    }
+                } catch { self.selectionFailed(error) }
             }
-            issueQuery(resetLimit: false, anchor: PanelPageAnchor(recordID: filteredRecords[old].id, displacement: offset < 0 ? -1 : 1))
+            return
+        }
+        let old = filteredRecords.firstIndex(where: { $0.id == selectedID }) ?? (offset < 0 ? filteredRecords.count : -1)
+        let crossesWindow = old + offset < 0 ? hasPreviousResults : old + offset >= filteredRecords.count && hasMoreResults
+        if crossesWindow, onPageRequest != nil, filteredRecords.indices.contains(old) {
+            issueQuery(resetLimit: false, anchor: PanelPageAnchor(recordID: filteredRecords[old].id, displacement: offset < 0 ? -1 : 1), replaceSelectionOnFocus: true)
             return
         }
         let index = max(0, min(filteredRecords.count - 1, old + offset))
-        select(filteredRecords[index].id, focusResults: true, extending: extending)
+        select(filteredRecords[index].id, focusResults: true)
     }
 
     private func updateSelectionCount() {
         orderingActions.isEnabled = canReorderItems && !selectedIDs.isEmpty
         let count = onPageRequest != nil ? pageWindow.rangeDescription : "\(filteredRecords.count) 条"
-        countLabel.stringValue = selectedIDs.count > 1 ? "\(count) · 已选 \(selectedIDs.count) 条" : count
+        let selected = selection.references.count
+        countLabel.stringValue = selected > 1 || selection.isInvalid ? "\(count) · 已选 \(selected) 条\(selection.isInvalid ? "（已变化）" : "")" : count
     }
 
     private func loadPayload(_ id: UUID, completion: @escaping (ClipboardRecord?) -> Void) {
@@ -853,7 +991,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
     private var hasPreviousResults: Bool { onPageRequest != nil && pageWindow.hasPrevious }
     private var hasMoreResults: Bool { onPageRequest != nil ? pageWindow.hasMore : onQueryChange != nil && records.count >= resultLimit }
-    private var canReorderItems: Bool { manualOrder && boardScope.singleBoardID != nil && onReorderRecords != nil && orderingRequestID == nil && !queryPending && pageMatchesQuery }
+    private var canReorderItems: Bool { manualOrder && boardScope.singleBoardID != nil && (onReorderSelection != nil || onReorderRecords != nil) && orderingRequestID == nil && !queryPending && pageMatchesQuery && !selection.isInvalid && selectionRequestID == nil }
 
     private func updatePageControls() {
         previousPageButton.isHidden = onPageRequest == nil || !hasPreviousResults
@@ -910,13 +1048,27 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     @objc private func orderChanged() { manualOrder = orderPopup.indexOfSelectedItem == 1 && boardScope.singleBoardID != nil; issueQuery(resetLimit: true) }
     @objc private func moveItemsEarlier() { stepSelectedItems(forward: false) }
     @objc private func moveItemsLater() { stepSelectedItems(forward: true) }
-    @objc private func reorderEarlierFromMenu(_ item: NSMenuItem) { selectContextItemIfNeeded(item); stepSelectedItems(forward: false) }
-    @objc private func reorderLaterFromMenu(_ item: NSMenuItem) { selectContextItemIfNeeded(item); stepSelectedItems(forward: true) }
-    private func selectContextItemIfNeeded(_ item: NSMenuItem) {
-        if let id = item.representedObject as? UUID, !selectedIDs.contains(id) { select(id, focusResults: true) }
+    @objc private func reorderEarlierFromMenu(_ item: NSMenuItem) { if selectContextItemIfNeeded(item) { stepSelectedItems(forward: false) } }
+    @objc private func reorderLaterFromMenu(_ item: NSMenuItem) { if selectContextItemIfNeeded(item) { stepSelectedItems(forward: true) } }
+    private func selectContextItemIfNeeded(_ item: NSMenuItem) -> Bool {
+        guard let id = item.representedObject as? UUID, !queryPending, pageMatchesQuery else { return false }
+        if selectedIDs.contains(id) { return !selection.isInvalid }
+        guard filteredRecords.contains(where: { $0.id == id }) else {
+            statusLabel.stringValue = "菜单对应的条目已变化，请重新选择。"
+            return false
+        }
+        select(id, focusResults: true)
+        return selectedIDs.contains(id)
     }
     private func stepSelectedItems(forward: Bool) {
         guard canReorderItems else { statusLabel.stringValue = "请先选择一个分组，并切换为“分组内手动顺序”。"; return }
+        if let onStepSelection, let boardID = boardScope.singleBoardID {
+            let refs = selection.references
+            performSelectionMutation(refs, success: "已保存分组顺序") { completion in
+                onStepSelection(refs, boardID, forward, completion)
+            }
+            return
+        }
         do {
             let plan = try PanelReorderPlan.step(movingIDs: selectedIDs, visibleIDs: filteredRecords.map(\.id), forward: forward, hasMore: hasMoreResults, hasPrevious: hasPreviousResults)
             applyReorder(plan)
@@ -956,6 +1108,65 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             self.issueQuery(resetLimit: false, preserveReveal: true, preserveStatus: true)
         }
     }
+    private func performSelectionMutation(_ refs: [ClipboardSelectionReference], success: String,
+                                          clearAfterSuccess: Bool = false,
+                                          operation: (@escaping (Result<[ClipboardSelectionReference], Error>) -> Void) -> Void) {
+        guard !refs.isEmpty, refs == selection.references, !selection.isInvalid, selectionRequestID == nil,
+              isVisible, !queryPending, pageMatchesQuery, orderingRequestID == nil else { return }
+        let requestID = UUID(), session = viewGeneration, scope = scopeGeneration
+        let generation = selection.generation, page = queryGeneration, pageRequest = pageRequestID
+        orderingRequestID = requestID
+        pendingActionID = nil
+        statusLabel.stringValue = "正在保存选中内容…"
+        updateFilterControls()
+        operation { [weak self] result in
+            guard let self, self.orderingRequestID == requestID else { return }
+            self.orderingRequestID = nil
+            self.updateFilterControls()
+            guard self.isVisible, self.viewGeneration == session, self.scopeGeneration == scope,
+                  self.selection.generation == generation, self.queryGeneration == page,
+                  self.pageRequestID == pageRequest else { return }
+            do {
+                try self.selection.adoptCommitted(try result.get())
+                if clearAfterSuccess { self.selection.clear() }
+                self.selectionStatus = nil
+                self.reorderStatus = success
+                self.statusLabel.stringValue = success
+                self.updateSelectionAppearance()
+                self.refreshPage()
+            } catch {
+                self.reorderStatus = "操作未完成，请重新选择后重试。\(error.localizedDescription)"
+                self.statusLabel.stringValue = self.reorderStatus!
+                self.selection.invalidate()
+                self.selectionStatus = self.reorderStatus
+                self.updateSelectionAppearance()
+            }
+        }
+    }
+
+    private func moveReferences(_ refs: [ClipboardSelectionReference], to destination: UUID?) {
+        if let onMoveSelection {
+            let leavesScope = !boardScope.queryIDs.isEmpty && destination.map { !boardScope.queryIDs.contains($0) } != false
+            performSelectionMutation(refs, success: leavesScope ? "已移动；内容已离开当前筛选，已取消选择" : "已移动选中内容", clearAfterSuccess: leavesScope) { completion in
+                onMoveSelection(refs, destination, completion)
+            }
+        } else {
+            resolveReferences(refs) { [weak self] in self?.onMoveRecords?($0, destination) }
+        }
+    }
+
+    private func reorderReferences(_ refs: [ClipboardSelectionReference], before: UUID?) {
+        guard let board = boardScope.singleBoardID else { return }
+        if let onReorderSelection {
+            let anchor = before.flatMap { id in filteredRecords.first(where: { $0.id == id }).map(reference) }
+            guard before == nil || anchor != nil else { return }
+            performSelectionMutation(refs, success: "已保存分组顺序") { completion in onReorderSelection(refs, board, anchor, completion) }
+        } else {
+            applyReorder(PanelReorderPlan(movingIDs: refs.map(\.id), beforeID: before),
+                         dragRevisions: Dictionary(uniqueKeysWithValues: refs.map { ($0.id, $0.revision) }))
+        }
+    }
+
     private func reportReorderPlanningError(_ error: Error) {
         if error as? PanelReorderPlan.PlanningError == .unloadedBoundary {
             statusLabel.stringValue = onPageRequest != nil ? "该方向还有未加载的内容，请先翻页，再调整顺序。" : "后面还有未加载的内容，请先点“加载更多”再移动到这里。"
@@ -972,16 +1183,17 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
     private func ownedDraggedCard(_ source: Any?) -> ClipboardCardView? {
         ClipboardDragTrace.log("panel ownedSource isCard=\(source is ClipboardCardView) generationMatches=\((source as? ClipboardCardView)?.dragOriginID == viewGeneration)")
-        guard let card = source as? ClipboardCardView, card.dragOriginID == viewGeneration else { return nil }
+        guard let card = source as? ClipboardCardView, card.dragOriginID == viewGeneration,
+              card.dragScopeID == scopeGeneration, card.dragSelectionID == selection.generation else { return nil }
         return card
     }
     private func updateDragInsertion(at point: NSPoint, source: Any?) -> NSDragOperation {
         insertionLine.isHidden = true
-        guard let card = ownedDraggedCard(source) else { return boardScope.queryIDs.count > 1 ? [] : .copy }
+        guard let card = ownedDraggedCard(source) else { return source is ClipboardCardView || boardScope.queryIDs.count > 1 ? [] : .copy }
         guard canReorderItems else { return boardScope.queryIDs.count > 1 ? [] : .move }
         let index = insertionIndex(at: point)
         ClipboardDragTrace.log("panel insertion index=\(index) total=\(filteredRecords.count) movingCount=\(card.draggedRecordIDs.count) hasMore=\(hasMoreResults)")
-        guard (try? PanelReorderPlan.insertion(movingIDs: Set(card.draggedRecordIDs), visibleIDs: filteredRecords.map(\.id), at: index, hasMore: hasMoreResults, hasPrevious: hasPreviousResults)) != nil,
+        guard (try? PanelReorderPlan.insertion(references: card.draggedReferences, visibleIDs: filteredRecords.map(\.id), at: index, hasMore: hasMoreResults, hasPrevious: hasPreviousResults)) != nil,
               let layout = resultsView.collectionViewLayout else { return [] }
         let adjacent = index < filteredRecords.count ? index : max(0, index - 1)
         if let frame = layout.layoutAttributesForItem(at: IndexPath(item: adjacent, section: 0))?.frame {
@@ -996,8 +1208,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         if let card = ownedDraggedCard(source), manualOrder {
             guard canReorderItems else { return false }
             do {
-                let plan = try PanelReorderPlan.insertion(movingIDs: Set(card.draggedRecordIDs), visibleIDs: filteredRecords.map(\.id), at: insertionIndex(at: point), hasMore: hasMoreResults, hasPrevious: hasPreviousResults)
-                applyReorder(plan, dragRevisions: card.draggedRecordRevisions); return true
+                let plan = try PanelReorderPlan.insertion(references: card.draggedReferences, visibleIDs: filteredRecords.map(\.id), at: insertionIndex(at: point), hasMore: hasMoreResults, hasPrevious: hasPreviousResults)
+                reorderReferences(card.draggedReferences, before: plan.beforeID); return true
             } catch { reportReorderPlanningError(error); return false }
         }
         handleDrop(items, source: source)
@@ -1008,11 +1220,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         if let card = ownedDraggedCard(source) {
             // Trust the in-process source object's IDs, never a pasteboard marker.
             guard !manualOrder else { statusLabel.stringValue = "请将条目拖到卡片之间的插入标记处。"; return }
-            let ids = Set(card.draggedRecordIDs)
-            let contents = filteredRecords.filter { ids.contains($0.id) }
-            let destination = boardScope.singleBoardID
-            resolve(contents) { [weak self] in self?.onMoveRecords?($0, destination) }
-        } else {
+            moveReferences(card.draggedReferences, to: boardScope.singleBoardID)
+        } else if !(source is ClipboardCardView) {
             onDropItems?(items, boardScope.singleBoardID)
         }
     }
@@ -1021,34 +1230,56 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         resolve([content]) { if let record = $0.first { action(record) } }
     }
 
-    /// A delayed read never pastes after a new panel session, query, selection, or item revision.
     private func resolve(_ contents: [ClipboardCardContent], action: @escaping ([ClipboardRecord]) -> Void) {
-        guard !contents.isEmpty, isVisible, !queryPending, pageMatchesQuery else { return }
-        let actionID = UUID()
+        resolveReferences(contents.map(reference), action: action)
+    }
+
+    /// The whole captured set is validated before exposing any payload to an output callback.
+    private func resolveReferences(_ references: [ClipboardSelectionReference], action: @escaping ([ClipboardRecord]) -> Void) {
+        guard !references.isEmpty, isVisible, !queryPending, pageMatchesQuery,
+              !selection.isInvalid, selectionRequestID == nil else { return }
+        let actionID = UUID(), session = viewGeneration, scope = scopeGeneration
+        let generation = selection.generation, page = queryGeneration
         pendingActionID = actionID
-        let session = viewGeneration
-        let query = queryGeneration
-        let selection = selectedIDs
-        let expected = Dictionary(uniqueKeysWithValues: contents.map { ($0.id, $0.revision) })
-        func valid() -> Bool {
-            isVisible && pendingActionID == actionID && viewGeneration == session && queryGeneration == query && selectedIDs == selection
-                && expected.allSatisfy { id, revision in filteredRecords.contains(where: { $0.id == id && $0.revision == revision }) }
-        }
-        func read(_ index: Int, accumulated: [ClipboardRecord]) {
-            guard valid() else { return }
-            if index == contents.count { pendingActionID = nil; action(accumulated); return }
-            let expectedContent = contents[index]
-            loadPayload(expectedContent.id) { [weak self] record in
-                guard let self, valid() else { return }
-                guard let record, record.id == expectedContent.id, record.revision == expectedContent.revision else {
-                    self.pendingActionID = nil
-                    self.statusLabel.stringValue = "条目已变化或暂时无法读取，请重新选择。"
-                    return
+        func finish(_ result: Result<[ClipboardRecord], Error>) {
+            guard isVisible, pendingActionID == actionID, viewGeneration == session, scopeGeneration == scope,
+                  selection.generation == generation, queryGeneration == page else { return }
+            pendingActionID = nil
+            do {
+                let records = try result.get()
+                guard records.count == references.count,
+                      zip(records, references).allSatisfy({ $0.id == $1.id && $0.revision == $1.revision }) else {
+                    throw PanelSelectionState.SelectionError.staleSelection
                 }
-                read(index + 1, accumulated: accumulated + [record])
+                action(records)
+            } catch { selectionFailed(error) }
+        }
+        if let resolveSelection { resolveSelection(references, finish); return }
+        // Legacy/demo fallback has no global reader. It still rejects the entire output on mismatch.
+        var result: [ClipboardRecord] = []
+        result.reserveCapacity(references.count)
+        var bytes = 0
+        func read(_ index: Int) {
+            guard isVisible, pendingActionID == actionID, viewGeneration == session, scopeGeneration == scope,
+                  selection.generation == generation, queryGeneration == page else { return }
+            guard index < references.count else { finish(.success(result)); return }
+            let ref = references[index]
+            loadPayload(ref.id) { record in
+                guard let record, record.revision == ref.revision else { finish(.failure(PanelSelectionState.SelectionError.staleSelection)); return }
+                bytes += record.parts.reduce(0) { $0 + $1.representations.reduce(0) { $0 + $1.data.count } }
+                guard bytes <= 512 * 1_024 * 1_024 else { finish(.failure(PanelSelectionState.SelectionError.malformedSnapshot)); return }
+                result.append(record)
+                // Avoid recursive stack growth when a demo resolver calls back synchronously.
+                if index + 1 == references.count { finish(.success(result)) }
+                else { DispatchQueue.main.async { read(index + 1) } }
             }
         }
-        read(0, accumulated: [])
+        read(0)
+    }
+
+    private func resolveFocused(action: @escaping (ClipboardRecord) -> Void) {
+        guard let id = selectedID, let ref = selection.reference(id) else { return }
+        resolveReferences([ref]) { if let record = $0.first { action(record) } }
     }
 
     private func requestThumbnail(_ content: ClipboardCardContent, for card: ClipboardCardView) {
@@ -1094,26 +1325,24 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func pasteSelection(plain: Bool) {
-        let chosen = selectedRecords
-        resolve(chosen) { [weak self] records in
+        resolveReferences(selection.references) { [weak self] records in
             if records.count == 1, let record = records.first { self?.onPaste?(record, plain) }
             else if records.count > 1 { self?.onPasteRecords?(records, plain) }
         }
     }
 
     private func copySelection() {
-        let chosen = selectedRecords
-        resolve(chosen) { [weak self] records in
+        resolveReferences(selection.references) { [weak self] records in
             if records.count == 1, let record = records.first { self?.onCopy?(record) }
             else if records.count > 1 { self?.onCopyRecords?(records) }
         }
     }
 
     private func deleteSelection() {
-        let chosen = selectedRecords
-        resolve(chosen) { [weak self] records in
+        resolveReferences(selection.references) { [weak self] records in
             if let onDeleteRecords = self?.onDeleteRecords { onDeleteRecords(records) }
-            else { records.forEach { self?.onDelete?($0) } }
+            else if records.count == 1, let record = records.first { self?.onDelete?(record) }
+            else { self?.statusLabel.stringValue = "当前入口不支持原子批量删除，操作未执行。" }
         }
     }
 
@@ -1141,7 +1370,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             case "t": onPauseToggle?(); return true
             case "n": if shift { createBoard() } else { onNewText?() }; return true
             case "o" where !isEditingSearch:
-                if let selectedRecord { resolve(selectedRecord) { [weak self] in self?.onOpenRecord?($0) } }
+                resolveFocused { [weak self] in self?.onOpenRecord?($0) }
                 return true
             case "g" where !isEditingSearch:
                 revealSelection()
@@ -1153,15 +1382,13 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                 onUndo?()
                 return true
             case "a" where !isEditingSearch:
-                selectedIDs = Set(filteredRecords.map(\.id))
-                cardViews.forEach { $0.isSelected = true }
-                updateSelectionCount()
+                selectAllResults()
                 return true
             case "e" where !isEditingSearch:
-                if let selectedRecord { resolve(selectedRecord) { [weak self] in self?.showDetail($0, editing: true) } }
+                resolveFocused { [weak self] in self?.showDetail($0, editing: true) }
                 return true
             case "r" where !isEditingSearch:
-                if let selectedRecord { resolve(selectedRecord) { [weak self] in self?.rename($0) } }
+                resolveFocused { [weak self] in self?.rename($0) }
                 return true
             default: break
             }
@@ -1175,20 +1402,20 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             return true
         case 36, 76:
             guard !command, !flags.contains(.option), !flags.contains(.control) else { return false }
-            if isEditingSearch { if let selectedRecord { select(selectedRecord.id, focusResults: true) }; return true }
+            if isEditingSearch { window?.makeFirstResponder(resultsView); return true }
             if !event.isARepeat { pasteSelection(plain: shift) }
             return true
         case 125 where isEditingSearch:
-            if let selectedRecord { select(selectedRecord.id, focusResults: true) }
+            window?.makeFirstResponder(resultsView)
             return true
         case 48 where isEditingSearch && !shift:
-            if let selectedRecord { select(selectedRecord.id, focusResults: true) }
+            window?.makeFirstResponder(resultsView)
             return true
         case 48 where !isEditingSearch && shift:
             window?.makeFirstResponder(searchField)
             return true
         case 49 where !isEditingSearch && !command:
-            if let selectedRecord { resolve(selectedRecord) { [weak self] in self?.showDetail($0, editing: false) } }
+            resolveFocused { [weak self] in self?.showDetail($0, editing: false) }
             return true
         case 123 where !isEditingSearch && command && flags.contains(.option): stepSelectedItems(forward: false); return true
         case 124 where !isEditingSearch && command && flags.contains(.option): stepSelectedItems(forward: true); return true
@@ -1228,7 +1455,15 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func issueQuery(resetLimit: Bool, preserveReveal: Bool = false, preserveStatus: Bool = false,
                             anchor: PanelPageAnchor? = nil, offset: Int? = nil, focusLast: Bool = false,
-                            retainedSelection: PanelRetainedSelection? = nil, allowMissingAnchorFallback: Bool = false) {
+                            retainedSelection: PanelRetainedSelection? = nil, allowMissingAnchorFallback: Bool = false,
+                            replaceSelectionOnFocus: Bool = false) {
+        if resetLimit {
+            scopeGeneration = UUID()
+            selectionRequestID = nil
+            validationRequestID = nil
+            selection.clear()
+            selectionStatus = nil
+        }
         queryGeneration = UUID()
         pendingActionID = nil
         cardViews.forEach { $0.cancelPendingDrag() }
@@ -1238,7 +1473,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         queryPending = usesRemoteQuery
         if onPageRequest != nil, resetLimit { pageMatchesQuery = false }
         updateFilterControls()
-        let query = HistoryQuery(text: searchField.stringValue, kind: selectedKind, sourceBundleID: selectedSourceID, copiedAfter: copiedAfter, copiedBefore: copiedBefore, pinboardIDs: boardScope.queryIDs, includePinned: true, limit: resultLimit, sortOrder: manualOrder && boardScope.singleBoardID != nil ? .pinboard : .recent, deviceFilter: selectedDeviceFilter)
+        let query = currentQuery
         if let onPageRequest {
             let requestedAnchor = anchor ?? (preserveReveal ? pendingRevealID.map { PanelPageAnchor(recordID: $0, displacement: 0) } : nil)
             let request = PanelPageRequest(id: queryGeneration, query: query, offset: max(0, offset ?? (resetLimit ? 0 : pageWindow.offset)), anchor: requestedAnchor)
@@ -1266,24 +1501,17 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                     self.inlineRecords.removeAll()
                     self.recordOriginDevices = Dictionary(uniqueKeysWithValues: page.records.compactMap { record in record.originDeviceConflict ? nil : record.originDeviceID.map { (record.id, $0) } })
                     self.records = page.records.map(ClipboardCardContent.init)
-                    var focus = page.focusID ?? (focusLast ? page.records.last?.id : nil)
+                    var focus = page.focusID ?? (focusLast ? page.records.last?.id : page.records.first?.id)
                     if let retainedSelection {
-                        if retainedSelection.selectedIDs.isSubset(of: ids) {
-                            self.selectedID = retainedSelection.selectedID
-                            self.selectedIDs = retainedSelection.selectedIDs
-                            self.selectionAnchorID = retainedSelection.anchorID
-                            focus = retainedSelection.selectedID
-                        } else {
-                            self.selectedID = nil; self.selectedIDs = []; self.selectionAnchorID = nil
-                            focus = nil
-                            self.pageStatus = "原选择已删除、筛出或离开当前页，已取消选择，请重新选择。"
-                            self.statusLabel.stringValue = self.pageStatus!
-                        }
-                    } else if let focus {
-                        self.selectedID = focus; self.selectedIDs = [focus]; self.selectionAnchorID = focus
+                        // Membership is a global frozen set. A page is never allowed to intersect it.
+                        focus = retainedSelection.generation == self.selection.generation ? self.selectedID : nil
+                    } else if (resetLimit || replaceSelectionOnFocus), let focus,
+                              let content = self.records.first(where: { $0.id == focus }) {
+                        self.selection.selectSingle(self.reference(content))
                     }
                     self.pendingRevealID = nil
-                    self.reloadResults(resetScroll: changedWindow, allowAutomaticSelection: retainedSelection == nil)
+                    self.reloadResults(resetScroll: changedWindow, allowAutomaticSelection: resetLimit)
+                    if retainedSelection != nil { self.validateCurrentSelection() }
                     if let focus, let index = self.filteredRecords.firstIndex(where: { $0.id == focus }) {
                         self.revealItem(at: index)
                         if retainedSelection == nil { self.window?.makeFirstResponder(self.resultsView) }
@@ -1388,21 +1616,23 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func revealSelection() {
-        guard let record = selectedRecord else { return }
+        if let record = selectedRecord { revealRecord(id: record.id, pinboardID: record.pinboardID) }
+        else { resolveFocused { [weak self] in self?.revealRecord(id: $0.id, pinboardID: $0.pinboardID) } }
+    }
+
+    private func revealRecord(id: UUID, pinboardID: UUID?) {
         searchField.stringValue = ""
         selectedKind = nil; typePopup.selectItem(at: 0)
         selectedSourceID = nil; sourcePopup.selectItem(at: 0)
         selectedDeviceFilter = .all; devicePopup.selectItem(at: 0)
         copiedAfter = nil; copiedBefore = nil; datePopup.selectItem(at: 0)
-        selectedBoardID = record.pinboardID
-        manualOrder = record.pinboardID != nil
-        pendingRevealID = record.id
-        selectedIDs = [record.id]
-        selectionAnchorID = record.id
+        selectedBoardID = pinboardID
+        manualOrder = pinboardID != nil
+        pendingRevealID = id
         lastDateIndex = 0
-        if let index = pinboards.firstIndex(where: { $0.id == record.pinboardID }) { boardPopup.selectItem(at: index + 1) } else { boardPopup.selectItem(at: 0) }
+        if let index = pinboards.firstIndex(where: { $0.id == pinboardID }) { boardPopup.selectItem(at: index + 1) } else { boardPopup.selectItem(at: 0) }
         issueQuery(resetLimit: true, preserveReveal: true)
-        if !usesRemoteQuery, filteredRecords.contains(where: { $0.id == record.id }) { pendingRevealID = nil; select(record.id, focusResults: true) }
+        if !usesRemoteQuery, filteredRecords.contains(where: { $0.id == id }) { pendingRevealID = nil; select(id, focusResults: true) }
     }
 
     private func promptBoard(_ board: Pinboard?) {
@@ -1460,10 +1690,10 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     @objc private func moveFromMenu(_ sender: NSMenuItem) {
-        guard let payload = sender.representedObject as? [String: String], let id = payload["recordID"].flatMap(UUID.init(uuidString:)), let record = filteredRecords.first(where: { $0.id == id }) else { return }
-        let chosen = selectedIDs.contains(id) ? selectedRecords : [record]
-        let destination = payload["boardID"].flatMap(UUID.init(uuidString:))
-        resolve(chosen) { [weak self] in self?.onMoveRecords?($0, destination) }
+        guard let payload = sender.representedObject as? [String: String], let id = payload["recordID"].flatMap(UUID.init(uuidString:)) else { return }
+        let context = NSMenuItem(); context.representedObject = id
+        guard selectContextItemIfNeeded(context) else { return }
+        moveReferences(selection.references, to: payload["boardID"].flatMap(UUID.init(uuidString:)))
     }
 
     private func showDetail(_ record: ClipboardRecord, editing: Bool) {
@@ -1788,11 +2018,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         alert.window.initialFirstResponder = field
     }
 
-    @objc private func pasteFromMenu(_ sender: NSMenuItem) { if let record = recordFromMenu(sender) { resolve(record) { [weak self] in self?.onPaste?($0, false) } } }
-    @objc private func pastePlainFromMenu(_ sender: NSMenuItem) { if let record = recordFromMenu(sender) { resolve(record) { [weak self] in self?.onPaste?($0, true) } } }
-    @objc private func copyFromMenu(_ sender: NSMenuItem) { if let record = recordFromMenu(sender) { resolve(record) { [weak self] in self?.onCopy?($0) } } }
+    @objc private func pasteFromMenu(_ sender: NSMenuItem) { if selectContextItemIfNeeded(sender) { pasteSelection(plain: false) } }
+    @objc private func pastePlainFromMenu(_ sender: NSMenuItem) { if selectContextItemIfNeeded(sender) { pasteSelection(plain: true) } }
+    @objc private func copyFromMenu(_ sender: NSMenuItem) { if selectContextItemIfNeeded(sender) { copySelection() } }
     @objc private func openFromMenu(_ sender: NSMenuItem) { if let record = recordFromMenu(sender) { resolve(record) { [weak self] in self?.onOpenRecord?($0) } } }
-    @objc private func deleteFromMenu(_ sender: NSMenuItem) { if let record = recordFromMenu(sender) { resolve(record) { [weak self] in self?.onDelete?($0) } } }
+    @objc private func deleteFromMenu(_ sender: NSMenuItem) { if selectContextItemIfNeeded(sender) { deleteSelection() } }
     @objc private func previewFromMenu(_ sender: NSMenuItem) { if let record = recordFromMenu(sender) { resolve(record) { [weak self] in self?.showDetail($0, editing: false) } } }
     @objc private func editFromMenu(_ sender: NSMenuItem) { if let record = recordFromMenu(sender) { resolve(record) { [weak self] in self?.showDetail($0, editing: true) } } }
     @objc private func renameFromMenu(_ sender: NSMenuItem) { if let record = recordFromMenu(sender) { resolve(record) { [weak self] in self?.rename($0) } } }

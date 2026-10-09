@@ -20,44 +20,49 @@ extension HistoryStore {
     /// Pass revisions captured when dragging began for the moved items and anchor.
     public func move(recordIDs: [UUID], to pinboardID: UUID?, before beforeID: UUID? = nil,
                      expectedRevisions: [UUID: Int] = [:]) throws {
+        try synchronized {
+            try transaction {
+                try moveWithoutLock(recordIDs: recordIDs, to: pinboardID, before: beforeID, expectedRevisions: expectedRevisions)
+            }
+        }
+    }
+
+    func moveWithoutLock(recordIDs: [UUID], to pinboardID: UUID?, before beforeID: UUID? = nil,
+                         expectedRevisions: [UUID: Int] = [:]) throws {
         guard !recordIDs.isEmpty, Set(recordIDs).count == recordIDs.count,
               beforeID.map({ !recordIDs.contains($0) }) ?? true,
               pinboardID != nil || beforeID == nil else { throw HistoryStoreError.invalidPinboardItemOrder }
-        try synchronized {
-            try transaction {
-                try checkOrderingRevisions(expectedRevisions)
-                let moving = try recordIDs.map { try orderingItem(id: $0) }
-                for board in Set(moving.compactMap(\.boardID)) { try requireEditableOrderingBoard(board) }
-                guard let boardID = pinboardID else {
-                    for item in moving where item.boardID != nil || item.rank != nil || !item.inHistory {
-                        try writePlacement(id: item.id, boardID: nil, rank: nil)
-                    }
-                    return
-                }
-                try requireEditableOrderingBoard(boardID)
-                let all = try orderedItems(boardID: boardID)
-                let movingIDs = Set(recordIDs)
-                let remaining = all.filter { !movingIDs.contains($0.id) }
-                let insertion: Int
-                if let beforeID {
-                    guard let index = remaining.firstIndex(where: { $0.id == beforeID }) else { throw HistoryStoreError.invalidPinboardItemOrder }
-                    insertion = index
-                } else { insertion = remaining.count }
-                var desired = remaining
-                desired.insert(contentsOf: moving, at: insertion)
-                if desired.map(\.id) == all.map(\.id), all.allSatisfy({ $0.rank != nil }) { return }
-                let left = insertion > 0 ? remaining[insertion - 1].rank : nil
-                let right = insertion < remaining.count ? remaining[insertion].rank : nil
-                if remaining.allSatisfy({ $0.rank != nil }),
-                   let ranks = Self.ranksBetween(left: left, right: right, count: moving.count) {
-                    for (item, rank) in zip(moving, ranks) where item.boardID != boardID || item.rank != rank {
-                        try writePlacement(id: item.id, boardID: boardID, rank: rank)
-                    }
-                } else {
-                    // Rank gaps can be exhausted after repeated insertions; rebalance in this same transaction.
-                    try writeBalancedOrder(desired, boardID: boardID)
-                }
+        try checkOrderingRevisions(expectedRevisions)
+        let moving = try recordIDs.map { try orderingItem(id: $0) }
+        for board in Set(moving.compactMap(\.boardID)) { try requireEditableOrderingBoard(board) }
+        guard let boardID = pinboardID else {
+            for item in moving where item.boardID != nil || item.rank != nil || !item.inHistory {
+                try writePlacement(id: item.id, boardID: nil, rank: nil)
             }
+            return
+        }
+        try requireEditableOrderingBoard(boardID)
+        let all = try orderedItems(boardID: boardID)
+        let movingIDs = Set(recordIDs)
+        let remaining = all.filter { !movingIDs.contains($0.id) }
+        let insertion: Int
+        if let beforeID {
+            guard let index = remaining.firstIndex(where: { $0.id == beforeID }) else { throw HistoryStoreError.invalidPinboardItemOrder }
+            insertion = index
+        } else { insertion = remaining.count }
+        var desired = remaining
+        desired.insert(contentsOf: moving, at: insertion)
+        if desired.map(\.id) == all.map(\.id), all.allSatisfy({ $0.rank != nil }) { return }
+        let left = insertion > 0 ? remaining[insertion - 1].rank : nil
+        let right = insertion < remaining.count ? remaining[insertion].rank : nil
+        if remaining.allSatisfy({ $0.rank != nil }),
+           let ranks = Self.ranksBetween(left: left, right: right, count: moving.count) {
+            for (item, rank) in zip(moving, ranks) where item.boardID != boardID || item.rank != rank {
+                try writePlacement(id: item.id, boardID: boardID, rank: rank)
+            }
+        } else {
+            // Rank gaps can be exhausted after repeated insertions; rebalance in this same transaction.
+            try writeBalancedOrder(desired, boardID: boardID)
         }
     }
 

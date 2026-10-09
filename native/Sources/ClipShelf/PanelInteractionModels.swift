@@ -79,6 +79,22 @@ struct PanelReorderPlan: Equatable {
         return Self(movingIDs: moving, beforeID: before)
     }
 
+    /// Cross-page selections carry their full frozen order, while the insertion target stays visible.
+    static func insertion(references: [ClipboardSelectionReference], visibleIDs: [UUID], at index: Int,
+                          hasMore: Bool, hasPrevious: Bool) throws -> Self {
+        let movingIDs = references.map(\.id), selected = Set(movingIDs)
+        guard !selected.isEmpty, selected.count == references.count,
+              (0...visibleIDs.count).contains(index) else { throw PlanningError.staleSelection }
+        if index == 0, hasPrevious { throw PlanningError.unloadedBoundary }
+        let before = visibleIDs.dropFirst(index).first { !selected.contains($0) }
+        if before == nil, hasMore { throw PlanningError.unloadedBoundary }
+        if selected.isSubset(of: Set(visibleIDs)) {
+            return try insertion(movingIDs: selected, visibleIDs: visibleIDs, at: index,
+                                 hasMore: hasMore, hasPrevious: hasPrevious)
+        }
+        return Self(movingIDs: movingIDs, beforeID: before)
+    }
+
     static func step(movingIDs: Set<UUID>, visibleIDs: [UUID], forward: Bool, hasMore: Bool, hasPrevious: Bool = false) throws -> Self {
         let selected = visibleIDs.indices.filter { movingIDs.contains(visibleIDs[$0]) }
         guard let first = selected.first, let last = selected.last else { throw PlanningError.staleSelection }

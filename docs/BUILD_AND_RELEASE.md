@@ -52,6 +52,41 @@ Legacy records remain unknown rather than being assigned to this Mac. The
 installation ID is not the device that originally created a file or text, and
 Universal Clipboard does not provide enough evidence to label an iPhone source.
 
+The 300-item limit applies to the displayed metadata window, not selection.
+With result-list focus, Cmd-A selects the full filtered query; Shift/Cmd expansion
+uses a frozen ordered set of item IDs and revisions across pages. New captures
+do not silently join that set. Edited or deleted selected items invalidate the
+batch. Text-field focus keeps the normal text-selection shortcuts.
+
+Payload resolution validates the whole selection in one SQLite read snapshot
+before reading attachments. The default aggregate raw-content budget is 512 MiB;
+missing content, stale revisions, corrupt attachments or a budget overflow fail
+the whole batch without truncation. This budget is not a process-memory ceiling.
+Move/reorder operations use metadata; purely local operations and their placement
+undo do not load attachments. Synced records still serialize their existing
+immutable outbox payloads individually.
+
+Edit and batch-selection undo retain at most 10 actions and 512 MiB of original
+content retained for deletions and edits in total. Oldest actions are evicted to stay within those limits; a deletion that
+alone exceeds the budget is rejected. Undo checks versions, board positions,
+permissions and both account-configuration generations. Trusted receipts support
+consecutive edit/move undos without accepting intervening changes. Deleted-content
+restore is atomic and its capability can succeed only once. Existing cloud
+tombstones prevent restoring the old ID; restored history preserves the batch's
+relative order, not its original row positions in the complete history. Successful
+backup restoration clears the undo history.
+
+The current Mac was locked during this selection iteration. New cross-page
+selection, batch actions and undo have not completed live desktop acceptance;
+Accessibility-authorized direct paste and real CloudKit synchronization are also
+still unverified. On 2026-10-10 at 00:03 (Asia/Taipei), the unified suite ran
+280 tests with zero failures and one skip for unavailable Apple Intelligence.
+The release build, App Intents extraction, local ad-hoc signature verification,
+and Node bridge syntax check passed. The saved [search benchmark](../native/Benchmarks/README.md)
+measured commit is `e78ef3f` (schema v8), against `45edfd6` (schema v7); it was not
+rerun for this selection change and does not measure selection, payload output,
+facet aggregation or input-to-render latency.
+
 In one Pinboard's manual-order view, drag a card to reorder it. Hold Option while
 dragging to export its original content to another app. Ordinary history view
 continues to drag original content directly. Internal sorting markers are never

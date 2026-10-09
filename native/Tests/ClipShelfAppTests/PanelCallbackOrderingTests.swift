@@ -4,7 +4,7 @@ import XCTest
 @testable import ClipShelfCore
 
 /// Exercises real controller callbacks without ordering a window onto the desktop.
-@MainActor private final class UnshownTestPanel: NSPanel {
+@MainActor final class UnshownTestPanel: NSPanel {
     private var logicallyVisible = false
     override var isVisible: Bool { logicallyVisible }
     override func makeKeyAndOrderFront(_ sender: Any?) { logicallyVisible = true }
@@ -12,7 +12,7 @@ import XCTest
     override func orderOut(_ sender: Any?) { logicallyVisible = false }
 }
 
-@MainActor private final class PanelCallbackHarness {
+@MainActor final class PanelCallbackHarness {
     let panel = ClipboardPanelController()
     let directory: URL
     let store: HistoryStore
@@ -37,6 +37,9 @@ import XCTest
         panel.onPageRequest = { [weak self] request, reply in self?.requests.append((request, reply)) }
         panel.onReorderRecords = { [weak self] _, _, _, _, reply in self?.reorderReplies.append(reply) }
         panel.resolveRecord = { [weak self] id, reply in reply(try? self?.store.item(id: id)) }
+        panel.onSelectionSnapshot = { [store] query, reply in reply(Result { try store.selectionSnapshot(query) }) }
+        panel.onValidateSelection = { [store] refs, reply in reply(Result { try store.validateSelection(refs) }) }
+        panel.resolveSelection = { [store] refs, reply in reply(Result { try store.resolveSelection(refs) }) }
         panel.setPinboards([board])
         panel.setDevices([], localDeviceID: UUID())
         panel.show(metadata: [])
@@ -50,6 +53,7 @@ import XCTest
             try completeLastPage()
         }
         XCTAssertEqual(requests.last?.0.offset, 600)
+        key(124) // Explicitly select the first card in this new window.
     }
 
     func view<T: NSView>(label: String) throws -> T {
@@ -169,7 +173,7 @@ final class PanelCallbackOrderingTests: XCTestCase {
         await fulfillment(of: [pasted], timeout: 2)
     }
 
-    @MainActor func testBackgroundRefreshPreservesWholePageMultiSelectionAndSearchFocus() throws {
+    @MainActor func testBackgroundRefreshPreservesGlobalMultiSelectionAndSearchFocus() throws {
         let h = try PanelCallbackHarness(); defer { h.close() }
         _ = try h.firstPageAndSelectLast()
         let expected = Set(try h.store.metadataPage(try XCTUnwrap(h.requests.last?.0.query)).records.map(\.id))
@@ -188,7 +192,7 @@ final class PanelCallbackOrderingTests: XCTestCase {
         func labels(_ view: NSView) -> [String] {
             (view as? NSTextField).map { [$0.stringValue] } ?? view.subviews.flatMap(labels)
         }
-        XCTAssertTrue(try XCTUnwrap(h.panel.window?.contentView).subviews.flatMap(labels).contains { $0.contains("已选 300 条") })
+        XCTAssertTrue(try XCTUnwrap(h.panel.window?.contentView).subviews.flatMap(labels).contains { $0.contains("已选 1000 条") })
     }
 
     @MainActor func testDeletedBackgroundAnchorFallsBackOnceAndCancelsSelection() throws {
