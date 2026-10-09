@@ -128,6 +128,48 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     var onPauseToggle: (() -> Void)?
     var onPermissions: (() -> Void)?
     var isVisible: Bool { window?.isVisible == true }
+    private(set) var shortcutConfiguration = KeyboardShortcutConfiguration.defaults
+    private(set) var alwaysPlainText = false
+    private var heldShortcutModifiers: NSEvent.ModifierFlags = []
+    private let shortcutHints = NSTextField(labelWithString: "")
+
+    func applyShortcuts(_ configuration: KeyboardShortcutConfiguration, alwaysPlainText: Bool) {
+        if configuration != shortcutConfiguration {
+            do { try configuration.validate() }
+            catch { statusLabel.stringValue = error.localizedDescription; return }
+        }
+        shortcutConfiguration = configuration
+        self.alwaysPlainText = alwaysPlainText
+        updateShortcutPresentation()
+        if isVisible { resultsView.reloadData() }
+    }
+
+    private func updateShortcutPresentation() {
+        let quick = shortcutConfiguration.quickPaste.symbol, plain = shortcutConfiguration.plainText.symbol
+        shortcutHints.stringValue = "↵ 粘贴   \(plain)↵ 纯文本   \(quick)1–9 快速粘贴   esc 收起"
+        shortcutHints.toolTip = "切换分组：\(shortcutConfiguration.previousPinboard.displayName) / \(shortcutConfiguration.nextPinboard.displayName)"
+        emptyDescription.stringValue = "在其他 App 中复制文本，再按 \(shortcutConfiguration.activation.displayName) 打开 ClipShelf。"
+        cardViews.forEach(updateShortcutLabel)
+    }
+
+    private func updateShortcutLabel(_ card: ClipboardCardView) {
+        let quick = shortcutConfiguration.quickPaste.eventFlags
+        let combined = quick.union(shortcutConfiguration.plainText.eventFlags)
+        let show = card.position < 9 && !isEditingSearch && !isComposing
+            && (heldShortcutModifiers == quick || heldShortcutModifiers == combined)
+        let prefix = [ShortcutModifier.control, .option, .shift, .command]
+            .filter { heldShortcutModifiers.contains($0.eventFlags) }.map(\.symbol).joined()
+        card.setQuickPasteLabel(show ? "\(prefix)\(card.position + 1)" : nil)
+    }
+
+    func handleModifierFlags(_ flags: NSEvent.ModifierFlags) {
+        heldShortcutModifiers = ShortcutChord.normalizedModifiers(flags)
+        cardViews.forEach(updateShortcutLabel)
+    }
+
+    private func outputPlainText(_ records: [ClipboardRecord], requested: Bool) -> Bool {
+        requested || (alwaysPlainText && records.allSatisfy(ClipboardCodec.supportsPlainText))
+    }
 
     private let searchField = NSSearchField()
     private let statusLabel = NSTextField(labelWithString: "")
@@ -244,6 +286,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func present(_ contents: [ClipboardCardContent], on screen: NSScreen?, status: String?) {
         viewGeneration = UUID()
+        heldShortcutModifiers = []
         pageWindow = PanelPageWindow()
         pageRequestID = nil
         pageMatchesQuery = true
@@ -420,6 +463,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     func dismiss() {
         guard isVisible else { return }
         cardViews.forEach { $0.cancelPendingDrag() }
+        heldShortcutModifiers = []
+        cardViews.forEach(updateShortcutLabel)
         pageRequestID = nil
         queryPending = false
         refreshAfterPageLoad = false
@@ -618,7 +663,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         statusLabel.lineBreakMode = .byTruncatingTail
         countLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
         countLabel.textColor = .secondaryLabelColor
-        let hints = NSTextField(labelWithString: "↵ 粘贴   ⇧↵ 纯文本   ⌘1–9 快速粘贴   esc 收起")
+        let hints = shortcutHints
+        updateShortcutPresentation()
         hints.font = .systemFont(ofSize: 10)
         hints.textColor = .tertiaryLabelColor
         hints.setContentHuggingPriority(.required, for: .horizontal)
@@ -699,7 +745,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         emptyStack.isHidden = !filteredRecords.isEmpty
         if query.isEmpty && !hasFilters {
             emptyTitle.stringValue = "复制一点内容，从这里开始"
-            emptyDescription.stringValue = "在其他 App 中复制文本，再按 ⌘⇧V 打开 ClipShelf。"
+            emptyDescription.stringValue = "在其他 App 中复制文本，再按 \(shortcutConfiguration.activation.displayName) 打开 ClipShelf。"
         } else {
             emptyTitle.stringValue = "没有找到相关内容"
             emptyDescription.stringValue = "试试更短的关键词，或点击“清除条件”重新搜索全部内容。"
@@ -725,11 +771,13 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private func makeCard(record: ClipboardCardContent, position: Int) -> ClipboardCardView {
         let card = ClipboardCardView(record: record, position: position, compact: compactMode)
         card.isSelected = selectedIDs.contains(record.id)
+        updateShortcutLabel(card)
         card.onSelect = { [weak self] in
             guard let self, !self.queryPending else { return }
             let modifiers = NSApp.currentEvent?.modifierFlags ?? []
             if self.selectedIDs.count > 1, self.selectedIDs.contains(record.id), !modifiers.contains(.shift), !modifiers.contains(.command) {
                 self.window?.makeFirstResponder(self.resultsView)
+                self.cardViews.forEach(self.updateShortcutLabel)
                 return
             }
             self.select(record.id, focusResults: true, extending: modifiers.contains(.shift), toggling: modifiers.contains(.command))
@@ -739,11 +787,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                   self.selectedIDs.count > 1, self.selectedIDs.contains(record.id) else { return }
             self.select(record.id, focusResults: true)
         }
-        card.onOpen = { [weak self] in
-            guard let self else { return }
+        card.onOpen = { [weak self] modifiers in
+            guard let self, !self.isComposing else { return }
             self.select(record.id, focusResults: true)
-            let plain = NSApp.currentEvent?.modifierFlags.contains(.shift) == true
-            self.resolve(record) { self.onPaste?($0, plain) }
+            let plain = ShortcutChord.normalizedModifiers(modifiers).contains(self.shortcutConfiguration.plainText.eventFlags)
+            self.resolve(record) { self.onPaste?($0, self.outputPlainText([$0], requested: plain)) }
         }
         if manualOrder {
             card.toolTip = "拖动以调整分组内顺序；按住 ⌥ 拖动原始内容到其他 App。"
@@ -773,6 +821,10 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             item.representedObject = record.id
+            if action == #selector(pasteFromMenu(_:)) { item.keyEquivalent = "\r"; item.keyEquivalentModifierMask = [] }
+            if action == #selector(pastePlainFromMenu(_:)) {
+                item.keyEquivalent = "\r"; item.keyEquivalentModifierMask = shortcutConfiguration.plainText.eventFlags
+            }
             menu.addItem(item)
         }
         if canReorderItems {
@@ -811,7 +863,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         let ids = selectedIDs
         for card in cardViews { card.isSelected = ids.contains(card.record.id) }
         updateSelectionCount()
-        if focusResults { window?.makeFirstResponder(resultsView) }
+        if focusResults { window?.makeFirstResponder(resultsView); cardViews.forEach(updateShortcutLabel) }
         if let id = revealID, let index = filteredRecords.firstIndex(where: { $0.id == id }) { revealItem(at: index) }
     }
 
@@ -1326,8 +1378,10 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func pasteSelection(plain: Bool) {
         resolveReferences(selection.references) { [weak self] records in
-            if records.count == 1, let record = records.first { self?.onPaste?(record, plain) }
-            else if records.count > 1 { self?.onPasteRecords?(records, plain) }
+            guard let self else { return }
+            let outputPlain = self.outputPlainText(records, requested: plain)
+            if records.count == 1, let record = records.first { self.onPaste?(record, outputPlain) }
+            else if records.count > 1 { self.onPasteRecords?(records, outputPlain) }
         }
     }
 
@@ -1348,97 +1402,106 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func installEventMonitor() {
         guard eventMonitor == nil else { return }
-        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, self.isVisible, event.window === self.window, !self.isComposing else { return event }
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
+            guard let self, self.isVisible, event.window === self.window else { return event }
+            if event.type == .flagsChanged { self.handleModifierFlags(event.modifierFlags); return event }
             return self.handleKey(event) ? nil : event
         }
     }
 
     func handleKey(_ event: NSEvent) -> Bool {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let command = flags.contains(.command)
-        let shift = flags.contains(.shift)
-        if command, !flags.contains(.option), !flags.contains(.control) {
+        guard event.type == .keyDown, !isComposing, !(window?.firstResponder is ShortcutRecorderView) else { return false }
+        if window?.firstResponder is NSTextView, !isEditingSearch { return false }
+        let flags = ShortcutChord.normalizedModifiers(event.modifierFlags)
+        handleModifierFlags(flags)
+        let editingSearch = isEditingSearch
+        let plainFlags = shortcutConfiguration.plainText.eventFlags
+        if let command = KeyboardShortcutConfiguration.fixedCommand(for: event) {
+            let permittedWhileEditing: [FixedShortcutCommand] = [.search, .settings, .pause, .newText, .newPinboard]
+            guard !editingSearch || permittedWhileEditing.contains(command) else { return false }
+            // These stay in the native responder/menu chain even when a saved physical
+            // board shortcut collides after an input-source change.
+            if command == .cut || command == .paste || command == .quit { return false }
+            guard !event.isARepeat else { return true }
+            switch command {
+            case .search: window?.makeFirstResponder(searchField); cardViews.forEach(updateShortcutLabel)
+            case .settings: onSettings?()
+            case .pause: onPauseToggle?()
+            case .newText: onNewText?()
+            case .newPinboard: createBoard()
+            case .open: resolveFocused { [weak self] in self?.onOpenRecord?($0) }
+            case .reveal: revealSelection()
+            case .copy: copySelection()
+            case .undo: onUndo?()
+            case .selectAll: selectAllResults()
+            case .edit: resolveFocused { [weak self] in self?.showDetail($0, editing: true) }
+            case .rename: resolveFocused { [weak self] in self?.rename($0) }
+            case .cut, .paste, .quit: break
+            }
+            return true
+        }
+        if !editingSearch {
             let numbers: [UInt16: Int] = [18: 0, 19: 1, 20: 2, 21: 3, 23: 4, 22: 5, 26: 6, 28: 7, 25: 8]
-            if let index = numbers[event.keyCode] {
-                if !event.isARepeat, filteredRecords.indices.contains(index) { resolve(filteredRecords[index]) { [weak self] in self?.onPaste?($0, shift) } }
+            let quick = shortcutConfiguration.quickPaste.eventFlags
+            if let index = numbers[event.keyCode], flags == quick || flags == quick.union(plainFlags) {
+                if !event.isARepeat, filteredRecords.indices.contains(index) {
+                    let plain = flags == quick.union(plainFlags)
+                    resolve(filteredRecords[index]) { [weak self] in
+                        guard let self else { return }
+                        self.onPaste?($0, self.outputPlainText([$0], requested: plain))
+                    }
+                }
                 return true
             }
-            switch event.charactersIgnoringModifiers?.lowercased() {
-            case "f": window?.makeFirstResponder(searchField); return true
-            case ",": onSettings?(); return true
-            case "t": onPauseToggle?(); return true
-            case "n": if shift { createBoard() } else { onNewText?() }; return true
-            case "o" where !isEditingSearch:
-                resolveFocused { [weak self] in self?.onOpenRecord?($0) }
-                return true
-            case "g" where !isEditingSearch:
-                revealSelection()
-                return true
-            case "c" where !isEditingSearch:
-                copySelection()
-                return true
-            case "z" where !isEditingSearch:
-                onUndo?()
-                return true
-            case "a" where !isEditingSearch:
-                selectAllResults()
-                return true
-            case "e" where !isEditingSearch:
-                resolveFocused { [weak self] in self?.showDetail($0, editing: true) }
-                return true
-            case "r" where !isEditingSearch:
-                resolveFocused { [weak self] in self?.rename($0) }
-                return true
-            default: break
-            }
+            if shortcutConfiguration.previousPinboard.matches(event) { moveBoardSelection(-1); return true }
+            if shortcutConfiguration.nextPinboard.matches(event) { moveBoardSelection(1); return true }
         }
         switch event.keyCode {
-        case 53:
+        case 53 where flags.isEmpty:
+            guard !event.isARepeat else { return true }
             cardViews.forEach { $0.cancelPendingDrag() }
             pendingActionID = nil
             if !searchField.stringValue.isEmpty { searchField.stringValue = ""; issueQuery(resetLimit: true); window?.makeFirstResponder(searchField) }
             else { dismiss() }
             return true
         case 36, 76:
-            guard !command, !flags.contains(.option), !flags.contains(.control) else { return false }
-            if isEditingSearch { window?.makeFirstResponder(resultsView); return true }
-            if !event.isARepeat { pasteSelection(plain: shift) }
+            guard flags.isEmpty || flags == plainFlags else { return false }
+            guard !event.isARepeat else { return true }
+            if editingSearch { window?.makeFirstResponder(resultsView); cardViews.forEach(updateShortcutLabel); return true }
+            pasteSelection(plain: flags == plainFlags)
             return true
-        case 125 where isEditingSearch:
-            window?.makeFirstResponder(resultsView)
+        case 125 where editingSearch && flags.isEmpty,
+             48 where editingSearch && flags.isEmpty:
+            window?.makeFirstResponder(resultsView); cardViews.forEach(updateShortcutLabel)
             return true
-        case 48 where isEditingSearch && !shift:
-            window?.makeFirstResponder(resultsView)
+        case 48 where !editingSearch && flags == .shift:
+            window?.makeFirstResponder(searchField); cardViews.forEach(updateShortcutLabel)
             return true
-        case 48 where !isEditingSearch && shift:
-            window?.makeFirstResponder(searchField)
+        case 49 where !editingSearch && flags.isEmpty:
+            if !event.isARepeat { resolveFocused { [weak self] in self?.showDetail($0, editing: false) } }
             return true
-        case 49 where !isEditingSearch && !command:
-            resolveFocused { [weak self] in self?.showDetail($0, editing: false) }
+        case 123 where !editingSearch && flags == [.command, .option]:
+            if !event.isARepeat { stepSelectedItems(forward: false) }; return true
+        case 124 where !editingSearch && flags == [.command, .option]:
+            if !event.isARepeat { stepSelectedItems(forward: true) }; return true
+        case 126 where !editingSearch && (flags == .command || flags == [.command, .shift]):
+            if let first = filteredRecords.first { select(first.id, focusResults: true, extending: flags.contains(.shift)) }
             return true
-        case 123 where !isEditingSearch && command && flags.contains(.option): stepSelectedItems(forward: false); return true
-        case 124 where !isEditingSearch && command && flags.contains(.option): stepSelectedItems(forward: true); return true
-        case 123 where !isEditingSearch && command: moveBoardSelection(-1); return true
-        case 124 where !isEditingSearch && command: moveBoardSelection(1); return true
-        case 126 where !isEditingSearch && command:
-            if let first = filteredRecords.first { select(first.id, focusResults: true, extending: shift) }
+        case 125 where !editingSearch && (flags == .command || flags == [.command, .shift]):
+            if let last = filteredRecords.last { select(last.id, focusResults: true, extending: flags.contains(.shift)) }
             return true
-        case 125 where !isEditingSearch && command:
-            if let last = filteredRecords.last { select(last.id, focusResults: true, extending: shift) }
-            return true
-        case 123 where !isEditingSearch: moveSelection(-1, extending: shift); return true
-        case 124 where !isEditingSearch: moveSelection(1, extending: shift); return true
-        case 51 where !isEditingSearch, 117 where !isEditingSearch:
+        case 123 where !editingSearch && (flags.isEmpty || flags == .shift): moveSelection(-1, extending: flags == .shift); return true
+        case 124 where !editingSearch && (flags.isEmpty || flags == .shift): moveSelection(1, extending: flags == .shift); return true
+        case 51 where !editingSearch && flags.isEmpty,
+             117 where !editingSearch && flags.isEmpty:
             if !event.isARepeat { deleteSelection() }
             return true
         default:
-            // Route the original event to the search field, including input-method
-            // initiation, instead of reconstructing text from keyboard characters.
-            if !isEditingSearch, !command, !flags.contains(.control),
+            // Deliver the original event to the search editor; preserve IME and native edit commands.
+            if !editingSearch, flags.intersection([.command, .control]).isEmpty,
                let characters = event.characters, !characters.isEmpty,
                characters.unicodeScalars.allSatisfy({ !$0.properties.isWhitespace && $0.value >= 0x20 && !($0.value >= 0xF700 && $0.value <= 0xF8FF) }) {
-                window?.makeFirstResponder(searchField)
+                window?.makeFirstResponder(searchField); cardViews.forEach(updateShortcutLabel)
             }
             return false
         }

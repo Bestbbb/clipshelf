@@ -57,9 +57,10 @@ struct ClipboardCardContent {
 @MainActor
 final class ClipboardCardView: NSButton, NSDraggingSource {
     let record: ClipboardCardContent
+    let position: Int
     var onSelect: (() -> Void)?
     var onClick: ((NSEvent) -> Void)?
-    var onOpen: (() -> Void)?
+    var onOpen: ((NSEvent.ModifierFlags) -> Void)?
     var onPrepareDrag: ((NSEvent) -> Void)?
     var onDragError: ((Error) -> Void)?
     private(set) var activeGestureID: UUID?
@@ -90,6 +91,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
 
     init(record: ClipboardCardContent, position: Int, compact: Bool = false) {
         self.record = record
+        self.position = position
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         isBordered = false
@@ -110,7 +112,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         sourceLabel.font = .systemFont(ofSize: 11, weight: .semibold)
         sourceLabel.textColor = .secondaryLabelColor
         sourceLabel.lineBreakMode = .byTruncatingTail
-        shortcutLabel.stringValue = position < 9 ? "⌘\(position + 1)" : ""
+        shortcutLabel.stringValue = ""
         shortcutLabel.font = .monospacedSystemFont(ofSize: 10, weight: .medium)
         shortcutLabel.textColor = .tertiaryLabelColor
         bodyLabel.stringValue = record.preview
@@ -222,8 +224,14 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         return NSColor(srgbRed: CGFloat((number >> 16) & 0xff) / 255, green: CGFloat((number >> 8) & 0xff) / 255, blue: CGFloat(number & 0xff) / 255, alpha: 1)
     }
 
+    func setQuickPasteLabel(_ value: String?) {
+        shortcutLabel.stringValue = value ?? ""
+        shortcutLabel.isHidden = value == nil
+        shortcutLabel.setAccessibilityLabel(value.map { "Quick Paste \($0)" })
+    }
+
     @objc private func pressed() {
-        if NSApp.currentEvent?.clickCount == 2 { onOpen?() } else { onSelect?() }
+        if NSApp.currentEvent?.clickCount == 2 { onOpen?(NSApp.currentEvent?.modifierFlags ?? []) } else { onSelect?() }
     }
 
     // All children are decorative; the card owns selection and drag gestures.
@@ -232,7 +240,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     override func mouseDown(with event: NSEvent) {
         trace("mouseDown clicks=\(event.clickCount) event=\(event.eventNumber) flags=\(event.modifierFlags.rawValue)")
         resetDragGesture()
-        guard event.clickCount < 2 else { onOpen?(); return }
+        guard event.clickCount < 2 else { onOpen?(event.modifierFlags); return }
         activeGestureID = UUID()
         mouseDownLocation = event.locationInWindow
         onSelect?()

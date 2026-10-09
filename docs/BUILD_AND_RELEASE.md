@@ -76,15 +76,17 @@ tombstones prevent restoring the old ID; restored history preserves the batch's
 relative order, not its original row positions in the complete history. Successful
 backup restoration clears the undo history.
 
-The current Mac was locked during this selection iteration. New cross-page
+The current Mac was locked during the selection iteration. New cross-page
 selection, batch actions and undo have not completed live desktop acceptance;
 Accessibility-authorized direct paste and real CloudKit synchronization are also
-still unverified. On 2026-10-10 at 00:03 (Asia/Taipei), the unified suite ran
+still unverified. For commit `e55453c`, on 2026-10-10 at 00:03 (Asia/Taipei), the unified suite ran
 280 tests with zero failures and one skip for unavailable Apple Intelligence.
 The release build, App Intents extraction, local ad-hoc signature verification,
-and Node bridge syntax check passed. The saved [search benchmark](../native/Benchmarks/README.md)
+and Node bridge syntax check passed. Its [CI run 37956500803](https://github.com/Bestbbb/clipshelf/actions/runs/37956500803)
+also passed, including the independent app and Share Extension build. Those
+results precede the shortcut changes described below. The saved [search benchmark](../native/Benchmarks/README.md)
 measured commit is `e78ef3f` (schema v8), against `45edfd6` (schema v7); it was not
-rerun for this selection change and does not measure selection, payload output,
+rerun for the selection or shortcut changes and does not measure selection, payload output,
 facet aggregation or input-to-render latency.
 
 In one Pinboard's manual-order view, drag a card to reorder it. Hold Option while
@@ -109,6 +111,54 @@ Link previews create a temporary WebKit session only after an explicit preview
 action. The app permits HTTP as well as HTTPS in web content through Apple's
 [web-content-specific ATS key](https://developer.apple.com/documentation/bundleresources/information-property-list/nsapptransportsecurity/nsallowsarbitraryloadsinwebcontent).
 This does not disable App Transport Security for the app's other network clients.
+
+## Configurable shortcuts
+
+The source supports four chords (panel, Stack, previous Pinboard and next
+Pinboard) plus separate single modifiers for Quick Paste and plain text. Other
+app commands remain fixed. Resetting shortcuts restores those six fields without
+changing the independent always-plain-text preference; a reset is still a draft
+until Save. Only panel and Stack are global; Pinboard keys apply to result-list
+focus, and text editing keeps its native shortcuts.
+
+Draft changes validate immediately and probe new system registrations without
+replacing existing handles. A probe is a point-in-time check, not a reservation
+or proof of hardware key delivery. Save validates and encodes again, stages all
+new registrations, and only then replaces the action mapping and preferences.
+A failed replacement releases only staged handles. Swapping the two global
+chords reuses existing handles. Startup reports each registration separately.
+An already registered Carbon chord is forwarded to the recorder only while the
+settings window is key and actively recording; losing focus cancels recording.
+
+Labels and fixed-character conflict checks use the current keyboard layout with
+the chord's actual modifiers, including Command-specific mappings such as
+Dvorak–Qwerty Command. Fixed event routing uses the actual command character,
+which may differ from the character ignoring modifiers.
+Input-source changes refresh labels, cancel recording and revalidate each global
+binding; newly conflicting bindings are released while valid bindings remain.
+When the layout becomes compatible again, registration is retried and any system
+conflict is reported. An ANSI fallback label does not make an unavailable layout
+safe for Command-character registration. Legacy `shortcutPreset` values 0/1/2
+migrate in memory. Damaged or unknown-schema data, or configuration invalid under
+the current layout, is preserved with a warning and temporary defaults; only a
+successful save replaces it.
+
+Model tests, a fake registration backend and unshown controller tests cover this
+logic. A read-only check also uses installed Dvorak–Qwerty Command layout data
+without selecting that input source. These tests do not establish real Carbon
+key delivery, Secure Input behavior,
+IME compatibility, or live non-US layout changes. Cmd-Up/Down still need full-query
+first/last navigation; repeat Cmd-F still needs the all-filters entry point.
+The current-page behavior is not the intended completion criterion.
+
+**On 2026-10-10 at 00:31:24 (Asia/Taipei), this shortcut iteration's unified suite
+ran 331 tests with zero failures and one skip for unavailable Apple Intelligence.
+At 00:31:54 the native release build, App Intents metadata extraction and local
+ad-hoc signature verification passed; the development ZIP passed its integrity
+check.** See [GitHub Actions](https://github.com/Bestbbb/clipshelf/actions/workflows/macos.yml)
+for the corresponding commit's CI result. The Mac was still
+locked on the latest desktop observation; live keyboard and cross-app acceptance
+remain open.
 
 ## Optional signed CloudKit build
 
@@ -155,6 +205,17 @@ authenticated. Passwords are not stored. Plaintext export is an explicit option.
 Local databases, temporary restore data and pre-restore recovery copies remain
 unencrypted; password-protected export is not a claim of encrypted local storage
 or end-to-end encrypted iCloud synchronization.
+
+Image and rich-text representations include their original bytes. Ordinary
+Finder records contain external file-URL references. Share Inbox imports copy
+files into the app's private `ShareImports/Files` directory, but records and
+backup archives currently retain only those URLs, not the owned target bytes.
+Restoring to a fresh location without that original directory cannot recover
+the files from the archive alone; encryption does not close this gap. Supporting
+self-contained backup/restore of already owned share files and relocating
+missing originals are tracked work, not part of this shortcut implementation.
+This does not authorize permanently copying every external Finder file; Paste's
+file-retention semantics still need baseline confirmation.
 
 MCP access and refresh credentials are held in the local Keychain. Developer
 signing material and runtime history must never be included in a release archive.

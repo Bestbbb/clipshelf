@@ -24,8 +24,13 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     private let panel = ClipboardPanelController()
     private let capture = CaptureService()
     private let paste = PasteCoordinator()
-    private let hotKey = GlobalHotKey()
-    private let stackHotKey = GlobalHotKey()
+    private let globalShortcuts = GlobalShortcutCoordinator()
+    private var shortcutConfiguration = KeyboardShortcutConfiguration.defaults
+    private var shortcutSettings: ShortcutSettingsController?
+    private var shortcutConfigurationWarning: String?
+    private var shortcutRegistrationFailures: [String] = []
+    private var shortcutLayoutWarning: String?
+    private var shortcutInputSourceObserver: Any?
     private let stack = StackCoordinator()
     private let stackPanel = StackPanelController()
     private let stackKeys = StackKeyMonitor()
@@ -50,6 +55,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     private var recordingItem: NSMenuItem!
     private var stateItem: NSMenuItem!
     private var permissionItem: NSMenuItem!
+    private var activationItem: NSMenuItem!
+    private var stackActivationItem: NSMenuItem!
     private var records: [ClipboardRecord] = []
     private var metadata: [ClipboardRecordMetadata] = []
     private var target: PasteCoordinator.Target?
@@ -70,11 +77,16 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         preferences.register(defaults: ["retentionDays": 30])
+        let loadedShortcuts = KeyboardShortcutConfiguration.loadResult(from: preferences)
+        shortcutConfiguration = loadedShortcuts.configuration
+        shortcutConfigurationWarning = loadedShortcuts.warning
         configureMenu()
         configurePanel()
+        panel.applyShortcuts(shortcutConfiguration, alwaysPlainText: preferences.bool(forKey: "alwaysPlainText"))
         configureStack()
         configureSuggestions()
         if demo {
+            installShortcutInputSourceObserver()
             records = Self.demoRecords
             statusMessage = "演示模式 · 合成内容 · 不读取或写入系统剪贴板"
             refresh()
@@ -144,14 +156,19 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         capture.onStatus = { [weak self] message in self?.setStatus(message) }
         paste.onClipboardWrite = { [weak self] in self?.capture.noteSelfWrite() }
         paste.onResult = { [weak self] message in self?.setStatus(message) }
-        hotKey.onPressed = { [weak self] in self?.togglePanel() }
-        let shortcutModifiers = [UInt32(cmdKey | shiftKey), UInt32(controlKey | optionKey), UInt32(cmdKey | optionKey)]
-        let hotKeyStatus = hotKey.register(modifiers: shortcutModifiers[max(0, min(2, preferences.integer(forKey: "shortcutPreset")))])
-        stackHotKey.onPressed = { [weak self] in self?.toggleStack() }
-        _ = stackHotKey.register(keyCode: UInt32(kVK_ANSI_C))
-        if hotKeyStatus != noErr {
-            statusMessage = "⌘⇧V 已被占用；可从菜单栏打开 ClipShelf。"
+        globalShortcuts.onPressed = { [weak self] action, chord in
+            guard let self else { return }
+            if self.shortcutSettings?.captureRegisteredShortcut(chord) == true { return }
+            guard self.shortcutSettings?.isKeyWindow != true else { return }
+            switch action {
+            case .activation: self.togglePanel()
+            case .stack: self.toggleStack()
+            }
         }
+        do { shortcutRegistrationFailures = try globalShortcuts.start(shortcutConfiguration).map(\.localizedDescription) }
+        catch { shortcutLayoutWarning = error.localizedDescription }
+        if let message = shortcutRegistrationMessage { statusMessage = message }
+        installShortcutInputSourceObserver()
         installObservers()
         if let deadline = preferences.object(forKey: "pauseUntil") as? Date, deadline > Date() {
             scheduleResume(at: deadline)
@@ -175,7 +192,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         stateItem = NSMenuItem(title: "记录已暂停", action: nil, keyEquivalent: "")
         menu.addItem(stateItem)
         menu.addItem(.separator())
-        menu.addItem(item("打开剪贴板    ⌘⇧V", #selector(openFromMenu)))
+        activationItem = item("打开剪贴板    \(shortcutConfiguration.activation.displayName)", #selector(openFromMenu))
+        menu.addItem(activationItem)
         recordingItem = item("开始记录", #selector(toggleRecording))
         menu.addItem(recordingItem)
         permissionItem = item("开启直接粘贴…", #selector(enableDirectPaste))
@@ -187,7 +205,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             let action = item(label, #selector(pauseFor(_:))); action.tag = minutes; pauseMenu.addItem(action)
         }
         pauseMenuItem.submenu = pauseMenu; menu.addItem(pauseMenuItem)
-        menu.addItem(item("顺序粘贴 Stack    ⌘⇧C", #selector(toggleStack)))
+        stackActivationItem = item("顺序粘贴 Stack    \(shortcutConfiguration.stack.displayName)", #selector(toggleStack))
+        menu.addItem(stackActivationItem)
         menu.addItem(.separator())
         menu.addItem(item("新建文本…", #selector(newText)))
         menu.addItem(item("从 iPhone 或 iPad 导入…", #selector(importFromCamera)))
@@ -670,6 +689,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         permissionItem?.isEnabled = !demo
         permissionItem?.title = paste.hasPermission ? "检查直接粘贴权限…" : "开启直接粘贴…"
         statusItem?.button?.toolTip = "ClipShelf · \(capture.isRunning ? "记录中" : "已暂停")"
+        activationItem?.title = "打开剪贴板    \(shortcutConfiguration.activation.displayName)"
+        stackActivationItem?.title = "顺序粘贴 Stack    \(shortcutConfiguration.stack.displayName)"
         panel.setCapturePaused(!capture.isRunning, recordingAllowed: !validation)
         if demo { panel.update(records: records, status: statusText) }
         else { panel.updateStatus(statusText) }
@@ -798,7 +819,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         guard !isTerminating, !validation else { return }
         let alert = NSAlert()
         alert.messageText = "欢迎使用 ClipShelf"
-        alert.informativeText = "ClipShelf 在本机保存之后复制的文字、图片和文件引用。使用 ⌘⇧V 打开历史，⌘⇧C 使用顺序粘贴。\n\n你可以随时从菜单栏暂停记录或排除应用。直接粘贴需要单独授予辅助功能权限；未授权仍可复制后手动粘贴。"
+        alert.informativeText = "ClipShelf 在本机保存之后复制的文字、图片和文件引用。使用 \(shortcutConfiguration.activation.displayName) 打开历史，\(shortcutConfiguration.stack.displayName) 使用顺序粘贴；可在设置中更改快捷键。\n\n你可以随时从菜单栏暂停记录或排除应用。直接粘贴需要单独授予辅助功能权限；未授权仍可复制后手动粘贴。"
         alert.addButton(withTitle: "开始记录"); alert.addButton(withTitle: "稍后")
         NSApp.activate(ignoringOtherApps: true)
         let choice = alert.runModal()
@@ -995,27 +1016,84 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
 
     @objc private func showSettings() {
         cancelSuggestions()
-        let alert = NSAlert(); alert.messageText = "ClipShelf 设置"
-        alert.informativeText = "数据保存在本机。菜单栏提供保留期限、定时暂停、排除应用、备份和登录启动设置。"
-        let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 12
-        let plain = NSButton(checkboxWithTitle: "默认以纯文本粘贴（保留历史中的原格式）", target: nil, action: nil)
-        plain.state = preferences.bool(forKey: "alwaysPlainText") ? .on : .off
-        let shortcut = NSPopUpButton(); shortcut.addItems(withTitles: ["⌘⇧V", "⌃⌥V", "⌘⌥V"])
-        shortcut.selectItem(at: preferences.integer(forKey: "shortcutPreset"))
-        let label = NSTextField(labelWithString: "唤起快捷键")
-        stack.addArrangedSubview(plain); stack.addArrangedSubview(NSStackView(views: [label, shortcut]))
-        stack.frame = NSRect(x: 0, y: 0, width: 410, height: 90)
-        alert.accessoryView = stack
-        alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "取消")
-        guard alert.runModal() == .alertFirstButtonReturn, !demo else { return }
-        preferences.set(plain.state == .on, forKey: "alwaysPlainText")
-        let modifiers = [UInt32(cmdKey | shiftKey), UInt32(controlKey | optionKey), UInt32(cmdKey | optionKey)]
-        let index = max(0, min(2, shortcut.indexOfSelectedItem))
-        if hotKey.register(modifiers: modifiers[index]) == noErr {
-            preferences.set(index, forKey: "shortcutPreset"); setStatus("设置已保存。")
-        } else {
-            _ = hotKey.register(modifiers: modifiers[max(0, min(2, preferences.integer(forKey: "shortcutPreset")))])
-            setStatus("这个快捷键已被占用，保留原设置。")
+        panel.dismiss()
+        if shortcutSettings == nil {
+            let controller = ShortcutSettingsController()
+            controller.onValidate = { [weak self] configuration in
+                guard let self else { return .failure(ShortcutSettingsError.unavailable) }
+                return Result {
+                    if self.demo { try configuration.validate() }
+                    else { try self.globalShortcuts.probe(configuration) }
+                }
+            }
+            controller.onApply = { [weak self] configuration, alwaysPlain in
+                guard let self else { return .failure(ShortcutSettingsError.unavailable) }
+                guard !self.demo else { return .failure(ShortcutSettingsError.demo) }
+                do {
+                    try self.globalShortcuts.applyAndSave(configuration, alwaysPlainText: alwaysPlain, preferences: self.preferences)
+                    self.shortcutConfiguration = configuration
+                    self.shortcutConfigurationWarning = nil
+                    self.shortcutLayoutWarning = nil
+                    self.shortcutRegistrationFailures = []
+                    self.panel.applyShortcuts(configuration, alwaysPlainText: alwaysPlain)
+                    self.setStatus("快捷键与粘贴设置已保存。")
+                    return .success(())
+                } catch { return .failure(error) }
+            }
+            controller.onTryActivation = { [weak self] in self?.showShortcutPreview() }
+            shortcutSettings = controller
+        }
+        shortcutSettings?.show(configuration: shortcutConfiguration, alwaysPlainText: preferences.bool(forKey: "alwaysPlainText"),
+                               registrationMessage: shortcutRegistrationMessage)
+    }
+
+    private var shortcutRegistrationMessage: String? {
+        var messages = shortcutRegistrationFailures
+        if let shortcutConfigurationWarning { messages.append(shortcutConfigurationWarning) }
+        if let shortcutLayoutWarning { messages.append(shortcutLayoutWarning) }
+        return messages.isEmpty ? nil : messages.joined(separator: "\n")
+    }
+
+    private func installShortcutInputSourceObserver() {
+        guard shortcutInputSourceObserver == nil else { return }
+        shortcutInputSourceObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !self.isTerminating else { return }
+                let previousMessage = self.shortcutRegistrationMessage
+                do { try self.shortcutConfiguration.validate(); self.shortcutLayoutWarning = nil }
+                catch { self.shortcutLayoutWarning = "键盘布局改变，请在快捷键设置中检查：\(error.localizedDescription)" }
+                if !self.demo {
+                    self.shortcutRegistrationFailures = self.globalShortcuts.reconcileAfterInputSourceChange(self.shortcutConfiguration)
+                }
+                self.panel.applyShortcuts(self.shortcutConfiguration, alwaysPlainText: self.preferences.bool(forKey: "alwaysPlainText"))
+                self.shortcutSettings?.keyboardInputSourceDidChange(registrationMessage: self.shortcutRegistrationMessage)
+                if let message = self.shortcutRegistrationMessage { self.setStatus(message) }
+                else {
+                    if self.statusMessage == previousMessage { self.statusMessage = nil }
+                    self.refresh()
+                }
+            }
+        }
+    }
+
+    private func showShortcutPreview() {
+        cancelSuggestions(); paste.cancel(); target = nil
+        let pointer = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(pointer, $0.frame, false) } ?? NSScreen.main
+        let message = "快捷键试用 · 可在设置中录制组合；按 Esc 关闭面板。"
+        if demo { panel.show(records: records, on: screen, status: message) }
+        else { panel.show(metadata: [], on: screen, status: message) }
+    }
+
+    private enum ShortcutSettingsError: Error, LocalizedError {
+        case demo, unavailable
+        var errorDescription: String? {
+            switch self {
+            case .demo: return "演示模式不保存设置或注册全局快捷键。"
+            case .unavailable: return "设置暂时不可用，请重新打开。"
+            }
         }
     }
 
@@ -1240,7 +1318,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         isTerminating = true
-        capture.stop(); hotKey.unregister(); stackHotKey.unregister(); stackKeys.stop(); stack.end(); paste.cancel()
+        capture.stop(); globalShortcuts.stop(); stackKeys.stop(); stack.end(); paste.cancel()
+        if let shortcutInputSourceObserver {
+            DistributedNotificationCenter.default().removeObserver(shortcutInputSourceObserver)
+            self.shortcutInputSourceObserver = nil
+        }
         queryTask?.cancel(); pauseTimer?.invalidate(); retentionTimer?.invalidate()
         ocrCleanupTask?.cancel()
         shareInboxTask?.cancel(); shareInboxTimer?.invalidate()
