@@ -51,6 +51,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     private var pausedUntil: Date?
     private var pauseTimer: Timer?
     private var retentionTimer: Timer?
+    private var retentionMenu: NSMenu?
+    private var historyCleanup: HistoryCleanupCoordinator?
+    private var cleanupConfirmation: HistoryCleanupConfirmationController?
     private var statusItem: NSStatusItem!
     private var recordingItem: NSMenuItem!
     private var stateItem: NSMenuItem!
@@ -70,9 +73,20 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         let manager = UndoManager(); manager.levelsOfUndo = 10; manager.groupsByEvent = false; return manager
     }()
     private lazy var selectionUndoHistory = SelectionUndoHistory(manager: historyUndo)
-    private var selectionMutationInProgress = false
+    private var selectionMutationInProgress = false {
+        didSet {
+            if oldValue && !selectionMutationInProgress {
+                // Let the mutation's completion, Undo registration and refresh finish first.
+                DispatchQueue.main.async { [weak self] in self?.historyCleanup?.resumeDeferred() }
+            }
+        }
+    }
+    private var isDataMutationInProgress: Bool {
+        selectionMutationInProgress || historyCleanup?.isBusy == true || terminationDecisionPending || isTerminating
+    }
     private var imageOutputOperationID: UUID?
     private var isTerminating = false
+    private var terminationDecisionPending = false
     private let defaultExclusions = ["com.1password.1password", "com.agilebits.onepassword7",
                                      "com.bitwarden.desktop", "com.apple.Passwords"]
 
@@ -98,6 +112,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             let directory = try profile.dataDirectory()
             store = try HistoryStore(databaseURL: directory.appendingPathComponent("history.sqlite"), recordsLocalOrigin: true)
             panel.ocrSourceStore = store
+            configureHistoryCleanup()
             if profile.allowsBackgroundIntegrations {
                 configureShareInbox(store: store!, directory: directory)
                 cloudSettings = CloudSyncSettingsController(store: store!)
@@ -217,6 +232,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         menu.addItem(item("恢复备份…", #selector(restoreBackup)))
         let retentionRoot = NSMenuItem(title: "历史保留期限", action: nil, keyEquivalent: "")
         let retentionMenu = NSMenu()
+        self.retentionMenu = retentionMenu
         for (label, days) in [("1 天", 1), ("1 周", 7), ("1 月", 30), ("1 年", 365), ("永久", 0)] {
             let entry = item(label, #selector(changeRetention(_:))); entry.tag = days; retentionMenu.addItem(entry)
         }
@@ -399,7 +415,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         }
         panel.onSettings = { [weak self] in self?.showSettings() }
         panel.onUndo = { [weak self] in
-            guard let self, !self.selectionMutationInProgress else { return }
+            guard let self, !self.isDataMutationInProgress else { return }
             self.historyUndo.undo()
         }
         panel.onDropItems = { [weak self] items, boardID in
@@ -452,12 +468,15 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         if suspended { suspensionReasons.insert(reason) } else { suspensionReasons.remove(reason) }
         sessionSuspended = !suspensionReasons.isEmpty
         if sessionSuspended {
+            historyCleanup?.cancelPending()
             cancelSuggestions(); capture.stop(); paste.cancel(); panel.hideForSuspension(); stackKeys.stop()
             if let shareInbox { Task { try? await shareInbox.publishDestinations(allowImports: false) } }
         } else {
             if !validation, preferences.bool(forKey: "recordingEnabled"), pausedUntil == nil, store != nil { capture.start() }
             if stack.peek() != nil, paste.hasPermission { _ = stackKeys.start() }
             processShareInbox()
+            applyRetention()
+            historyCleanup?.resumeDeferred()
         }
         refresh()
     }
@@ -604,7 +623,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         completion: @escaping (Result<[ClipboardSelectionReference], Error>) -> Void
     ) {
         guard let store else { completion(.failure(HistoryStoreError.recordNotFound)); return }
-        guard !selectionMutationInProgress else { completion(.failure(SelectionOperationError.busy)); return }
+        guard !isDataMutationInProgress else { completion(.failure(SelectionOperationError.busy)); return }
         selectionMutationInProgress = true
         Task { @MainActor in
             defer { selectionMutationInProgress = false }
@@ -626,7 +645,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             return
         }
         guard let store else { return }
-        guard !selectionMutationInProgress else { setStatus(SelectionOperationError.busy.localizedDescription); return }
+        guard !isDataMutationInProgress else { setStatus(SelectionOperationError.busy.localizedDescription); return }
         guard SelectionUndoTicket.payloadSize(selected) <= selectionUndoHistory.maximumPayloadBytes else {
             setStatus("所选内容过大，无法保留整批撤销；请缩小选择后重试。")
             return
@@ -647,7 +666,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     private func undoSelection(_ ticket: SelectionUndoTicket, store: HistoryStore) {
-        guard !selectionMutationInProgress else { return }
+        guard !isDataMutationInProgress else { return }
         selectionMutationInProgress = true
         let action = ticket.action
         Task { @MainActor in
@@ -675,11 +694,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
 
     private enum SelectionOperationError: Error, LocalizedError {
         case busy
-        var errorDescription: String? { "正在完成上一项修改或撤销，请稍后再试。" }
+        var errorDescription: String? { "正在完成修改、撤销或历史清理，请稍后再试。" }
     }
 
     private func mutationIsAvailable() -> Bool {
-        guard !selectionMutationInProgress else { setStatus(SelectionOperationError.busy.localizedDescription); return false }
+        guard !isDataMutationInProgress else { setStatus(SelectionOperationError.busy.localizedDescription); return false }
         return true
     }
 
@@ -706,6 +725,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         statusItem?.button?.toolTip = "ClipShelf · \(capture.isRunning ? "记录中" : "已暂停")"
         activationItem?.title = "打开剪贴板    \(shortcutConfiguration.activation.displayName)"
         stackActivationItem?.title = "顺序粘贴 Stack    \(shortcutConfiguration.stack.displayName)"
+        for entry in retentionMenu?.items ?? [] {
+            entry.state = entry.tag == preferences.integer(forKey: "retentionDays") ? .on : .off
+        }
         panel.setCapturePaused(!capture.isRunning, recordingAllowed: !validation)
         if demo { panel.update(records: records, status: statusText) }
         else { panel.updateStatus(statusText) }
@@ -721,6 +743,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
 
     private func togglePanel() {
         cancelSuggestions()
+        if let window = cleanupConfirmation?.window {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
         if panel.isVisible { panel.dismiss(); paste.cancel(); return }
         if !demo, store == nil {
             showError("历史数据库未能打开", detail: "原有文件会保留。请检查本机磁盘和数据目录权限后重新启动。")
@@ -829,16 +856,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     private func performClearHistory() {
-        guard !demo, store != nil, mutationIsAvailable() else { return }
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "清空本地历史？"
-        alert.informativeText = "此操作会清空本地历史，固定在分组中的内容会保留。未固定记录的删除无法撤销。"
-        alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "清空")
-        NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertSecondButtonReturn, mutationIsAvailable() else { return }
-        do { try store?.clearHistory(); reload(); Task { try? await ocrCache.clear() } }
-        catch { showError("清空失败", detail: "无法写入数据库，请稍后重试。") }
+        guard !demo, store != nil, !sessionSuspended, !isTerminating, !terminationDecisionPending else { return }
+        if historyCleanup?.start(.clearHistory) == .ignored {
+            setStatus("请先完成或取消当前历史清理。")
+            cleanupConfirmation?.window?.makeKeyAndOrderFront(nil)
+        }
     }
 
     @objc private func revealData() {
@@ -890,7 +912,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             return
         }
         guard let store else { completion(.failure(EditorOperationError.unavailable)); return }
-        guard !selectionMutationInProgress else { completion(.failure(SelectionOperationError.busy)); return }
+        guard !isDataMutationInProgress else { completion(.failure(SelectionOperationError.busy)); return }
         selectionMutationInProgress = true
         Task { @MainActor in
             do {
@@ -1063,16 +1085,87 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func applyRetention() {
-        guard !demo, let store else { return }
-        let days = preferences.integer(forKey: "retentionDays")
-        guard days > 0 else { return }
-        do {
-            if try store.prune(before: Date().addingTimeInterval(-Double(days) * 86_400)) > 0 {
-                requestOCRCleanup(store: store)
+    private func configureHistoryCleanup() {
+        let coordinator = HistoryCleanupCoordinator()
+        historyCleanup = coordinator
+        coordinator.isExternalMutationBusy = { [weak self] in
+            guard let self else { return true }
+            return self.selectionMutationInProgress || self.sessionSuspended || self.isTerminating || self.terminationDecisionPending
+        }
+        coordinator.onPrepare = { [weak self] request, completion in
+            guard let self, !self.isTerminating, !self.terminationDecisionPending else {
+                completion(.failure(HistoryCleanupFlowError.unavailable)); return
+            }
+            let cutoff: Date?
+            switch request {
+            case .clearHistory: cutoff = nil
+            case .retention(let days), .automatic(let days):
+                cutoff = Date().addingTimeInterval(-Double(days) * 86_400)
+            }
+            if !request.isAutomatic { self.setStatus("正在统计历史清理范围…") }
+            self.readSelection({ try $0.prepareHistoryCleanup(before: cutoff) }, completion: completion)
+        }
+        coordinator.confirm = { [weak self] summary, request, completion in
+            guard let self, !self.sessionSuspended, !self.isTerminating, !self.terminationDecisionPending else {
+                completion(false); return {}
+            }
+            let confirmation = HistoryCleanupConfirmationController(request: request, summary: summary)
+            self.cleanupConfirmation?.dismiss()
+            self.cleanupConfirmation = confirmation
+            confirmation.present { [weak self, weak confirmation] accepted in
+                if self?.cleanupConfirmation === confirmation { self?.cleanupConfirmation = nil }
+                completion(accepted)
+            }
+            return { [weak self, weak confirmation] in
+                confirmation?.dismiss()
+                if self?.cleanupConfirmation === confirmation { self?.cleanupConfirmation = nil }
             }
         }
-        catch { statusMessage = "历史清理未完成，原有内容保留。" }
+        coordinator.onCommit = { [weak self] plan, completion in
+            guard let self, let store = self.store, !self.isTerminating, !self.terminationDecisionPending else {
+                completion(.failure(HistoryCleanupFlowError.unavailable)); return
+            }
+            Task { @MainActor in
+                do {
+                    let result = try await Task.detached(priority: .userInitiated) {
+                        try store.commitHistoryCleanup(plan)
+                    }.value
+                    completion(.success(result))
+                } catch { completion(.failure(error)) }
+            }
+        }
+        coordinator.onBusyChanged = { [weak self] _ in self?.refresh() }
+        coordinator.onSuccess = { [weak self] result, request in
+            guard let self else { return }
+            if case .retention(let days) = request {
+                self.preferences.set(days, forKey: "retentionDays")
+            }
+            let affected = Set(result.deletedIDs + result.preservedReferences.map(\.id))
+            self.selectionUndoHistory.invalidate(recordIDs: affected)
+            if result.summary.affectedCount > 0 { self.reload() }
+            if !request.isAutomatic || result.summary.affectedCount > 0 {
+                var message = "历史清理完成：删除 \(result.summary.deletedCount) 条，\(result.summary.preservedPinnedCount) 条移出历史并保留在分组。"
+                if case .retention(let days) = request { message = "已改为保留 \(days) 天。" + message }
+                if result.summary.excludedCount > 0 {
+                    message += "另有 \(result.summary.excludedCount) 条因账号或权限限制保留。"
+                }
+                self.setStatus(message)
+            } else { self.refresh() }
+        }
+        coordinator.onFailure = { [weak self] error, request in
+            guard let self else { return }
+            let prefix = request.isAutomatic ? "自动清理未完成。" : "历史清理未完成，保留期限未更改。"
+            self.setStatus(prefix + error.localizedDescription)
+        }
+        coordinator.onCancelled = { [weak self] request in
+            if !request.isAutomatic { self?.setStatus("已取消历史清理；内容和保留期限未改变。") }
+        }
+    }
+
+    private func applyRetention() {
+        guard !demo, store != nil, !isTerminating else { return }
+        let days = preferences.integer(forKey: "retentionDays")
+        historyCleanup?.start(.automatic(days: days))
     }
 
     private func outputImageFiles(_ records: [ClipboardRecord], directlyPaste: Bool) {
@@ -1531,19 +1624,26 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func changeRetention(_ sender: NSMenuItem) {
-        guard !demo, let store else { return }
         let days = sender.tag
-        if days == 0 { preferences.set(0, forKey: "retentionDays"); setStatus("历史保留期限：永久。"); return }
-        let cutoff = Date().addingTimeInterval(-Double(days) * 86_400)
-        do {
-            let count = try store.countHistory(before: cutoff)
-            let alert = NSAlert(); alert.messageText = "改为保留 \(days) 天？"
-            alert.informativeText = "\(count) 条历史记录会移出历史列表，固定内容保留。未固定内容的清理无法撤销。"
-            alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "更改并清理")
-            guard alert.runModal() == .alertSecondButtonReturn else { return }
-            _ = try store.prune(before: cutoff)
-            preferences.set(days, forKey: "retentionDays"); reload()
-        } catch { setStatus("保留期限未更改，请检查本机数据。") }
+        guard !demo, store != nil, [0, 1, 7, 30, 365].contains(days) else { return }
+        cancelSuggestions()
+        panel.dismissForAction { [weak self] in self?.performChangeRetention(days: days) }
+    }
+
+    private func performChangeRetention(days: Int) {
+        guard !sessionSuspended, !isTerminating, !terminationDecisionPending else { return }
+        if days == 0 {
+            guard !selectionMutationInProgress, historyCleanup?.isCommitting != true else {
+                setStatus(SelectionOperationError.busy.localizedDescription); return
+            }
+            historyCleanup?.cancelPending()
+            historyCleanup?.start(.automatic(days: 0))
+            preferences.set(0, forKey: "retentionDays")
+            setStatus("历史保留期限：永久。")
+        } else if historyCleanup?.start(.retention(days: days)) == .ignored {
+            setStatus("请先完成或取消当前历史清理；保留期限尚未更改。")
+            cleanupConfirmation?.window?.makeKeyAndOrderFront(nil)
+        }
     }
 
     @objc private func toggleLoginItem() {
@@ -1564,20 +1664,40 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     @objc private func quitApplication() { NSApp.terminate(nil) }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard !selectionMutationInProgress else {
-            setStatus("正在保存或撤销，请完成后再退出。")
+        guard !terminationDecisionPending else { return .terminateLater }
+        guard !selectionMutationInProgress, historyCleanup?.isCommitting != true else {
+            setStatus("正在保存、撤销或清理，请完成后再退出。")
             return .terminateCancel
         }
-        panel.dismissForAction({
-            DispatchQueue.main.async { sender.reply(toApplicationShouldTerminate: true) }
-        }, onCancel: {
-            DispatchQueue.main.async { sender.reply(toApplicationShouldTerminate: false) }
+        terminationDecisionPending = true
+        historyCleanup?.cancelPending()
+        panel.dismissForAction({ [weak self] in
+            DispatchQueue.main.async { self?.finishTerminationDecision(true, sender: sender) }
+        }, onCancel: { [weak self] in
+            DispatchQueue.main.async { self?.finishTerminationDecision(false, sender: sender) }
         })
         return .terminateLater
     }
 
+    private func finishTerminationDecision(_ accepted: Bool, sender: NSApplication) {
+        guard terminationDecisionPending else { return }
+        if accepted, !selectionMutationInProgress, historyCleanup?.isCommitting != true,
+           historyCleanup?.terminate() != false {
+            isTerminating = true
+            terminationDecisionPending = false
+            sender.reply(toApplicationShouldTerminate: true)
+        } else {
+            terminationDecisionPending = false
+            if accepted { setStatus("资料库修改尚未完成，请完成后再退出。") }
+            sender.reply(toApplicationShouldTerminate: false)
+            historyCleanup?.resumeDeferred()
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         isTerminating = true
+        historyCleanup?.terminate()
+        cleanupConfirmation?.dismiss(); cleanupConfirmation = nil
         capture.stop(); globalShortcuts.stop(); stackKeys.stop(); stack.end(); paste.cancel()
         if let shortcutInputSourceObserver {
             DistributedNotificationCenter.default().removeObserver(shortcutInputSourceObserver)

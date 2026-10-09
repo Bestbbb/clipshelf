@@ -22,6 +22,15 @@ public struct HistorySelectionSnapshot: Sendable {
 public struct HistorySelectionMoveUndo: Sendable {
     /// Updated versions of the explicitly selected items, in the caller's frozen order.
     public let references: [ClipboardSelectionReference]
+    /// Every record whose version or placement the undo depends on, including unselected board neighbours.
+    public var affectedRecordIDs: Set<UUID> {
+        var ids = Set(references.map(\.id))
+        ids.formUnion(expected.map(\.id))
+        ids.formUnion(before.map(\.id))
+        ids.formUnion(placements.map(\.id))
+        for board in boardPlacements.values { ids.formUnion(board.map(\.id)) }
+        return ids
+    }
     let storeIdentity: UUID
     let placements: [HistorySelectionPlacement]
     let expected: [ClipboardSelectionReference]

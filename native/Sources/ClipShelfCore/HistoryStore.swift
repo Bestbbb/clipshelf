@@ -485,10 +485,7 @@ public final class HistoryStore: @unchecked Sendable {
 
     public func clearHistory() throws {
         try synchronized {
-            try transaction {
-                try execute("UPDATE clipboard_records SET is_in_history = 0, revision = revision + 1 WHERE is_in_history = 1")
-                try removeUnretainedRows()
-            }
+            _ = try transaction { try cleanupHistoryWithoutLock(before: nil) }
         }
     }
 
@@ -501,15 +498,7 @@ public final class HistoryStore: @unchecked Sendable {
     public func prune(before cutoff: Date) throws -> Int {
         guard cutoff.timeIntervalSinceReferenceDate.isFinite else { throw HistoryStoreError.invalidTimestamp }
         return try synchronized {
-            try transaction {
-                let count = try countHistoryWithoutLock(before: cutoff)
-                let statement = try prepare("UPDATE clipboard_records SET is_in_history = 0, revision = revision + 1 WHERE copied_at < ? AND is_in_history = 1")
-                defer { sqlite3_finalize(statement) }
-                try check(sqlite3_bind_double(statement, 1, cutoff.timeIntervalSinceReferenceDate))
-                try stepToCompletion(statement)
-                try removeUnretainedRows()
-                return count
-            }
+            try transaction { try cleanupHistoryWithoutLock(before: cutoff).summary.affectedCount }
         }
     }
 
@@ -724,7 +713,7 @@ public final class HistoryStore: @unchecked Sendable {
             try check(sqlite3_step(versionStatement), allowingRow: true)
             return Int(sqlite3_column_int(versionStatement, 0))
         }()
-        if (1...8).contains(version) { try recoveryDatabaseBackup(reason: "migration-v\(version)") }
+        if (1...9).contains(version) { try recoveryDatabaseBackup(reason: "migration-v\(version)") }
         suppressSyncCapture = true
         defer { suppressSyncCapture = false }
         try transaction {
@@ -774,7 +763,7 @@ public final class HistoryStore: @unchecked Sendable {
                     try stepToCompletion(update)
                 }
                 try execute("PRAGMA user_version = 2")
-            case 2, 3, 4, 5, 6, 7, 8, 9: break
+            case 2, 3, 4, 5, 6, 7, 8, 9, 10: break
             default: throw HistoryStoreError.unsupportedSchemaVersion(version)
             }
             try execute("CREATE TABLE IF NOT EXISTS pinboard_order_backfill(board_id TEXT PRIMARY KEY REFERENCES pinboards(id) ON DELETE CASCADE)")
@@ -798,7 +787,8 @@ public final class HistoryStore: @unchecked Sendable {
             try createOwnedFilesSchema()
             try execute("CREATE TABLE IF NOT EXISTS pinboard_local_order(board_id TEXT PRIMARY KEY REFERENCES pinboards(id) ON DELETE CASCADE, position INTEGER NOT NULL)")
             try initializeSearchIndex()
-            try execute("PRAGMA user_version = 9")
+            try initializeHistoryCleanupTokens()
+            try execute("PRAGMA user_version = 10")
             syncSchemaReady = true
         }
     }

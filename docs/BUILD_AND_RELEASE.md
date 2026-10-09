@@ -247,6 +247,29 @@ immutable original and a separate file projection for opening in other apps.
 Edits made by another app to that projection are not added to the stored
 original or its backup. Local file copies and trusted Undo retain asset bindings.
 
+Database schema 10 adds per-record local mutation tokens for history cleanup.
+The migration preserves row IDs, ordering, and owned-file bindings; it does not
+change archive schema 3 or the cloud wire format. SQL insert/update triggers rotate
+the token, detecting same-ID/revision replacement through restore or a second
+connection without reading the clipboard payload during confirmation preparation.
+
+Manual clear and retention changes display a frozen metadata summary: deletion,
+pinned preservation, private/shared sync subsets, and excluded account/permission
+records. Commit revalidates every candidate and both account generations within
+the same transaction as the existing outbox. New records do not expand a confirmed
+plan; changed candidates cause a whole-operation failure requiring fresh confirmation.
+Cancel/close/Escape/session suspension invalidate unsubmitted work. Already dispatched
+transactions finish normally, and quit is deferred until their result is known.
+Only success updates the retention preference, list, menu checkmark, and OCR cleanup.
+Undo tickets depending on affected records are removed; unrelated Undo remains.
+
+Startup/hourly retention uses the same coordinator, coalesces while user mutations
+are active, and yields to manual requests. Selecting permanent retention clears
+queued automatic work. These operations do not perform physical owned-asset garbage
+collection or promise immediate disk reclamation. Automated tests use temporary
+databases and unshown native windows; actual confirmation focus/keyboard behavior,
+large-library latency, disk-full recovery, and live sync propagation remain gates.
+
 Archive schema 3 embeds registered originals, SHA-256 metadata, and record/slot
 bindings. Restore validates the whole manifest, creates fresh asset IDs and
 paths in the destination profile, and never reads old paths from the archive.

@@ -86,6 +86,27 @@ private final class WeakSelectionUndoTicket {
         entries.removeAll { $0.value == nil || $0.value === ticket }
     }
 
+    /// Retire whole atomic actions that depend on any cleaned-up record. Each
+    /// ticket is its own UndoManager target; unrelated groups stay in order.
+    @discardableResult
+    func invalidate(recordIDs: Set<UUID>) -> Int {
+        guard !recordIDs.isEmpty else { return 0 }
+        var removed = 0
+        for ticket in tickets {
+            let intersects: Bool
+            switch ticket.action {
+            case .move(let undo):
+                intersects = !undo.affectedRecordIDs.isDisjoint(with: recordIDs)
+            case .deletion(let originals, _):
+                intersects = originals.contains { recordIDs.contains($0.id) }
+            case .edit(let undo):
+                intersects = recordIDs.contains(undo.original.id)
+            }
+            if intersects { remove(ticket); removed += 1 }
+        }
+        return removed
+    }
+
     func removeAll() {
         manager.removeAllActions()
         entries.removeAll()

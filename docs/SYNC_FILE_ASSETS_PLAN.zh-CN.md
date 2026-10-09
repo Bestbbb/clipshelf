@@ -6,7 +6,7 @@
 
 当前同步会传输 `ClipboardRecord.parts` 中已有的图片、RTF、HTML 等表示字节，但托管文件只传其 `public.file-url` 路径。CloudKit 的 CKAsset 目前封装整个操作 JSON，**不是该路径指向的托管原件**。另一台 Mac 因此不能恢复文件字节或取得本地托管绑定。
 
-建议独立一轮实施「已明确登记的托管原件同步」：数据库 schema v10、带文件清单的 wire v2、私有及共享 zone 内的独立文件 CKAsset、持久附件待下载状态、本机路径物化，以及冲突比较和历史协议兼容。普通 Finder 文件仍是引用，不自动复制、读取或上传其内容；外部 App 对打开副本的编辑也不自动替换原件或触发上传。
+建议独立一轮实施「已明确登记的托管原件同步」：数据库 schema v11（待实施）、带文件清单的 wire v2、私有及共享 zone 内的独立文件 CKAsset、持久附件待下载状态、本机路径物化，以及冲突比较和历史协议兼容。schema v10 已用于本地历史清理的逐记录变更标记，不包含云资产实现。普通 Finder 文件仍是引用，不自动复制、读取或上传其内容；外部 App 对打开副本的编辑也不自动替换原件或触发上传。
 
 该轮可在无真实 Apple 账号的条件下完成 Core、两种 CloudKit 适配器和合成双库回归；真实两 Mac、生产容器、签名 entitlement、容量和撤权验收仍是独立发布 gate。不能因合成测试通过就宣称 F16 全部完成。
 
@@ -95,7 +95,7 @@ func syncOwnedTransferStates(context: SyncTransferContext) throws -> [SyncOwnedT
 
 ## 5. 数据库、兼容与迁移 gate
 
-建议 schema v10 新增：
+建议后续 schema v11 新增（当前 v10 已用于本地清理变更标记）：
 
 - 操作级不可变 manifest/传输版本记录，与 outbox 同事务生成。
 - namespace 隔离的已验证资产映射与下载状态表。

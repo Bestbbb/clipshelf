@@ -192,4 +192,115 @@ import XCTest
             XCTAssertEqual(ledger.retainedPayloadBytes, 0)
         }
     }
+
+    func testCleanupInvalidatesWholeOverlappingEditMoveAndDeletionTicketsButKeepsOtherActionsUsable() throws {
+        try withStore { store in
+            let manager = UndoManager(), ledger = SelectionUndoHistory(manager: manager)
+            let removedBoard = try store.createPinboard(name: "removed move"), keptBoard = try store.createPinboard(name: "kept move")
+            let removedEdit = try store.create(ClipboardRecord(text: "removed edit"))
+            let keptEdit = try store.create(ClipboardRecord(text: "kept edit"))
+            let moved = try ["moved a", "moved b"].map { try store.create(ClipboardRecord(text: $0)) }
+            let keptMove = try store.create(ClipboardRecord(text: "kept move"))
+            let deleted = try ["deleted a", "deleted b"].map { try store.create(ClipboardRecord(text: $0)) }
+            let keptDelete = try store.create(ClipboardRecord(text: "kept delete"))
+            var handled: [String] = [], errors: [Error] = []
+            @MainActor func remember(_ action: SelectionUndoAction, name: String, kept: Bool) {
+                XCTAssertTrue(ledger.register(action) { ticket in
+                    guard kept else { return XCTFail("Invalidated action executed: \(name)") }
+                    do {
+                        switch ticket.action {
+                        case .edit(let undo): _ = try store.undoSelectionEdit(undo)
+                        case .move(let undo): _ = try store.undoSelectionMove(undo)
+                        case .deletion(let records, let undo): _ = try store.restoreDeletedSelection(records, undo: undo)
+                        }
+                        handled.append(name); ledger.remove(ticket)
+                    } catch { errors.append(error) }
+                })
+            }
+            var edit = removedEdit; edit.renamedTitle = "changed"
+            remember(.edit(try store.editSelectionRecord(edit)), name: "removed edit", kept: false)
+            edit = keptEdit; edit.renamedTitle = "changed"
+            remember(.edit(try store.editSelectionRecord(edit)), name: "kept edit", kept: true)
+            remember(.move(try store.moveSelection(moved.map(reference), to: removedBoard.id)), name: "removed move", kept: false)
+            remember(.move(try store.moveSelection([reference(keptMove)], to: keptBoard.id)), name: "kept move", kept: true)
+            remember(.deletion(deleted, try store.deleteSelection(deleted.map(reference))), name: "removed deletion", kept: false)
+            remember(.deletion([keptDelete], try store.deleteSelection([reference(keptDelete)])), name: "kept deletion", kept: true)
+            let otherTarget = NSObject()
+            manager.beginUndoGrouping()
+            manager.registerUndo(withTarget: otherTarget) { _ in handled.append("ordinary action") }
+            manager.endUndoGrouping()
+
+            let affected: Set<UUID> = [removedEdit.id, moved[1].id, deleted[0].id]
+            XCTAssertEqual(ledger.invalidate(recordIDs: affected), 3)
+            XCTAssertEqual(ledger.invalidate(recordIDs: affected), 0)
+            XCTAssertEqual(ledger.tickets.count, 3)
+            XCTAssertEqual(ledger.retainedPayloadBytes, SelectionUndoTicket.payloadSize([keptEdit, keptDelete]))
+            XCTAssertEqual(manager.groupingLevel, 0)
+            while manager.canUndo { manager.undo() }
+            XCTAssertEqual(handled, ["ordinary action", "kept deletion", "kept move", "kept edit"])
+            XCTAssertTrue(errors.isEmpty, "\(errors)")
+            XCTAssertEqual(try store.item(id: removedEdit.id)?.renamedTitle, "changed")
+            XCTAssertEqual(try store.item(id: keptEdit.id)?.renamedTitle, keptEdit.renamedTitle)
+            XCTAssertEqual(try moved.map { try store.item(id: $0.id)?.pinboardID }, [removedBoard.id, removedBoard.id])
+            XCTAssertNil(try store.item(id: keptMove.id)?.pinboardID)
+            XCTAssertTrue(try deleted.allSatisfy { try store.item(id: $0.id) == nil })
+            XCTAssertNotNil(try store.item(id: keptDelete.id))
+            XCTAssertTrue(ledger.tickets.isEmpty); XCTAssertEqual(ledger.retainedPayloadBytes, 0)
+
+            let fresh = try store.create(ClipboardRecord(text: "after invalidation"))
+            var changed = fresh; changed.renamedTitle = "new edit"
+            remember(.edit(try store.editSelectionRecord(changed)), name: "fresh edit", kept: true)
+            XCTAssertTrue(manager.canUndo); manager.undo()
+            XCTAssertEqual(handled.last, "fresh edit")
+            XCTAssertNil(try store.item(id: fresh.id)?.renamedTitle)
+            XCTAssertFalse(manager.canUndo); XCTAssertEqual(manager.groupingLevel, 0)
+        }
+    }
+
+    func testCleanupOfUnselectedBoardBaselineRetiresDependentMoveOnly() throws {
+        try withStore { store in
+            let board = try store.createPinboard(name: "destination"), unrelatedBoard = try store.createPinboard(name: "unrelated")
+            let neighbour = try store.create(ClipboardRecord(text: "not selected", pinboardID: board.id))
+            let selected = try store.create(ClipboardRecord(text: "selected"))
+            let unrelated = try store.create(ClipboardRecord(text: "unrelated"))
+            let manager = UndoManager(), ledger = SelectionUndoHistory(manager: manager)
+            let dependent = try store.moveSelection([reference(selected)], to: board.id)
+            XCTAssertFalse(dependent.references.contains { $0.id == neighbour.id })
+            XCTAssertTrue(dependent.affectedRecordIDs.contains(neighbour.id))
+            ledger.register(.move(dependent)) { _ in XCTFail("Move with a cleaned-up board baseline survived") }
+            var handled = 0
+            ledger.register(.move(try store.moveSelection([reference(unrelated)], to: unrelatedBoard.id))) { ticket in
+                handled += 1; ledger.remove(ticket)
+            }
+            XCTAssertEqual(ledger.invalidate(recordIDs: [neighbour.id]), 1)
+            XCTAssertEqual(ledger.tickets.count, 1)
+            manager.undo()
+            XCTAssertEqual(handled, 1); XCTAssertFalse(manager.canUndo)
+        }
+    }
+
+    func testEmptyOrDisjointCleanupKeepsEveryTicketAndOriginalUndoOrder() throws {
+        try withStore { store in
+            let manager = UndoManager(), ledger = SelectionUndoHistory(manager: manager)
+            let board = try store.createPinboard(name: "board")
+            let edited = try store.create(ClipboardRecord(text: "edit"))
+            let moved = try store.create(ClipboardRecord(text: "move"))
+            let deleted = try store.create(ClipboardRecord(text: "delete"))
+            var change = edited; change.renamedTitle = "new title"
+            let actions: [SelectionUndoAction] = [.edit(try store.editSelectionRecord(change)),
+                .move(try store.moveSelection([reference(moved)], to: board.id)),
+                .deletion([deleted], try store.deleteSelection([reference(deleted)]))]
+            var order: [Int] = []
+            for (index, action) in actions.enumerated() {
+                ledger.register(action) { ticket in order.append(index); ledger.remove(ticket) }
+            }
+            let ids = ledger.tickets.map(\.id), bytes = ledger.retainedPayloadBytes
+            XCTAssertEqual(ledger.invalidate(recordIDs: []), 0)
+            XCTAssertEqual(ledger.invalidate(recordIDs: [UUID()]), 0)
+            XCTAssertEqual(ledger.tickets.map(\.id), ids)
+            XCTAssertEqual(ledger.retainedPayloadBytes, bytes)
+            while manager.canUndo { manager.undo() }
+            XCTAssertEqual(order, [2, 1, 0]); XCTAssertEqual(manager.groupingLevel, 0)
+        }
+    }
 }
