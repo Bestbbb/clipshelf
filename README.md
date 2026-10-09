@@ -1,44 +1,74 @@
 # ClipShelf
 
-A free, open-source clipboard manager for macOS, with the full feature set and
-cross-app workflow of Paste as its product benchmark.
+A free, open-source clipboard manager for macOS. The goal is the full Paste for
+Mac feature set and its smooth cross-app workflow.
 
-**Status: planning and documentation review.** Implementation is paused while
-the product flows, technical design, and acceptance criteria are reviewed.
-There is no working application release yet.
+**Status: native implementation in progress.** A development app can be built
+locally. Full Paste parity, cross-app compatibility, cloud deployment, and a
+signed public release are still being developed and verified.
 
-## Product goal
+## Build and run
 
-Open a panel from the app you are working in, find copied content, paste it back
-at the original input position, and continue working without an extra click.
+Requires macOS 14 or later and Xcode with its Swift toolchain. Development is
+currently tested on Apple silicon with Xcode 26.5. No third-party Swift packages
+are needed for the local app.
 
-The macOS target includes rich clipboard history, search, previews and editing,
-Pinboards, sequential pasting, privacy controls, system integrations, sync,
-sharing, intelligent suggestions, and MCP access. Delivery will be staged;
-these capabilities are planned, not implemented or verified. The current scope
-is confirmed as full macOS parity, including sync between Macs. iPhone and iPad
-clients are outside this scope and may be planned separately later.
+```sh
+swift test --package-path native
+./scripts/build-macos.sh
+open build/ClipShelf.app
+```
 
-## Design documents
+Launch adds the menu bar item. The first time you open history or start recording,
+the welcome flow lets you start or postpone capture. Open the panel with **⌘⇧V**,
+or from the menu bar. Direct paste requires Accessibility
+permission; without it, the app copies the selected content for manual pasting.
+
+To inspect the interface using synthetic samples without clipboard recording:
+
+```sh
+open build/ClipShelf.app --args --demo
+```
+
+Quit an existing ClipShelf instance before switching to or from demo mode. The
+build script uses an ad-hoc signature unless `CODESIGN_IDENTITY` is provided;
+the development bundle is **not notarized**. Native data is kept separately in
+`~/Library/Application Support/ClipShelf Development`.
+
+## Implementation
+
+Swift and AppKit power the panel and system integration; SQLite and separate
+content-addressed files hold local history and attachments. The app includes
+work in progress on rich clipboard content, search, Pinboards, editing,
+previews, OCR, sequential pasting, privacy controls, backups, and MCP access.
+CloudKit sync/sharing, on-device model suggestions, native system services and
+Shortcuts have their own configuration and permission gates.
+
+See the [implementation status](docs/IMPLEMENTATION_STATUS.zh-CN.md) for what is
+implemented, tested, and still missing. Individual feature availability does not
+mean the full product has passed acceptance. The earlier Tauri scaffold remains
+for project history; `native/` is the active implementation.
+
+MCP and cloud access are opt-in. Do not put real clipboard data, credentials,
+private screenshots, or signing material into issues or test fixtures.
+
+## Design and acceptance
 
 - [Technical specification · 技术规格](docs/TECHNICAL_SPEC.zh-CN.md)
 - [Product flows and acceptance · 产品动线与体验验收](docs/PRODUCT_FLOWS.zh-CN.md)
+- [Baseline checklist · 对标记录清单](docs/BASELINE_CHECKLIST.zh-CN.md)
+- [Implementation status · 实现与验证状态](docs/IMPLEMENTATION_STATUS.zh-CN.md)
+- [Build, cloud configuration and release status](docs/BUILD_AND_RELEASE.md)
+- [Local MCP and OAuth integration](docs/MCP.md)
+- [System Share Extension setup](docs/SHARE_EXTENSION.md)
+- [Reproducible local-history performance measurements](native/Benchmarks/README.md)
 
-Both documents are review drafts. They distinguish documented Paste behavior,
-ClipShelf proposals, and details that require observation in the actual app.
-
-## Proposed implementation
-
-The current proposal is a native macOS application using Swift and AppKit for
-the main panel, SwiftUI for settings, and SQLite for local storage. The technical
-specification records the remaining decisions and validation work.
-
-The initial Tauri / React / Rust scaffold remains in this repository as an early
-starting point. It is not a working product or the approved implementation of
-the proposed native architecture.
+The current scope is full macOS parity, including sync between Macs. iPhone and
+iPad clients are outside this scope and may be planned separately later.
+Development proceeds from public documentation and independent tests; an
+eligible Paste trial can later refine the real-app comparison baseline.
 
 ## License
 
-[MIT](LICENSE). ClipShelf is intended to provide free source code and complete
-application downloads. It is an independent project and is not affiliated with
-Paste.
+[MIT](LICENSE). Source code and complete application downloads are intended to
+be free. ClipShelf is independent and is not affiliated with Paste.

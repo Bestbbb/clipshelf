@@ -5,3 +5,6 @@ src-tauri/gen/
 .DS_Store
 *.log
 test-results/
+native/.build/
+native/.swiftpm/
+build/

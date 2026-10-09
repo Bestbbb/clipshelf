@@ -1,0 +1,11 @@
+{
+  "native/Sources/ClipShelfCore/ClipboardRecord.swift": "01807c181e856efe9e5548422c7135291115b8991b130ea3a60d336ecf350ddb",
+  "native/Sources/ClipShelfCore/HistoryModels.swift": "bb5d24014a1a6b542255a3e7cba8c19f4154df49d6d69b1803a466b411b57329",
+  "native/Sources/ClipShelfCore/HistoryStore+Sharing.swift": "0d2749ff3e2387fcc2e883c403409c2602a2804d0957a0a2b77bae965e0ec8b5",
+  "native/Sources/ClipShelfCore/HistoryStore+Sync.swift": "fe66954c629642ac32f3f32a2a8d24755d936652ffd8ace0f6d87e7eadf3a4ad",
+  "native/Sources/ClipShelfCore/HistoryStore.swift": "e38e6ce6d5ee62cf4d6e0ba8c9e81ad40b9156d4226c37fa8a16dd0bdb5a8e46",
+  "native/Sources/ClipShelfCore/RepresentationStorage.swift": "115cead82f4f9914f9db509a6be30a4f8886ad8949a80043b1b4b6c2c88587bb",
+  "native/Sources/ClipShelfCore/SharedBoardModels.swift": "9bd989e5b7f387b26aa24b5d91b554d900f6b295282aac617aaa80d36853b53e",
+  "native/Sources/ClipShelfCore/SyncModels.swift": "d127ed59a665814cb98fdd32d61acd8274f203b10ae6f967a5d83b3c9a487e8e",
+  "native/Benchmarks/HistoryBenchmark/main.swift": "f810a72b4a42590f9bc0e155305daa9ac3bf632f837f4a6072904f6673581020"
+}

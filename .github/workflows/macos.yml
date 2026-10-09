@@ -1,0 +1,51 @@
+name: macOS native app
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: xcodebuild -version
+      - name: Native tests with synthetic fixtures
+        run: swift test --package-path native
+      - name: Check stdio bridge
+        run: node --check scripts/mcp-bridge.mjs
+      - name: Build development app and App Intents metadata
+        run: ./scripts/build-macos.sh
+      - name: Package development app
+        run: ditto -c -k --sequesterRsrc --keepParent build/ClipShelf.app build/ClipShelf-development.zip
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ClipShelf-macOS-development
+          path: build/ClipShelf-development.zip
+          retention-days: 14
+
+  share-extension-build:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compile app and embedded Share Extension without signing
+        run: >-
+          xcodebuild -project native/ClipShelf.xcodeproj -scheme ClipShelf
+          -configuration Debug -destination 'generic/platform=macOS'
+          -derivedDataPath build/ShareExtensionValidation CODE_SIGNING_ALLOWED=NO build
