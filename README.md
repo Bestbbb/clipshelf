@@ -1,44 +1,43 @@
 # ClipShelf
 
-A quiet home for everything you copy. An open-source, local-first clipboard
-manager for macOS, Windows, and Linux, inspired by the workflow of Paste.
+A free, open-source clipboard manager for macOS, with the full feature set and
+cross-app workflow of Paste as its product benchmark.
 
-**Status: under active development.** This initial commit contains the project
-scaffold. The first working desktop build is being implemented; platform support
-is a target, not a claim of completed testing.
+**Status: planning and documentation review.** Implementation is paused while
+the product flows, technical design, and acceptance criteria are reviewed.
+There is no working application release yet.
 
-## First version
+## Product goal
 
-- Text, link, color, code, and image clipboard history
-- Search, favorites, and custom collections
-- Global keyboard shortcut and system tray
-- Pause recording and manage local retention
-- Local SQLite storage, without accounts or cloud uploads
+Open a panel from the app you are working in, find copied content, paste it back
+at the original input position, and continue working without an extra click.
 
-## Stack
+The macOS target includes rich clipboard history, search, previews and editing,
+Pinboards, sequential pasting, privacy controls, system integrations, sync,
+sharing, intelligent suggestions, and MCP access. Delivery will be staged;
+these capabilities are planned, not implemented or verified. iPhone and iPad
+scope remains under review.
 
-Tauri 2 · Rust · React · TypeScript · Vite · SQLite
+## Design documents
 
-## Development
+- [Technical specification · 技术规格](docs/TECHNICAL_SPEC.zh-CN.md)
+- [Product flows and acceptance · 产品动线与体验验收](docs/PRODUCT_FLOWS.zh-CN.md)
 
-Install Node.js 22+, Rust 1.90+, and the
-[Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
+Both documents are review drafts. They distinguish documented Paste behavior,
+ClipShelf proposals, and details that require observation in the actual app.
 
-```sh
-npm install
-npm run desktop
-```
+## Proposed implementation
 
-For a browser-only UI preview, run `npm run dev`. A browser preview does not
-monitor the system clipboard. Native features require the desktop app.
+The current proposal is a native macOS application using Swift and AppKit for
+the main panel, SwiftUI for settings, and SQLite for local storage. The technical
+specification records the remaining decisions and validation work.
 
-```sh
-npm run build
-npm test
-cargo test --manifest-path src-tauri/Cargo.toml
-npm run tauri build
-```
+The initial Tauri / React / Rust scaffold remains in this repository as an early
+starting point. It is not a working product or the approved implementation of
+the proposed native architecture.
 
 ## License
 
-[MIT](LICENSE). ClipShelf is an independent project and is not affiliated with Paste.
+[MIT](LICENSE). ClipShelf is intended to provide free source code and complete
+application downloads. It is an independent project and is not affiliated with
+Paste.
