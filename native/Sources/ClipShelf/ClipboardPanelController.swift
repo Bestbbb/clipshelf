@@ -1607,7 +1607,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         let generation = selection.generation, page = queryGeneration
         pendingActionID = actionID
         func finish(_ result: Result<[ClipboardRecord], Error>) {
-            guard !forOutput || detailWindow == nil else { return }
+            guard !forOutput || (detailWindow == nil && outputActionGeneration == actionID) else { return }
             guard isVisible, pendingActionID == actionID, viewGeneration == session, scopeGeneration == scope,
                   selection.generation == generation, queryGeneration == page else { return }
             pendingActionID = nil
@@ -1631,6 +1631,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         result.reserveCapacity(references.count)
         var bytes = 0
         func read(_ index: Int) {
+            guard !forOutput || (detailWindow == nil && outputActionGeneration == actionID) else { return }
             guard isVisible, pendingActionID == actionID, viewGeneration == session, scopeGeneration == scope,
                   selection.generation == generation, queryGeneration == page else { return }
             guard index < references.count else { finish(.success(result)); return }
@@ -1761,7 +1762,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             if event.keyCode == 53, !event.isARepeat { closeDetail() }
             return true
         }
-        invalidateOutputContext()
+        // Repeated Return/Quick Paste is consumed below. It must not cancel the
+        // original request while that request is still loading its payload.
+        if !event.isARepeat { invalidateOutputContext() }
         if let filePreview {
             // Child windows and their sheets retain native text/button handling. A key
             // accidentally delivered to history while the file window is open cannot paste.

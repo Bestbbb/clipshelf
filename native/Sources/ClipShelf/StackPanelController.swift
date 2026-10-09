@@ -14,6 +14,7 @@ final class StackPanelController: NSWindowController {
     var onRestore: (() -> Void)?
     var onClear: (() -> Void)?
     var onRemove: ((Int) -> Void)?
+    var isPresentationAllowed: (() -> Bool)?
     private let rows = NSStackView()
     private let direction = NSButton(title: L10n.text("顺序 ↓"), target: nil, action: nil)
     private let restore = NSButton(title: L10n.text("恢复上一项"), target: nil, action: nil)
@@ -55,8 +56,11 @@ final class StackPanelController: NSWindowController {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    func suspend() { window?.orderOut(nil) }
+
     func update(_ stack: StackCoordinator) {
         guard stack.isActive else { window?.orderOut(nil); return }
+        guard isPresentationAllowed?() != false else { suspend(); return }
         direction.title = stack.direction == .forward ? L10n.text("顺序 ↓") : L10n.text("反序 ↑")
         restore.isEnabled = stack.canRestoreLastConsumed
         summary.stringValue = stack.queue.isEmpty ? L10n.text("队列为空。继续复制可加入内容；普通 ⌘V 已恢复。") : L10n.text("\(stack.queue.count) 项待用 · 在目标 App 按 ⌘V 逐项粘贴")

@@ -20,6 +20,31 @@ final class StackCoordinator {
     var onChange: (() -> Void)?
     var retainer: (([ClipboardRecord]) throws -> OwnedAssetLease)?
     var onRetentionError: ((Error) -> Void)?
+    var onCancelPendingPaste: (() -> Void)?
+
+    struct DispatchRequest {
+        let id: UUID
+        let occurrenceID: UUID
+        let record: ClipboardRecord
+        fileprivate let lease: OwnedAssetLease?
+    }
+    typealias PasteAction = (DispatchRequest, @escaping (PasteCoordinator.Outcome) -> Void) -> Void
+    private var pasteActions: [PasteAction] = []
+    private var activeDispatch: DispatchRequest?
+    private var drainingPasteActions = false
+    // Posting Cmd-V does not mean its recipient has read the clipboard. Keep a
+    // short handoff window before allowing another Stack write. This is pacing,
+    // not a destination acknowledgement or a guarantee for arbitrarily slow apps.
+    static let clipboardHandoffInterval: TimeInterval = 0.2
+    private let scheduleHandoff: (TimeInterval, @escaping @MainActor () -> Void) -> Void
+    private var handoffID: UUID?
+    var pendingPasteCount: Int { pasteActions.count + (activeDispatch == nil ? 0 : 1) }
+
+    init(scheduleHandoff: @escaping (TimeInterval, @escaping @MainActor () -> Void) -> Void = { delay, action in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { action() }
+    }) {
+        self.scheduleHandoff = scheduleHandoff
+    }
 
     private var occurrenceIDs: [UUID] = []
     private var leases: [OwnedAssetLease?] = []
@@ -57,6 +82,7 @@ final class StackCoordinator {
     func end() {
         guard isActive || !queue.isEmpty || lastConsumed != nil else { return }
         isActive = false
+        cancelPendingPastes()
         queue.removeAll()
         occurrenceIDs.removeAll()
         leases.removeAll()
@@ -83,6 +109,7 @@ final class StackCoordinator {
     @discardableResult
     func remove(at index: Int) -> ClipboardRecord? {
         guard isActive, queue.indices.contains(index) else { return nil }
+        if occurrenceIDs[index] == activeDispatch?.occurrenceID { cancelPendingPastes() }
         occurrenceIDs.remove(at: index)
         leases.remove(at: index)
         let removed = queue.remove(at: index)
@@ -93,6 +120,7 @@ final class StackCoordinator {
     /// Clear the queue while leaving Stack enabled for subsequent copies.
     func clear() {
         guard !queue.isEmpty || lastConsumed != nil else { return }
+        cancelPendingPastes()
         queue.removeAll()
         occurrenceIDs.removeAll()
         leases.removeAll()
@@ -105,11 +133,75 @@ final class StackCoordinator {
         return queue[index]
     }
 
+    /// One action per physical paste gesture. The caller captures the target for
+    /// that gesture; the next occurrence is selected only when its turn begins.
+    @discardableResult
+    func requestPaste(using action: @escaping PasteAction) -> Bool {
+        guard isActive, pendingPasteCount < queue.count else { return false }
+        pasteActions.append(action)
+        drainPasteActions()
+        return true
+    }
+
+    func isDispatchCurrent(_ request: DispatchRequest) -> Bool {
+        isActive && activeDispatch?.id == request.id && occurrenceIDs.contains(request.occurrenceID)
+    }
+
+    /// Suspension cancels pending output, while the queue remains recoverable.
+    func cancelPendingPastes() {
+        let hadActiveDispatch = activeDispatch != nil
+        activeDispatch = nil
+        handoffID = nil
+        pasteActions.removeAll()
+        if hadActiveDispatch { onCancelPendingPaste?() }
+    }
+
+    private func drainPasteActions() {
+        guard !drainingPasteActions else { return }
+        drainingPasteActions = true
+        defer { drainingPasteActions = false }
+        while activeDispatch == nil, handoffID == nil, !pasteActions.isEmpty {
+            guard let index = nextIndex else { pasteActions.removeAll(); return }
+            let action = pasteActions.removeFirst()
+            let request = DispatchRequest(id: UUID(), occurrenceID: occurrenceIDs[index],
+                                          record: queue[index], lease: leases[index])
+            activeDispatch = request
+            action(request) { [weak self] outcome in self?.finishPaste(request, outcome: outcome) }
+        }
+    }
+
+    private func finishPaste(_ request: DispatchRequest, outcome: PasteCoordinator.Outcome) {
+        guard activeDispatch?.id == request.id else { return }
+        activeDispatch = nil
+        if outcome == .dispatched {
+            // Establish the barrier before markDispatched invokes onChange:
+            // a synchronous observer may enqueue another physical gesture.
+            let id = UUID()
+            handoffID = id
+            _ = markDispatched(expectedOccurrenceID: request.occurrenceID)
+            guard handoffID == id else { return }
+            scheduleHandoff(Self.clipboardHandoffInterval) { [weak self] in
+                guard let self, self.handoffID == id else { return }
+                self.handoffID = nil
+                // The action's target/context predicate is checked by the
+                // caller again before writing and by Paste before dispatch.
+                self.drainPasteActions()
+            }
+        } else {
+            // Failure must not advance the queue or retry automatically into a
+            // later target. A fresh physical gesture can retry the retained item.
+            pasteActions.removeAll()
+        }
+        drainPasteActions()
+    }
+
     /// Call only after the integration confirms dispatch, never on copy-only fallback.
     /// Dispatch is not proof that the target application inserted the content.
     @discardableResult
     func markDispatched(expectedOccurrenceID: UUID? = nil) -> ClipboardRecord? {
-        guard let index = nextIndex else { return nil }
+        guard isActive,
+              let index = expectedOccurrenceID.flatMap({ occurrenceIDs.firstIndex(of: $0) })
+                ?? (expectedOccurrenceID == nil ? nextIndex : nil) else { return nil }
         let occurrenceID = occurrenceIDs[index]
         if let expectedOccurrenceID, occurrenceID != expectedOccurrenceID { return nil }
         lastConsumed = ConsumedOccurrence(

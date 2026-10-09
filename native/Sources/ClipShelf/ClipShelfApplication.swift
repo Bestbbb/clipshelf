@@ -41,6 +41,13 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     private let stack = StackCoordinator()
     private let stackPanel = StackPanelController()
     private let stackKeys = StackKeyMonitor()
+    private lazy var stackGestures: StackPasteGestureCoordinator<PasteCoordinator.Target> = StackPasteGestureCoordinator(
+        ownProcessIdentifier: ProcessInfo.processInfo.processIdentifier,
+        isAvailable: { [weak self] in self?.stackInputIsAvailable == true },
+        foregroundPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
+        captureTarget: { [weak self] in self?.paste.captureTarget() },
+        targetPID: { $0.application.processIdentifier }
+    )
     private let intelligence = LocalIntelligenceService()
     private let ocrCache: OCRDerivedCache = RuntimeProfile.current.validationDirectory.map {
         OCRDerivedCache(directory: $0.appendingPathComponent("OCR", isDirectory: true))
@@ -76,6 +83,16 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     private var suspensionReasons = Set<String>()
     private var outsideMonitor: Any?
     private var sessionSuspended = false
+    private lazy var interactionLifecycle: ApplicationInteractionLifecycle = ApplicationInteractionLifecycle(
+        allowsInteraction: { [weak self] in
+            guard let self else { return false }
+            return !self.sessionSuspended && !self.isTerminating && !self.terminationDecisionPending
+        },
+        cancelPendingPaste: { [weak self] in self?.cancelPendingInteraction() },
+        cancelSuggestions: { [weak self] in self?.cancelSuggestions() },
+        hideHistory: { [weak self] in self?.target = nil; self?.panel.hidePreservingDraft() },
+        hideStack: { [weak self] in self?.stackPanel.suspend() }
+    )
     private let historyUndo: UndoManager = {
         let manager = UndoManager(); manager.levelsOfUndo = 10; manager.groupsByEvent = false; return manager
     }()
@@ -190,7 +207,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         paste.onClipboardWrite = { [weak self] in self?.capture.noteSelfWrite() }
         paste.onResult = { [weak self] message in self?.setStatus(message) }
         globalShortcuts.onPressed = { [weak self] action, chord in
-            guard let self else { return }
+            guard let self, self.interactionLifecycle.isAllowed else { return }
             if self.shortcutSettings?.captureRegisteredShortcut(chord) == true { return }
             guard self.shortcutSettings?.isKeyWindow != true else { return }
             switch action {
@@ -330,12 +347,12 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             }
         }
         panel.onPaste = { [weak self] record, plain in
-            guard let self else { return }
+            guard let self, self.interactionLifecycle.isAllowed else { return }
             if self.demo { self.setStatus(L10n.text("演示：已选择「\(record.title)」；不会写入剪贴板。")); return }
             self.paste.paste(record, plainText: self.outputAsPlainText([record], requested: plain), target: self.target) { self.panel.dismiss() }
         }
         panel.onCopy = { [weak self] record in
-            guard let self else { return }
+            guard let self, self.interactionLifecycle.isAllowed else { return }
             if self.demo { self.setStatus(L10n.text("演示模式不会写入系统剪贴板。")); return }
             if self.paste.copy(record) { self.setStatus(L10n.text("内容已复制，可在目标应用按 ⌘V。")) }
         }
@@ -346,11 +363,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         panel.onPermissions = { [weak self] in self?.enableDirectPaste() }
         panel.onDismiss = { [weak self] in self?.target = nil }
         panel.onPasteRecords = { [weak self] selected, plain in
-            guard let self, !self.demo else { return }
+            guard let self, !self.demo, self.interactionLifecycle.isAllowed else { return }
             self.paste.paste(selected, plainText: self.outputAsPlainText(selected, requested: plain), target: self.target) { self.panel.dismiss() }
         }
         panel.onCopyRecords = { [weak self] selected in
-            guard let self, !self.demo else { return }
+            guard let self, !self.demo, self.interactionLifecycle.isAllowed else { return }
             if self.paste.copy(selected) { self.setStatus(L10n.text("已复制 \(selected.count) 项。")) }
         }
         panel.onDeleteRecords = { [weak self] selected in
@@ -471,7 +488,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         ) { [weak self] notification in
             MainActor.assumeIsolated {
                 guard let self, let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+                self.stackGestures.invalidate()
                 self.capture.noteFrontmostApplication(bundleID: app.bundleIdentifier)
+                self.paste.applicationDidActivate(processIdentifier: app.processIdentifier)
                 guard app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
                 if let pid = self.suggestionTargetPID, app.processIdentifier != pid { self.cancelSuggestions() }
                 if self.panel.isVisible, self.panel.hasOpenEditor || app.processIdentifier != self.target?.application.processIdentifier {
@@ -483,9 +502,10 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, !self.panel.contains(screenPoint: NSEvent.mouseLocation) else { return }
-                self.paste.cancel(); self.panel.hidePreservingDraft(); self.cancelSuggestions()
+                self.cancelPendingInteraction(); self.panel.hidePreservingDraft(); self.cancelSuggestions()
             }
         }
+        interactionLifecycle.observeSpaces(in: NSWorkspace.shared.notificationCenter)
         for (notification, reason, suspended) in [
             (NSWorkspace.sessionDidResignActiveNotification, "session", true),
             (NSWorkspace.sessionDidBecomeActiveNotification, "session", false),
@@ -505,11 +525,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             historyCleanup?.cancelPending()
             storageSettings?.suspend()
             languageSettings?.suspend()
-            cancelSuggestions(); capture.stop(); paste.cancel(); panel.hideForSuspension(); stackKeys.stop()
+            interactionLifecycle.invalidateContext(); capture.stop(); stackKeys.stop()
             if let shareInbox { Task { try? await shareInbox.publishDestinations(allowImports: false) } }
         } else {
             if !validation, preferences.bool(forKey: "recordingEnabled"), pausedUntil == nil, store != nil { capture.start() }
-            if stack.peek() != nil, paste.hasPermission { _ = stackKeys.start() }
+            refreshStackPresentation()
             processShareInbox()
             applyRetention()
             historyCleanup?.resumeDeferred()
@@ -781,13 +801,16 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     @objc private func openFromMenu() { togglePanel() }
 
     private func togglePanel() {
-        cancelSuggestions()
+        interactionLifecycle.prepareForInvocation { self.performTogglePanel() }
+    }
+
+    private func performTogglePanel() {
         if let window = cleanupConfirmation?.window {
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
             return
         }
-        if panel.isVisible { panel.dismiss(); paste.cancel(); return }
+        if panel.isVisible { panel.dismiss(); return }
         if !demo, store == nil {
             showError(L10n.text("历史数据库未能打开"), detail: L10n.text("原有文件会保留。请检查本机磁盘和数据目录权限后重新启动。"))
             return
@@ -1016,41 +1039,75 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     }
 
     private func configureStack() {
-        stackPanel.onEnd = { [weak self] in self?.stack.end() }
-        stackPanel.onClear = { [weak self] in self?.stack.clear() }
+        stackPanel.isPresentationAllowed = { [weak self] in self?.interactionLifecycle.isAllowed == true }
+        stack.onCancelPendingPaste = { [weak self] in self?.paste.cancel() }
+        stackPanel.onEnd = { [weak self] in self?.cancelPendingInteraction(); self?.stack.end() }
+        stackPanel.onClear = { [weak self] in self?.cancelPendingInteraction(); self?.stack.clear() }
         stackPanel.onReverse = { [weak self] in
             guard let self else { return }
             self.stack.direction = self.stack.direction == .forward ? .reverse : .forward
         }
         stackPanel.onRestore = { [weak self] in _ = self?.stack.restoreLastConsumed() }
         stackPanel.onRemove = { [weak self] index in _ = self?.stack.remove(at: index) }
-        stackKeys.shouldHandlePaste = { [weak self] in self?.stack.peek() != nil }
+        stackKeys.shouldHandlePaste = { [weak self] in
+            guard let self else { return false }
+            return self.stackInputIsAvailable && self.stack.peek() != nil
+        }
         stackKeys.onUnavailable = { [weak self] in
-            self?.setStatus(L10n.text("顺序粘贴的键盘访问已停止，队列仍保留。请检查辅助功能权限。"))
-        }
-        stackKeys.onPaste = { [weak self] in
-            guard let self, let record = self.stack.peek() else { return }
-            let occurrence = self.stack.nextOccurrenceID
-            let target = self.paste.captureTarget()
-            do {
-                guard let store = self.store else { throw HistoryStoreError.recordNotFound }
-                // Stack keeps copy occurrences even after history coalesces their revisions.
-                try store.validateCapturedFileOutput([record])
-            } catch { self.setStatus(error.localizedDescription); return }
-            self.paste.paste([record], plainText: false, target: target, dismiss: {}, onDispatched: { [weak self] in
-                _ = self?.stack.markDispatched(expectedOccurrenceID: occurrence)
-            })
-        }
-        stack.onChange = { [weak self] in
             guard let self else { return }
-            self.stackPanel.update(self.stack)
-            if self.stack.peek() != nil, !self.stackKeys.isMonitoring {
-                if !self.stackKeys.start() { self.setStatus(L10n.text("顺序粘贴需要辅助功能权限；队列已保留。")) }
-            } else if self.stack.peek() == nil { self.stackKeys.stop() }
+            self.cancelPendingInteraction()
+            if self.interactionLifecycle.isAllowed {
+                self.setStatus(L10n.text("顺序粘贴的键盘访问已停止，队列仍保留。请检查辅助功能权限。"))
+            }
         }
+        stackKeys.preparePaste = { [weak self] in
+            self?.stackGestures.prepare { [weak self] target, isGestureCurrent in
+                guard let self else { return }
+                self.stack.requestPaste { [weak self] request, completed in
+                    guard let self, isGestureCurrent(), self.stack.isDispatchCurrent(request) else {
+                        completed(.cancelled); return
+                    }
+                    do {
+                        guard let store = self.store else { throw HistoryStoreError.recordNotFound }
+                        // Queue occurrences retain their captured content even after history coalesces it.
+                        try store.validateCapturedFileOutput([request.record])
+                    } catch {
+                        completed(.failed); self.setStatus(error.localizedDescription); return
+                    }
+                    self.paste.paste([request.record], plainText: false, target: target, dismiss: {},
+                        allowHeldCommand: true, isContextCurrent: { [weak self] in
+                            guard let self else { return false }
+                            return isGestureCurrent() && self.stack.isDispatchCurrent(request)
+                        }, onCompleted: completed)
+                }
+            }
+        }
+        stack.onChange = { [weak self] in self?.refreshStackPresentation() }
+    }
+
+    private var stackInputIsAvailable: Bool {
+        interactionLifecycle.isAllowed && !panel.isVisible && NSApp.keyWindow == nil
+    }
+
+    private func cancelPendingInteraction() {
+        stackGestures.invalidate()
+        stack.cancelPendingPastes()
+        paste.cancel()
+    }
+
+    private func refreshStackPresentation() {
+        guard interactionLifecycle.isAllowed else { stackPanel.suspend(); stackKeys.stop(); return }
+        stackPanel.update(stack)
+        if stack.peek() != nil, !stackKeys.isMonitoring {
+            if !stackKeys.start() { setStatus(L10n.text("顺序粘贴需要辅助功能权限；队列已保留。")) }
+        } else if stack.peek() == nil { stackKeys.stopAfterCurrentPress() }
     }
 
     @objc private func toggleStack() {
+        interactionLifecycle.prepareForInvocation { self.performToggleStack() }
+    }
+
+    private func performToggleStack() {
         guard !demo else { return }
         if stack.isActive { stack.end(); return }
         guard paste.hasPermission else { setStatus(L10n.text("请先开启辅助功能权限，再使用顺序粘贴。")); return }
@@ -1165,9 +1222,14 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     }
 
     @objc private func showStorageSettings() {
+        guard interactionLifecycle.isAllowed else { return }
+        cancelPendingInteraction()
         guard !demo else { setStatus(L10n.text("演示模式没有持久保存的托管文件。")); return }
         cancelSuggestions()
-        panel.dismissForAction { [weak self] in self?.storageSettings?.present() }
+        panel.dismissForAction { [weak self] in
+            guard let self, self.interactionLifecycle.isAllowed else { return }
+            self.storageSettings?.present()
+        }
     }
 
     private func configureHistoryCleanup() {
@@ -1388,11 +1450,15 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     }
 
     @objc private func showSettings() {
+        guard interactionLifecycle.isAllowed else { return }
+        cancelPendingInteraction()
         cancelSuggestions()
         panel.dismissForAction { [weak self] in self?.performShowSettings() }
     }
 
     @objc private func showLanguageSettings() {
+        guard interactionLifecycle.isAllowed else { return }
+        cancelPendingInteraction()
         guard !sessionSuspended, !isTerminating, !terminationDecisionPending else { return }
         if languageSettings == nil {
             let allowsChanges = profile.mode == .standard
@@ -1451,15 +1517,18 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     }
 
     @objc private func showUpdateSettings() {
+        guard interactionLifecycle.isAllowed else { return }
+        cancelPendingInteraction()
         cancelSuggestions()
         panel.dismissForAction { [weak self] in
-            guard let self, let coordinator = self.appUpdates else { return }
+            guard let self, self.interactionLifecycle.isAllowed, let coordinator = self.appUpdates else { return }
             if self.updateSettings == nil { self.updateSettings = UpdateSettingsController(coordinator: coordinator) }
             self.updateSettings?.present()
         }
     }
 
     private func performShowSettings() {
+        guard interactionLifecycle.isAllowed else { return }
         cancelSuggestions()
         if shortcutSettings == nil {
             let controller = ShortcutSettingsController()
@@ -1523,7 +1592,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     }
 
     private func showShortcutPreview() {
-        cancelSuggestions(); paste.cancel(); target = nil
+        guard interactionLifecycle.isAllowed else { return }
+        cancelSuggestions(); cancelPendingInteraction(); target = nil
         let pointer = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(pointer, $0.frame, false) } ?? NSScreen.main
         let message = L10n.text("快捷键试用 · 可在设置中录制组合；按 Esc 关闭面板。")
@@ -1542,11 +1612,14 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     }
 
     @objc private func showMCPSettings() {
+        guard interactionLifecycle.isAllowed else { return }
+        cancelPendingInteraction()
         cancelSuggestions()
         panel.dismissForAction { [weak self] in self?.performShowMCPSettings() }
     }
 
     private func performShowMCPSettings() {
+        guard interactionLifecycle.isAllowed else { return }
         guard profile.allowsBackgroundIntegrations, let store else { return }
         cancelSuggestions()
         do {
@@ -1560,22 +1633,28 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     }
 
     @objc private func showCloudSettings() {
+        guard interactionLifecycle.isAllowed else { return }
+        cancelPendingInteraction()
         cancelSuggestions()
         panel.dismissForAction { [weak self] in self?.performShowCloudSettings() }
     }
 
     private func performShowCloudSettings() {
+        guard interactionLifecycle.isAllowed else { return }
         guard profile.allowsBackgroundIntegrations else { return }
         cancelSuggestions()
         cloudSettings?.present()
     }
 
     @objc private func showSharingSettings() {
+        guard interactionLifecycle.isAllowed else { return }
+        cancelPendingInteraction()
         cancelSuggestions()
         panel.dismissForAction { [weak self] in self?.performShowSharingSettings() }
     }
 
     private func performShowSharingSettings() {
+        guard interactionLifecycle.isAllowed else { return }
         guard profile.allowsBackgroundIntegrations else { return }
         cancelSuggestions()
         sharingSettings?.present()
@@ -1608,7 +1687,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             self?.suggestionsPanel.showError(message: L10n.text("请在系统设置确认屏幕权限，然后回到原应用重新打开智能建议。"))
         }
         suggestionsPanel.onPaste = { [weak self] id, target in
-            guard let self, let store = self.store else { return }
+            guard let self, self.interactionLifecycle.isAllowed, let store = self.store else { return }
             let generation = self.suggestionGeneration
             Task { @MainActor [weak self] in
                 do {
@@ -1616,7 +1695,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                         guard let current = try store.item(id: id) else { throw HistoryStoreError.recordNotFound }
                         return try store.resolveSelectionForRetainedOutput([.init(id: id, revision: current.revision)])
                     }.value
-                    guard let self, self.suggestionGeneration == generation else { return }
+                    guard let self, self.interactionLifecycle.isAllowed, self.suggestionGeneration == generation else { return }
                     withExtendedLifetime(retained) {
                         guard let record = retained.records.first else { return }
                         self.paste.paste(record, plainText: self.outputAsPlainText([record], requested: false), target: target) {
@@ -1632,7 +1711,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     }
 
     @objc private func showSuggestions() {
-        guard profile.allowsBackgroundIntegrations, store != nil else { return }
+        guard interactionLifecycle.isAllowed, profile.allowsBackgroundIntegrations, store != nil else { return }
+        cancelPendingInteraction()
         let originalTarget = panel.isVisible ? target : paste.captureTarget()
         guard let originalTarget else { setStatus(L10n.text("请回到需要粘贴的应用后再打开智能建议。")); return }
         cancelSuggestions()
@@ -1640,7 +1720,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     }
 
     private func startSuggestions(target originalTarget: PasteCoordinator.Target) {
-        guard profile.allowsBackgroundIntegrations, let store, !sessionSuspended, !isTerminating else { return }
+        guard interactionLifecycle.isAllowed, profile.allowsBackgroundIntegrations, let store else { return }
         suggestionTargetPID = originalTarget.application.processIdentifier
         suggestionGeneration &+= 1; let generation = suggestionGeneration
         suggestionsPanel.showLoading(target: originalTarget)
@@ -1833,6 +1913,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             return .terminateCancel
         }
         terminationDecisionPending = true
+        cancelPendingInteraction(); cancelSuggestions(); stackKeys.stopAfterCurrentPress(); stackPanel.suspend()
         historyCleanup?.cancelPending()
         storageSettings?.cancelPending()
         panel.dismissForAction({ [weak self] in
@@ -1856,11 +1937,13 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             sender.reply(toApplicationShouldTerminate: false)
             historyCleanup?.resumeDeferred()
             storageSettings?.resumeDeferred()
+            refreshStackPresentation()
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         isTerminating = true
+        interactionLifecycle.stopObserving()
         appUpdates?.stop()
         historyCleanup?.terminate()
         storageSettings?.cancelPending()

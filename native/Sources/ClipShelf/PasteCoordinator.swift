@@ -11,37 +11,50 @@ final class PasteCoordinator {
         let focusedElement: AXUIElement?
     }
 
+    /// Dispatched means the key pair was submitted, not that the destination app
+    /// has confirmed insertion. Only this outcome may consume a Paste Stack item.
+    enum Outcome: Equatable { case dispatched, copiedOnly, cancelled, failed, busy }
+
+    private final class Attempt {
+        let target: Target?
+        let isContextCurrent: (() -> Bool)?
+        let onDispatched: (() -> Void)?
+        let onCompleted: ((Outcome) -> Void)?
+        var task: Task<Void, Never>?
+        var dispatching = false
+        init(target: Target?, isContextCurrent: (() -> Bool)?, onDispatched: (() -> Void)?, onCompleted: ((Outcome) -> Void)?) {
+            self.target = target; self.isContextCurrent = isContextCurrent
+            self.onDispatched = onDispatched; self.onCompleted = onCompleted
+        }
+    }
+
     var onClipboardWrite: (() -> Void)?
     var onResult: ((String) -> Void)?
     var publications: OwnedFilePublicationCoordinator?
-    private var attempt: UUID?
-    private let pasteboard: NSPasteboard
+    private var attempt: Attempt?
+    private let clipboard: PasteClipboard
+    private let environment: PasteEnvironment
 
-    init(pasteboard: NSPasteboard = .general) { self.pasteboard = pasteboard }
-
-    var hasPermission: Bool { AXIsProcessTrusted() }
-
-    func requestPermission() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
+    init(pasteboard: NSPasteboard = .general) {
+        clipboard = PasteSystemClipboard(pasteboard); environment = PasteSystemEnvironment()
+    }
+    init(clipboard: PasteClipboard, environment: PasteEnvironment) {
+        self.clipboard = clipboard; self.environment = environment
     }
 
-    func captureTarget() -> Target? {
-        guard let application = NSWorkspace.shared.frontmostApplication,
-              application.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return nil }
-        let axApp = AXUIElementCreateApplication(application.processIdentifier)
-        return Target(application: application,
-                      window: Self.attribute(axApp, kAXFocusedWindowAttribute),
-                      focusedElement: Self.attribute(axApp, kAXFocusedUIElementAttribute))
-    }
+    var hasPermission: Bool { environment.hasPermission }
+    func requestPermission() { environment.requestPermission() }
+    func captureTarget() -> Target? { environment.captureTarget() }
 
     @discardableResult
-    func copy(_ record: ClipboardRecord, plainText: Bool = false) -> Bool {
-        copy([record], plainText: plainText)
-    }
+    func copy(_ record: ClipboardRecord, plainText: Bool = false) -> Bool { copy([record], plainText: plainText) }
 
     @discardableResult
     func copy(_ records: [ClipboardRecord], plainText: Bool = false) -> Bool {
+        writeClipboard(records, plainText: plainText) != nil
+    }
+
+    private func writeClipboard(_ records: [ClipboardRecord], plainText: Bool) -> Int? {
         let items: [NSPasteboardItem]
         do {
             // Register before exposing URLs. Failure leaves the existing clipboard
@@ -51,14 +64,12 @@ final class PasteCoordinator {
             if let lease, let publication = try publications?.publish(lease: lease, purpose: .clipboard) {
                 ClipboardCodec.markPublication(publication.id, in: items)
             }
-        }
-        catch { onResult?(error.localizedDescription); return false }
-        pasteboard.clearContents()
-        let success = pasteboard.writeObjects(items)
+        } catch { onResult?(error.localizedDescription); return nil }
+        let write = clipboard.replaceContents(with: items)
         onClipboardWrite?()
         publications?.reconcileClipboard()
-        if !success { onResult?(L10n.text("无法写入系统剪贴板，请重试。")) }
-        return success
+        if !write.succeeded { onResult?(L10n.text("无法写入系统剪贴板，请重试。")) }
+        return write.succeeded ? write.changeCount : nil
     }
 
     func paste(_ record: ClipboardRecord, plainText: Bool, target: Target?, dismiss: () -> Void) {
@@ -66,101 +77,139 @@ final class PasteCoordinator {
     }
 
     func paste(_ records: [ClipboardRecord], plainText: Bool, target: Target?, dismiss: () -> Void,
-               onCopied: (() -> Void)? = nil, onDispatched: (() -> Void)? = nil) {
-        guard attempt == nil else { return }
-        guard copy(records, plainText: plainText) else { return }
+               onCopied: (() -> Void)? = nil, onDispatched: (() -> Void)? = nil,
+               allowHeldCommand: Bool = false, isContextCurrent: (() -> Bool)? = nil,
+               onCompleted: ((Outcome) -> Void)? = nil) {
+        guard attempt == nil else { onCompleted?(.busy); return }
+        // Claim the attempt before any callback. Dismissal, copy notifications,
+        // and Stack callbacks can cancel or reenter synchronously.
+        let request = Attempt(target: target, isContextCurrent: isContextCurrent,
+                              onDispatched: onDispatched, onCompleted: onCompleted)
+        attempt = request
+        guard contextIsCurrent(request) else { return }
+        guard let writtenCount = writeClipboard(records, plainText: plainText) else {
+            finish(request, .failed); return
+        }
+        // This acknowledgement describes the completed write, even if a write
+        // observer canceled the paste. Export callers use it to retain files
+        // already published on the clipboard instead of discarding them.
         onCopied?()
-        let writtenChangeCount = pasteboard.changeCount
+        guard contextIsCurrent(request), clipboardIsCurrent(writtenCount, request: request) else { return }
         dismiss()
-        guard hasPermission, let target, !target.application.isTerminated, target.window != nil else {
-            onResult?(L10n.text("内容已复制，请切回目标应用按 ⌘V。"))
-            return
+        guard contextIsCurrent(request) else { return }
+        guard clipboardIsCurrent(writtenCount, request: request) else { return }
+        guard hasPermission, let target, environment.isRunning(target), environment.hasWindow(target) else {
+            finish(request, .copiedOnly, message: L10n.text("内容已复制，请切回目标应用按 ⌘V。")); return
         }
-        // A nonactivating panel normally leaves the intended application in front.
-        // If the user selected another app, never force a paste into the stale target.
-        let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        guard frontPID == target.application.processIdentifier || frontPID == ProcessInfo.processInfo.processIdentifier else {
-            onResult?(L10n.text("目标已改变；内容已复制，请手动粘贴。"))
-            return
+        guard targetIsCurrent(target, request: request) else { return }
+        guard environment.activate(target) else {
+            finish(request, .copiedOnly, message: L10n.text("未能恢复目标应用；内容已复制。")); return
         }
-        guard target.application.activate(options: []) else {
-            onResult?(L10n.text("未能恢复目标应用；内容已复制。"))
-            return
+        guard contextIsCurrent(request), targetIsCurrent(target, request: request) else { return }
+        guard environment.raiseWindow(target) else {
+            finish(request, .copiedOnly, message: L10n.text("原窗口已不可用；内容已复制，请手动粘贴。")); return
         }
-        if let window = target.window {
-            guard AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success else {
-                onResult?(L10n.text("原窗口已不可用；内容已复制，请手动粘贴。"))
-                return
-            }
-        }
-        if let focused = target.focusedElement {
-            _ = AXUIElementSetAttributeValue(focused, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-        }
-        let identifier = UUID()
-        attempt = identifier
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { if self.attempt == identifier { self.attempt = nil } }
-            let deadline = Date().addingTimeInterval(0.9)
-            while Date() < deadline {
-                guard self.attempt == identifier, self.hasPermission, !target.application.isTerminated else { return }
-                guard self.pasteboard.changeCount == writtenChangeCount else {
-                    self.onResult?(L10n.text("剪贴板已被新的复制替换，本次自动粘贴已取消。"))
-                    return
-                }
-                let currentPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-                if currentPID != target.application.processIdentifier && currentPID != ProcessInfo.processInfo.processIdentifier {
-                    self.onResult?(L10n.text("目标已改变；内容已复制，请手动粘贴。"))
-                    return
-                }
-                let flags = CGEventSource.flagsState(.combinedSessionState)
-                let held = flags.intersection([.maskCommand, .maskShift, .maskControl, .maskAlternate])
-                if currentPID == target.application.processIdentifier && held.isEmpty {
-                    if let original = target.window {
-                        let app = AXUIElementCreateApplication(target.application.processIdentifier)
-                        guard let current = Self.attribute(app, kAXFocusedWindowAttribute), CFEqual(original, current) else {
-                            self.onResult?(L10n.text("原窗口焦点未恢复；内容已复制。"))
-                            return
-                        }
-                        if let originalField = target.focusedElement {
-                            guard let currentField = Self.attribute(app, kAXFocusedUIElementAttribute), CFEqual(originalField, currentField) else {
-                                self.onResult?(L10n.text("原输入位置未恢复；内容已复制，请手动粘贴。"))
-                                return
-                            }
-                        }
-                    }
-                    guard let source = CGEventSource(stateID: .hidSystemState),
-                          let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
-                          let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else {
-                        self.onResult?(L10n.text("无法创建粘贴按键；内容已复制。"))
-                        return
-                    }
-                    down.flags = .maskCommand
-                    up.flags = .maskCommand
-                    down.setIntegerValueField(.eventSourceUserData, value: StackKeyMonitor.syntheticEventTag)
-                    up.setIntegerValueField(.eventSourceUserData, value: StackKeyMonitor.syntheticEventTag)
-                    guard self.pasteboard.changeCount == writtenChangeCount else {
-                        self.onResult?(L10n.text("剪贴板已改变，本次自动粘贴已取消。"))
-                        return
-                    }
-                    down.post(tap: .cghidEventTap)
-                    up.post(tap: .cghidEventTap)
-                    onDispatched?()
-                    self.onResult?(L10n.text("已发出粘贴操作。"))
-                    return
-                }
-                try? await Task.sleep(nanoseconds: 15_000_000)
-            }
-            self.onResult?(L10n.text("目标或修饰键尚未就绪；内容已复制，请手动粘贴。"))
+        guard contextIsCurrent(request), targetIsCurrent(target, request: request) else { return }
+        environment.restoreFocusedElement(target)
+        guard contextIsCurrent(request) else { return }
+        request.task = Task { @MainActor [weak self] in
+            await self?.waitAndDispatch(request, target: target, writtenCount: writtenCount, allowHeldCommand: allowHeldCommand)
         }
     }
 
-    func cancel() { attempt = nil }
+    private func waitAndDispatch(_ request: Attempt, target: Target, writtenCount: Int, allowHeldCommand: Bool) async {
+        let deadline = environment.uptime + 0.9
+        var lastFocus: PasteFocusState?
+        while contextIsCurrent(request) {
+            guard environment.uptime < deadline else { break }
+            guard clipboardIsCurrent(writtenCount, request: request), targetIsCurrent(target, request: request) else { return }
+            if environment.foreground(for: target) == .target && modifiersAreReady(allowHeldCommand) {
+                let focus = environment.focusState(for: target)
+                lastFocus = focus
+                if focus == .ready {
+                    guard let dispatch = environment.prepareCommandV() else {
+                        finish(request, .copiedOnly, message: L10n.text("无法创建粘贴按键；内容已复制。")); return
+                    }
+                    // Preparing an event is not permission to send it. Recheck the
+                    // request, clipboard, app, modifiers, window and field at the
+                    // final boundary, including callbacks that changed context.
+                    guard contextIsCurrent(request), clipboardIsCurrent(writtenCount, request: request),
+                          targetIsCurrent(target, request: request) else { return }
+                    guard environment.foreground(for: target) == .target, modifiersAreReady(allowHeldCommand),
+                          environment.focusState(for: target) == .ready else {
+                        finish(request, .cancelled, message: L10n.text("目标已改变；内容已复制，请手动粘贴。")); return
+                    }
+                    guard attempt === request, clipboardIsCurrent(writtenCount, request: request) else { return }
+                    request.dispatching = true
+                    dispatch()
+                    finish(request, .dispatched, message: L10n.text("已发出粘贴操作。"))
+                    return
+                }
+            }
+            // AX focus restoration can settle later than application activation.
+            // Wait for the original window/field instead of failing the first poll.
+            do { try await environment.waitForReadiness() }
+            catch { finish(request, .cancelled); return }
+        }
+        guard contextIsCurrent(request) else { return }
+        let message: String
+        switch lastFocus {
+        case .differentWindow: message = L10n.text("原窗口焦点未恢复；内容已复制。")
+        case .differentElement: message = L10n.text("原输入位置未恢复；内容已复制，请手动粘贴。")
+        default: message = L10n.text("目标或修饰键尚未就绪；内容已复制，请手动粘贴。")
+        }
+        finish(request, .copiedOnly, message: message)
+    }
 
-    private static func attribute(_ element: AXUIElement, _ name: String) -> AXUIElement? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success,
-              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
-        return (value as! AXUIElement)
+    private func modifiersAreReady(_ allowHeldCommand: Bool) -> Bool {
+        let held = environment.heldModifiers
+        return (allowHeldCommand ? held.subtracting(.command) : held).isEmpty
+    }
+
+    private func contextIsCurrent(_ request: Attempt) -> Bool {
+        guard attempt === request else { return false }
+        let valid = request.isContextCurrent?() != false
+        // The predicate itself may synchronously cancel or start another request.
+        guard attempt === request else { return false }
+        if !valid { finish(request, .cancelled) }
+        return valid
+    }
+
+    private func clipboardIsCurrent(_ count: Int, request: Attempt) -> Bool {
+        guard clipboard.changeCount == count else {
+            finish(request, .cancelled, message: L10n.text("剪贴板已被新的复制替换，本次自动粘贴已取消。")); return false
+        }
+        return true
+    }
+
+    private func targetIsCurrent(_ target: Target, request: Attempt) -> Bool {
+        guard hasPermission, environment.isRunning(target) else { finish(request, .copiedOnly); return false }
+        guard environment.foreground(for: target) != .other else {
+            finish(request, .cancelled, message: L10n.text("目标已改变；内容已复制，请手动粘贴。")); return false
+        }
+        return true
+    }
+
+    private func finish(_ request: Attempt, _ outcome: Outcome, message: String? = nil) {
+        guard attempt === request else { return }
+        attempt = nil
+        request.task?.cancel(); request.task = nil
+        if let message { onResult?(message) }
+        if outcome == .dispatched { request.onDispatched?() }
+        request.onCompleted?(outcome)
+    }
+
+    func cancel() {
+        guard let request = attempt, !request.dispatching else { return }
+        finish(request, .cancelled)
+    }
+
+    /// Workspace notifications close the A → B → A gap between polling ticks.
+    /// Activating ClipShelf or the intended target is part of normal restoration.
+    func applicationDidActivate(processIdentifier: pid_t) {
+        guard let request = attempt, !request.dispatching, let target = request.target,
+              processIdentifier != environment.ownProcessIdentifier,
+              processIdentifier != environment.processIdentifier(of: target) else { return }
+        finish(request, .cancelled, message: L10n.text("目标已改变；内容已复制，请手动粘贴。"))
     }
 }
