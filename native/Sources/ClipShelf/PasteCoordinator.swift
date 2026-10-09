@@ -54,9 +54,11 @@ final class PasteCoordinator {
         paste([record], plainText: plainText, target: target, dismiss: dismiss)
     }
 
-    func paste(_ records: [ClipboardRecord], plainText: Bool, target: Target?, dismiss: () -> Void, onDispatched: (() -> Void)? = nil) {
+    func paste(_ records: [ClipboardRecord], plainText: Bool, target: Target?, dismiss: () -> Void,
+               onCopied: (() -> Void)? = nil, onDispatched: (() -> Void)? = nil) {
         guard attempt == nil else { return }
         guard copy(records, plainText: plainText) else { return }
+        onCopied?()
         let writtenChangeCount = pasteboard.changeCount
         dismiss()
         guard hasPermission, let target, !target.application.isTerminated, target.window != nil else {

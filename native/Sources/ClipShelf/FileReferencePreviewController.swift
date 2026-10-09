@@ -1,6 +1,7 @@
 import AppKit
 import ClipShelfCore
 import Quartz
+import UniformTypeIdentifiers
 
 private final class FileReferencePanel: NSPanel {
     override var canBecomeKey: Bool { true }
@@ -14,6 +15,8 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
                                             @preconcurrency QLPreviewPanelDataSource {
     typealias SnapshotReply = (Result<ClipboardFileRepairSnapshot, Error>) -> Void
     typealias FilePicker = (NSWindow, ClipboardFileReference, @escaping (URL?) -> Void) -> (() -> Void)
+    typealias ApplicationPicker = (NSWindow, @escaping (URL?) -> Void) -> (() -> Void)
+    typealias ApplicationMenuPresenter = (NSMenu, NSView, @escaping () -> Void) -> (() -> Void)
     var onSnapshot: ((ClipboardSelectionReference, @escaping SnapshotReply) -> Void)?
     var onRelocate: ((ClipboardFileRepairSnapshot, ClipboardFileReference, URL, @escaping SnapshotReply) -> Void)?
     var onRestoreOwned: ((ClipboardFileRepairSnapshot, ClipboardFileReference, @escaping SnapshotReply) -> Void)?
@@ -32,12 +35,16 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
     private let openURL: (URL) -> Bool
     private let previewURL: ((URL) -> Void)?
     private let dismissPreview: (() -> Void)?
+    private let applicationOpener: FileApplicationOpener
+    private let chooseApplication: ApplicationPicker?
+    private let presentApplicationMenu: ApplicationMenuPresenter?
     private let table = NSTableView()
     private let path = NSTextField(wrappingLabelWithString: "正在读取文件位置…")
     private let explanation = NSTextField(wrappingLabelWithString: "")
     private let status = NSTextField(wrappingLabelWithString: "")
     private let preview = NSButton(title: "预览所选文件", target: nil, action: nil)
     private let open = NSButton(title: "打开所选文件", target: nil, action: nil)
+    private let openWith = NSButton(title: "打开方式…", target: nil, action: nil)
     private let repair = NSButton(title: "重新定位…", target: nil, action: nil)
     private let refreshButton = NSButton(title: "刷新状态", target: nil, action: nil)
     private var presented = false
@@ -47,17 +54,36 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
     private var keyMonitor: Any?
     private var quickLookURL: URL?
     private var injectedPreviewIsOpen = false
-    private var isBusy: Bool { requestID != nil || pickerID != nil }
+    private struct ApplicationIntent {
+        let id = UUID()
+        let reference: ClipboardSelectionReference
+        let snapshot: ClipboardFileRepairSnapshot
+        let file: ClipboardFileReference
+    }
+    private final class ApplicationMenuChoice: NSObject {
+        let intentID: UUID
+        let application: FileOpeningApplication?
+        init(intentID: UUID, application: FileOpeningApplication?) {
+            self.intentID = intentID; self.application = application
+        }
+    }
+    private var applicationIntent: ApplicationIntent?
+    private var cancelApplicationMenu: (() -> Void)?
+    private var isBusy: Bool { requestID != nil || pickerID != nil || applicationIntent != nil }
     private var contextIsCurrent: Bool { presented && window?.isVisible == true && isContextCurrent?() != false }
 
     init(record: ClipboardRecord, preferUnavailable: Bool = false, window: NSPanel? = nil,
          chooseFile: FilePicker? = nil, openURL: ((URL) -> Bool)? = nil,
-         previewURL: ((URL) -> Void)? = nil, dismissPreview: (() -> Void)? = nil) {
+         previewURL: ((URL) -> Void)? = nil, dismissPreview: (() -> Void)? = nil,
+         applicationOpener: FileApplicationOpener? = nil, chooseApplication: ApplicationPicker? = nil,
+         presentApplicationMenu: ApplicationMenuPresenter? = nil) {
         reference = .init(id: record.id, revision: record.revision)
         self.preferUnavailable = preferUnavailable
         self.chooseFile = chooseFile
         self.openURL = openURL ?? { NSWorkspace.shared.open($0) }
         self.previewURL = previewURL; self.dismissPreview = dismissPreview
+        self.applicationOpener = applicationOpener ?? FileApplicationOpener()
+        self.chooseApplication = chooseApplication; self.presentApplicationMenu = presentApplicationMenu
         let panel = window ?? FileReferencePanel(contentRect: NSRect(x: 0, y: 0, width: 720, height: 540),
             styleMask: [.titled, .closable, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.title = "文件与位置 · \(record.title)"
@@ -89,6 +115,7 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
     func dismiss() {
         guard presented else { return }
         presented = false; requestID = nil; pickerID = nil; snapshotIsCurrent = false
+        cancelApplicationSelection()
         let cancel = cancelPicker; cancelPicker = nil; cancel?()
         closeQuickLook()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
@@ -180,6 +207,133 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
         }
     }
 
+    @objc func openWithSelected() {
+        guard contextIsCurrent, snapshotIsCurrent, !isBusy,
+              let file = selectedFile, file.status == .available else { return }
+        requestSnapshot { [weak self] next in
+            guard let self, let current = self.selectedFile, Self.sameSlot(current, file),
+                  current.rawURL == file.rawURL, current.status == .available, let url = current.url else {
+                self?.setStatus("所选文件状态已改变；未查询打开方式，请检查位置。"); return
+            }
+            let intent = ApplicationIntent(reference: self.reference, snapshot: next, file: current)
+            self.applicationIntent = intent
+            self.setStatus("正在查找本机可打开此文件的应用…"); self.updateActions()
+            self.applicationOpener.applications(for: url) { [weak self] result in
+                guard let self, self.applicationIntentIsCurrent(intent) else { return }
+                switch result {
+                case .success(let applications): self.showApplications(applications, intent: intent)
+                case .failure(let error):
+                    self.cancelApplicationSelection(); self.setStatus(error.localizedDescription); self.updateActions()
+                }
+            }
+        }
+    }
+
+    private func applicationIntentIsCurrent(_ intent: ApplicationIntent) -> Bool {
+        contextIsCurrent && applicationIntent?.id == intent.id && reference == intent.reference &&
+            snapshotIsCurrent && snapshot == intent.snapshot && selectedFile == intent.file
+    }
+
+    private func showApplications(_ applications: [FileOpeningApplication], intent: ApplicationIntent) {
+        let menu = NSMenu(title: "打开方式")
+        menu.autoenablesItems = false
+        if applications.isEmpty {
+            let empty = NSMenuItem(title: "没有推荐应用", action: nil, keyEquivalent: "")
+            empty.isEnabled = false; menu.addItem(empty)
+        }
+        for application in applications {
+            let item = NSMenuItem(title: application.menuTitle, action: #selector(selectApplication(_:)), keyEquivalent: "")
+            item.target = self; item.toolTip = application.url.path
+            item.representedObject = ApplicationMenuChoice(intentID: intent.id, application: application)
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let other = NSMenuItem(title: "其他应用…", action: #selector(selectApplication(_:)), keyEquivalent: "")
+        other.target = self; other.representedObject = ApplicationMenuChoice(intentID: intent.id, application: nil)
+        menu.addItem(other)
+        setStatus("仅使用所选应用打开此文件，不更改系统默认应用。")
+        let closed = { [weak self] in
+            guard let self, self.applicationIntent?.id == intent.id, self.pickerID == nil else { return }
+            self.applicationIntent = nil; self.cancelApplicationMenu = nil; self.updateActions()
+        }
+        let cancellation: () -> Void
+        if let presentApplicationMenu { cancellation = presentApplicationMenu(menu, openWith, closed) }
+        else {
+            // popUp tracks synchronously; item actions run before it returns.
+            // Install cancellation before entering its nested event loop, so a
+            // parent dismissal can also retire the native menu while tracking.
+            cancelApplicationMenu = { menu.cancelTracking() }
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: openWith.bounds.height), in: openWith)
+            closed(); cancellation = { menu.cancelTracking() }
+        }
+        if applicationIntent?.id == intent.id, pickerID == nil { cancelApplicationMenu = cancellation }
+    }
+
+    @objc private func selectApplication(_ item: NSMenuItem) {
+        guard let choice = item.representedObject as? ApplicationMenuChoice,
+              let intent = applicationIntent, choice.intentID == intent.id,
+              applicationIntentIsCurrent(intent), pickerID == nil else { return }
+        // Clear the menu cancellation before invoking it; menu-close callbacks
+        // must never invalidate the picker or the final fresh-state request.
+        let cancel = cancelApplicationMenu; cancelApplicationMenu = nil
+        if let application = choice.application {
+            applicationIntent = nil; cancel?(); launch(application, intent: intent)
+        } else {
+            guard let window else { return }
+            let token = UUID(); pickerID = token; cancel?(); updateActions()
+            let reply: (URL?) -> Void = { [weak self] url in
+                guard let self, self.pickerID == token, self.applicationIntentIsCurrent(intent) else { return }
+                self.pickerID = nil; self.cancelPicker = nil; self.applicationIntent = nil; self.updateActions()
+                guard let url else { return }
+                do { self.launch(try self.applicationOpener.application(at: url), intent: intent) }
+                catch { self.setStatus(error.localizedDescription) }
+            }
+            let cancellation = chooseApplication?(window, reply) ?? presentApplicationPicker(window, reply: reply)
+            if pickerID == token { cancelPicker = cancellation }
+        }
+    }
+
+    private func launch(_ application: FileOpeningApplication, intent: ApplicationIntent) {
+        guard contextIsCurrent, reference == intent.reference, snapshot == intent.snapshot,
+              selectedFile == intent.file else { updateActions(); return }
+        requestSnapshot { [weak self] next in
+            guard let self, self.reference == intent.reference,
+                  next.syncConfiguration == intent.snapshot.syncConfiguration,
+                  next.sharingConfiguration == intent.snapshot.sharingConfiguration,
+                  let current = self.selectedFile, Self.sameSlot(current, intent.file),
+                  current.rawURL == intent.file.rawURL, current.status == .available, let url = current.url else {
+                self?.setStatus("文件或当前账户状态已改变；未打开，请重新选择。"); return
+            }
+            let token = UUID(); self.requestID = token
+            self.setStatus("正在使用 \(application.name) 打开所选文件…"); self.updateActions()
+            self.applicationOpener.open(file: url, using: application) { [weak self] result in
+                guard let self, self.contextIsCurrent, self.requestID == token, self.reference == intent.reference else { return }
+                self.requestID = nil; self.updateActions()
+                switch result {
+                case .success: self.setStatus("已交给 \(application.name) 打开。")
+                case .failure(let error): self.setStatus(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private func cancelApplicationSelection() {
+        applicationIntent = nil
+        let cancel = cancelApplicationMenu; cancelApplicationMenu = nil; cancel?()
+    }
+
+    private func presentApplicationPicker(_ parent: NSWindow, reply: @escaping (URL?) -> Void) -> () -> Void {
+        let picker = NSOpenPanel()
+        picker.title = "选择打开此文件的应用"; picker.prompt = "使用此应用"
+        picker.message = "仅打开所选文件，不更改系统默认应用。"
+        picker.allowedContentTypes = [.applicationBundle]
+        picker.canChooseFiles = true; picker.canChooseDirectories = false
+        picker.treatsFilePackagesAsDirectories = false; picker.allowsMultipleSelection = false
+        picker.canCreateDirectories = false
+        picker.beginSheetModal(for: parent) { result in reply(result == .OK ? picker.url : nil) }
+        return { [weak picker] in picker?.cancel(nil) }
+    }
+
     @objc func repairSelected() {
         guard contextIsCurrent, snapshotIsCurrent, !isBusy, let snapshot, let file = selectedFile else { return }
         if file.isOwned {
@@ -266,6 +420,7 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
         let usable = contextIsCurrent && snapshotIsCurrent && !isBusy
         preview.isEnabled = usable && file?.status == .available && file?.url != nil
         open.isEnabled = preview.isEnabled
+        openWith.isEnabled = preview.isEnabled
         refreshButton.isEnabled = contextIsCurrent && !isBusy
         table.isEnabled = !isBusy
         repair.title = file?.isOwned == true ? "从已保存原件重建打开副本" : "重新定位…"
@@ -303,7 +458,14 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
         label.setAccessibilityLabel("第 \(row + 1) 项文件，\(text)")
         return label
     }
-    func tableViewSelectionDidChange(_ notification: Notification) { closeQuickLook(); updateActions() }
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        if applicationIntent != nil {
+            cancelApplicationSelection()
+            pickerID = nil
+            let cancel = cancelPicker; cancelPicker = nil; cancel?()
+        }
+        closeQuickLook(); updateActions()
+    }
 
     private func buildInterface() {
         guard let window else { return }
@@ -326,11 +488,12 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
         status.font = .systemFont(ofSize: 11); status.maximumNumberOfLines = 3; status.setAccessibilityLabel("文件操作状态")
         preview.target = self; preview.action = #selector(previewSelected)
         open.target = self; open.action = #selector(openSelected)
+        openWith.target = self; openWith.action = #selector(openWithSelected)
         repair.target = self; repair.action = #selector(repairSelected)
         refreshButton.target = self; refreshButton.action = #selector(refresh)
         let close = NSButton(title: "返回列表", target: self, action: #selector(closeWindow)); close.keyEquivalent = "\u{1b}"
-        let actions = NSStackView(views: [preview, open, repair]); actions.spacing = 8
-        let footer = NSStackView(views: [refreshButton, close]); footer.spacing = 8
+        let actions = NSStackView(views: [preview, open, openWith]); actions.spacing = 8
+        let footer = NSStackView(views: [repair, refreshButton, close]); footer.spacing = 8
         for view in [heading, scroll, path, explanation, actions, status, footer] { view.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(view) }
         NSLayoutConstraint.activate([
             heading.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16), heading.topAnchor.constraint(equalTo: root.topAnchor, constant: 14),

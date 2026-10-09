@@ -296,6 +296,21 @@ external symlinks remain external references; unsafe owned projections are rejec
 Filesystem availability can still change after validation or after another app
 receives a URL; this is not a file-access lease.
 
+Image-file output now prepares every image part off the main thread, preserving
+other clipboard objects and their order. Option-drag uses native file promises,
+with per-provider byte/delegate ownership and writes to the receiver-provided URL.
+Copy/paste-as-file uses controlled PNG exports, eligible for cleanup after 24 hours
+on a subsequent export. This cache policy is not receiver acknowledgement. PNG
+conversion applies orientation and uses the first frame; ordinary image drag keeps
+the original representations. A batch is limited to 64 Mi pixels and 512 MiB PNG
+data. Stale or failed unpublished batches are discarded without deleting replaced
+files. File receiver compatibility and actual focus remain live acceptance gates.
+
+File previews offer system-listed applications and an Other Application picker.
+Choosing an application revalidates the file and invokes NSWorkspace explicitly,
+without changing default file associations. Tests inject discovery/open callbacks;
+passing them does not prove real Launch Services or sandbox access.
+
 MCP access and refresh credentials are held in the local Keychain. Developer
 signing material and runtime history must never be included in a release archive.
 

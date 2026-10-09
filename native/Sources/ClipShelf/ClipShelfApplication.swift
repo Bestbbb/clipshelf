@@ -71,6 +71,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }()
     private lazy var selectionUndoHistory = SelectionUndoHistory(manager: historyUndo)
     private var selectionMutationInProgress = false
+    private var imageOutputOperationID: UUID?
     private var isTerminating = false
     private let defaultExclusions = ["com.1password.1password", "com.agilebits.onepassword7",
                                      "com.bitwarden.desktop", "com.apple.Passwords"]
@@ -266,15 +267,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             do { try self.systemIntegration.share(record, from: view) }
             catch { self.setStatus("该内容当前无法分享，请检查原文件是否可用。") }
         }
-        panel.onCopyImageFile = { [weak self] record in
-            guard let self, !self.demo else { return }
-            do {
-                let url = try SystemIntegrationController.exportImage(record,
-                    directory: self.profile.validationDirectory?.appendingPathComponent("ImageExports", isDirectory: true))
-                let file = ClipboardRecord(text: url.lastPathComponent, parts: [ClipboardPart(representations: [
-                    ClipboardRepresentation(typeIdentifier: "public.file-url", data: Data(url.absoluteString.utf8))])])
-                if self.paste.copy(file) { self.setStatus("图片已复制为 PNG 文件，可切回目标应用粘贴。") }
-            } catch { self.setStatus("图片导出失败，系统剪贴板未改变。") }
+        panel.onImageFileOutput = { [weak self] records, directlyPaste in
+            self?.outputImageFiles(records, directlyPaste: directlyPaste)
         }
         panel.setCompactMode(!demo && preferences.bool(forKey: "compactPanel"))
         panel.onCompactModeChange = { [weak self] compact in
@@ -901,9 +895,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
                 // Stack keeps copy occurrences even after history coalesces their revisions.
                 try store.validateCapturedFileOutput([record])
             } catch { self.setStatus(error.localizedDescription); return }
-            self.paste.paste([record], plainText: false, target: target, dismiss: {}) { [weak self] in
+            self.paste.paste([record], plainText: false, target: target, dismiss: {}, onDispatched: { [weak self] in
                 _ = self?.stack.markDispatched(expectedOccurrenceID: occurrence)
-            }
+            })
         }
         stack.onChange = { [weak self] in
             guard let self else { return }
@@ -1022,6 +1016,49 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             }
         }
         catch { statusMessage = "历史清理未完成，原有内容保留。" }
+    }
+
+    private func outputImageFiles(_ records: [ClipboardRecord], directlyPaste: Bool) {
+        guard !demo, let store else { return }
+        let isCurrent = panel.captureOutputContext(), originalTarget = target
+        let directory = profile.validationDirectory?.appendingPathComponent("ImageExports", isDirectory: true)
+        let references = records.map { ClipboardSelectionReference(id: $0.id, revision: $0.revision) }
+        let operationID = UUID(), progress = "正在生成图片文件…"
+        imageOutputOperationID = operationID
+        setStatus(progress)
+        Task { @MainActor [weak self] in
+            defer {
+                if let self, self.imageOutputOperationID == operationID {
+                    self.imageOutputOperationID = nil
+                    if self.statusMessage == progress { self.statusMessage = nil; self.refresh() }
+                }
+            }
+            do {
+                let exported = try await Task.detached(priority: .userInitiated) {
+                    let prepared = try ImageFileOutput.prepare(records)
+                    let receipt = try prepared.exportReceipt(directory: directory)
+                    do {
+                        // Conversion can take time; recheck the frozen selection before publishing it.
+                        _ = try store.resolveSelectionForOutput(references)
+                        return receipt
+                    } catch { receipt.discardUnpublished(); throw error }
+                }.value
+                guard let self, !self.isTerminating, isCurrent() else {
+                    exported.discardUnpublished(); return
+                }
+                if directlyPaste {
+                    var copied = false
+                    self.paste.paste(exported.records, plainText: false, target: originalTarget,
+                                     dismiss: { self.panel.dismiss() }, onCopied: { copied = true })
+                    if !copied { exported.discardUnpublished() }
+                } else if self.paste.copy(exported.records) {
+                    self.setStatus("图片已复制为 PNG 文件，可在目标应用粘贴。")
+                } else { exported.discardUnpublished() }
+            } catch {
+                guard let self, isCurrent() else { return }
+                self.setStatus("图片文件未输出：\(error.localizedDescription)")
+            }
+        }
     }
 
     private func openRecord(_ record: ClipboardRecord) {

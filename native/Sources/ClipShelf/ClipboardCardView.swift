@@ -29,6 +29,7 @@ struct ClipboardCardContent {
     let title: String
     let hasRichText: Bool
     let hasPDF: Bool
+    let hasImageFileParts: Bool
     var preview: String { hasPDF && (text.isEmpty || text == "复制的内容") ? title : String(text.prefix(1_000)) }
 
     static func isPDFType(_ value: String) -> Bool {
@@ -40,6 +41,7 @@ struct ClipboardCardContent {
         copiedAt = record.copiedAt; renamedTitle = record.renamedTitle; ocrText = record.ocrText
         pinboardID = record.pinboardID; revision = record.revision; kind = record.kind
         hasPDF = record.parts.flatMap(\.representations).contains { Self.isPDFType($0.typeIdentifier) }
+        hasImageFileParts = Self.hasImageFileParts(record.parts.map { $0.representations.map(\.typeIdentifier) })
         title = hasPDF && record.renamedTitle == nil && (record.text.isEmpty || record.text == "复制的内容") ? "扫描文稿（PDF）" : record.title
         hasRichText = record.rtf != nil || record.html != nil
     }
@@ -49,8 +51,16 @@ struct ClipboardCardContent {
         copiedAt = metadata.copiedAt; renamedTitle = metadata.renamedTitle; ocrText = metadata.ocrText
         pinboardID = metadata.pinboardID; revision = metadata.revision; kind = metadata.kind
         hasPDF = metadata.representationTypes.joined().contains { Self.isPDFType($0) }
+        hasImageFileParts = Self.hasImageFileParts(metadata.representationTypes)
         title = hasPDF && metadata.renamedTitle == nil && (metadata.text.isEmpty || metadata.text == "复制的内容") ? "扫描文稿（PDF）" : metadata.title
         hasRichText = metadata.representationTypes.joined().contains { ["public.rtf", "public.html", "com.apple.flat-rtfd"].contains($0) }
+    }
+
+    private static func hasImageFileParts(_ parts: [[String]]) -> Bool {
+        parts.contains { types in
+            !types.contains(where: ClipboardFileAccess.isFileURLType) &&
+            types.contains { UTType($0)?.conforms(to: .image) == true }
+        }
     }
 }
 
@@ -75,7 +85,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     static let recordIDType = NSPasteboard.PasteboardType("io.github.bestbbb.clipshelf.record-id")
     private enum DragKind { case ordering, payload }
     private var dragKind: DragKind?
-    private var preparedWriters: [NSPasteboardItem] = []
+    private var preparedWriters: [any NSPasteboardWriting] = []
     private var mouseDownLocation = NSPoint.zero
     private var latestDragEvent: NSEvent?
     private var isDragging = false
@@ -309,10 +319,28 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     /// Completion belongs to one mouse gesture; a released/replaced gesture cannot start later.
     @discardableResult
     func providePreparedPayload(records: [ClipboardRecord], gestureID: UUID) -> Bool {
+        providePreparedWriters(records: records, gestureID: gestureID) {
+            try Self.payloadDragItems(for: records)
+        }
+    }
+
+    @discardableResult
+    func providePreparedImageFiles(_ prepared: PreparedImageFileOutput, records: [ClipboardRecord], gestureID: UUID) -> Bool {
+        providePreparedWriters(records: records, gestureID: gestureID) { try prepared.draggingWriters() }
+    }
+
+    func rejectPreparedPayload(_ error: Error, gestureID: UUID) {
+        guard activeGestureID == gestureID, dragKind == .payload, !isDragging else { return }
+        resetDragGesture()
+        onDragError?(error)
+    }
+
+    private func providePreparedWriters(records: [ClipboardRecord], gestureID: UUID,
+                                        create: () throws -> [any NSPasteboardWriting]) -> Bool {
         trace("providePreparedPayload count=\(records.count) gestureMatches=\(activeGestureID == gestureID)")
         guard activeGestureID == gestureID, dragKind == .payload, !isDragging else { return false }
         do {
-            preparedWriters = try Self.payloadDragItems(for: records)
+            preparedWriters = try create()
             draggedReferences = records.map { ClipboardSelectionReference(id: $0.id, revision: $0.revision) }
             draggedRecordIDs = records.map(\.id)
             draggedRecordRevisions = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0.revision) })

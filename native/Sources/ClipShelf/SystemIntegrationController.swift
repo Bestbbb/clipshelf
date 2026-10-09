@@ -42,26 +42,11 @@ final class SystemIntegrationController: NSObject {
         picker?.show(relativeTo: NSRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1), of: view, preferredEdge: .maxY)
     }
 
-    /// Exported files outlive the app so a receiving app may read them after the menu closes.
-    /// Only this directory's exports older than 24 hours are removed on the next export.
+    /// Compatibility entry point for callers exporting exactly one image part.
     static func exportImage(_ record: ClipboardRecord, directory: URL? = nil, now: Date = Date()) throws -> URL {
-        guard let data = imageData(record), let image = NSBitmapImageRep(data: data),
-              let png = image.representation(using: .png, properties: [:]) else { throw ClipboardCodecError.noContent }
-        let root = directory ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("io.github.bestbbb.clipshelf/ImageExports", isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
-        let files = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.creationDateKey, .isRegularFileKey])) ?? []
-        for file in files where file.lastPathComponent.hasPrefix("ClipShelf-") && file.pathExtension == "png" {
-            if let values = try? file.resourceValues(forKeys: [.creationDateKey, .isRegularFileKey]),
-               values.isRegularFile == true, let date = values.creationDate, now.timeIntervalSince(date) > 86_400 {
-                try? FileManager.default.removeItem(at: file)
-            }
-        }
-        let destination = root.appendingPathComponent("ClipShelf-\(UUID().uuidString).png")
-        try png.write(to: destination, options: .withoutOverwriting)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
-        return destination
+        let prepared = try ImageFileOutput.prepare([record])
+        guard prepared.imageCount == 1 else { throw ClipboardCodecError.noContent }
+        return try prepared.exportReceipt(directory: directory, now: now).fileURLs[0]
     }
 
     static func imageData(_ record: ClipboardRecord) -> Data? {
