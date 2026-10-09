@@ -19,6 +19,7 @@ public struct ClipboardEditSnapshot: Equatable, Sendable {
     public let syncConfiguration: SyncConfiguration
     public let sharingConfiguration: SyncConfiguration
     let storeIdentity: UUID
+    public let ownedAssetLease: OwnedAssetLease?
 
     /// A display-only local draft; it grants no database mutation capability.
     public init(record: ClipboardRecord) {
@@ -34,10 +35,15 @@ public struct ClipboardEditSnapshot: Equatable, Sendable {
     }
 
     init(record: ClipboardRecord, syncConfiguration: SyncConfiguration,
-         sharingConfiguration: SyncConfiguration, storeIdentity: UUID) {
+         sharingConfiguration: SyncConfiguration, storeIdentity: UUID, ownedAssetLease: OwnedAssetLease? = nil) {
         self.record = record
         self.syncConfiguration = syncConfiguration
         self.sharingConfiguration = sharingConfiguration
         self.storeIdentity = storeIdentity
+        self.ownedAssetLease = ownedAssetLease
     }
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.record == rhs.record && lhs.syncConfiguration == rhs.syncConfiguration && lhs.sharingConfiguration == rhs.sharingConfiguration && lhs.storeIdentity == rhs.storeIdentity
+    }
+
 }

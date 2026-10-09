@@ -82,17 +82,19 @@ extension HistoryStore {
     /// The immutable operation owns its binding snapshot, independent of later edits or projections.
     public func prepareSyncOwnedUpload(operationID: UUID, file: SyncOwnedFileDescriptor, context: SyncTransferContext) throws -> PreparedSyncOwnedUpload {
         try synchronized {
-            try requireOwnedContext(context, writing: true)
-            let operation = try ownedOutboxOperation(operationID, namespace: context.scope.namespace)
-            guard let manifest = operation.ownedFiles, manifest.files.contains(file), let record = operation.record else { throw SyncError.invalidOperation }
-            let bindings = try ownedFileOperationBindingsWithoutLock(operationID: operationID, recordID: record.id)
-            guard let portable = manifest.bindings.first(where: { $0.digest == file.digest && $0.filename == file.filename }),
-                  let binding = bindings.first(where: { $0.partIndex == portable.partIndex && $0.representationIndex == portable.representationIndex }) else { throw HistoryStoreError.invalidOwnedFile }
-            let asset = try ownedFileAssetWithoutLock(id: binding.assetID)
-            guard asset.sha256 == file.digest, asset.byteCount == file.byteCount, asset.filename == file.filename else { throw HistoryStoreError.invalidOwnedFile }
-            let staging = try SyncOwnedFileStaging.create(data: ownedFileStorage.read(asset), descriptor: file)
-            try transaction { try writeOwnedTransfer(operation, file: file, scope: context.scope, direction: .upload, status: .pending) }
-            return PreparedSyncOwnedUpload(operationID: operationID, scope: context.scope, file: file, staging: staging)
+            try ownedRetentionTransaction {
+                try requireOwnedContext(context, writing: true)
+                let operation = try ownedOutboxOperation(operationID, namespace: context.scope.namespace)
+                guard let manifest = operation.ownedFiles, manifest.files.contains(file), let record = operation.record else { throw SyncError.invalidOperation }
+                let bindings = try ownedFileOperationBindingsWithoutLock(operationID: operationID, recordID: record.id)
+                guard let portable = manifest.bindings.first(where: { $0.digest == file.digest && $0.filename == file.filename }),
+                      let binding = bindings.first(where: { $0.partIndex == portable.partIndex && $0.representationIndex == portable.representationIndex }) else { throw HistoryStoreError.invalidOwnedFile }
+                let asset = try ownedFileAssetWithoutLock(id: binding.assetID)
+                guard asset.sha256 == file.digest, asset.byteCount == file.byteCount, asset.filename == file.filename else { throw HistoryStoreError.invalidOwnedFile }
+                let staging = try SyncOwnedFileStaging.create(data: ownedFileStorage.read(asset), descriptor: file)
+                try writeOwnedTransfer(operation, file: file, scope: context.scope, direction: .upload, status: .pending)
+                return PreparedSyncOwnedUpload(operationID: operationID, scope: context.scope, file: file, staging: staging)
+            }
         }
     }
     public func recordSyncOwnedUpload(operationID: UUID, file: SyncOwnedFileDescriptor, context: SyncTransferContext, error: String? = nil) throws {

@@ -249,7 +249,7 @@ final class CleanupPlanTests: XCTestCase {
         let oldRowids = try [first, second, owned].map { try store.syncScalar("SELECT rowid FROM clipboard_records WHERE id = ?", [$0.id.uuidString]) }
         try store.execute("DROP TRIGGER history_cleanup_insert; DROP TRIGGER history_cleanup_update; DROP TRIGGER history_cleanup_delete; DROP TABLE history_cleanup_tokens; PRAGMA user_version = 9")
         let migrated = try self.store()
-        XCTAssertEqual(try migrated.syncScalar("PRAGMA user_version", []), "11")
+        XCTAssertEqual(try migrated.syncScalar("PRAGMA user_version", []), "12")
         XCTAssertEqual(try [first, second, owned].map { try migrated.syncScalar("SELECT rowid FROM clipboard_records WHERE id = ?", [$0.id.uuidString]) }, oldRowids)
         XCTAssertEqual(try migrated.ownedFileBindings(recordID: owned.id), bindings)
         XCTAssertEqual(try migrated.searchMetadata(.init(pinboardIDs: [board.id], sortOrder: .pinboard)).map(\.id), [first.id, second.id])

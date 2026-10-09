@@ -17,6 +17,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     private var mcpSettings: MCPSettingsController?
     private var cloudSettings: CloudSyncSettingsController?
     private var sharingSettings: SharingSettingsController?
+    private var storageSettings: StorageSettingsController?
+    private var ownedPublications: OwnedFilePublicationCoordinator?
     private var shareInbox: ShareInboxService?
     private var shareInboxUnavailableReason = "此构建未配置系统分享扩展。"
     private var shareInboxTask: Task<Void, Never>?
@@ -77,12 +79,16 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         didSet {
             if oldValue && !selectionMutationInProgress {
                 // Let the mutation's completion, Undo registration and refresh finish first.
-                DispatchQueue.main.async { [weak self] in self?.historyCleanup?.resumeDeferred() }
+                DispatchQueue.main.async { [weak self] in
+                    self?.historyCleanup?.resumeDeferred()
+                    self?.storageSettings?.requestAutomaticReclamation()
+                    self?.storageSettings?.resumeDeferred()
+                }
             }
         }
     }
     private var isDataMutationInProgress: Bool {
-        selectionMutationInProgress || historyCleanup?.isBusy == true || terminationDecisionPending || isTerminating
+        selectionMutationInProgress || historyCleanup?.isBusy == true || storageSettings?.isBusy == true || terminationDecisionPending || isTerminating
     }
     private var imageOutputOperationID: UUID?
     private var isTerminating = false
@@ -112,7 +118,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             let directory = try profile.dataDirectory()
             store = try HistoryStore(databaseURL: directory.appendingPathComponent("history.sqlite"), recordsLocalOrigin: true)
             panel.ocrSourceStore = store
+            configureOwnedLifetimes(store: store!)
             configureHistoryCleanup()
+            configureStorageManagement(store: store!)
             if profile.allowsBackgroundIntegrations {
                 configureShareInbox(store: store!, directory: directory)
                 cloudSettings = CloudSyncSettingsController(store: store!)
@@ -136,6 +144,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
                 if profile.includesSearchFixtures { try SearchValidationFixtures.populate(store) }
             }
             applyRetention()
+            storageSettings?.requestRecovery()
+            storageSettings?.requestAutomaticReclamation()
             reload()
         } catch {
             statusMessage = "无法打开历史数据库，记录已停止。"
@@ -158,14 +168,15 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         capture.onCapture = { [weak self] record in
             guard let self, let store = self.store else { return }
             do {
-                let stored = try store.record(record)
-                self.stack.append(stored)
+                let retained = try store.recordRetainingCapturedOwnedFiles(record, purpose: .stack)
+                guard let stored = retained.records.first else { throw HistoryStoreError.recordNotFound }
+                self.stack.append(stored, lease: retained.lease)
                 self.statusMessage = nil
                 self.reload()
                 self.scheduleOCR(for: stored)
             } catch {
                 self.capture.stop()
-                self.statusMessage = "保存失败，已暂停记录；现有历史仍可使用。"
+                self.statusMessage = "保存失败，已暂停记录；现有历史仍可使用。\n\(error.localizedDescription)"
                 self.refresh()
             }
         }
@@ -190,7 +201,10 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             scheduleResume(at: deadline)
         } else if !validation, store != nil, preferences.bool(forKey: "recordingEnabled") { capture.start() }
         retentionTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.applyRetention() }
+            MainActor.assumeIsolated {
+                self?.applyRetention()
+                self?.storageSettings?.requestAutomaticReclamation()
+            }
         }
         refresh()
         if store != nil, !preferences.bool(forKey: "hasSeenWelcome") {
@@ -238,6 +252,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         }
         retentionRoot.submenu = retentionMenu; menu.addItem(retentionRoot)
         menu.addItem(item("清空历史…", #selector(clearHistory)))
+        menu.addItem(item("存储管理…", #selector(showStorageSettings)))
         menu.addItem(item("打开数据文件夹", #selector(revealData)))
         menu.addItem(item("登录时启动…", #selector(toggleLoginItem)))
         menu.addItem(item("设置…", #selector(showSettings)))
@@ -350,7 +365,12 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
                 self?.readSelection({ try $0.resolveSelection(references) }, completion: completion)
             }
             panel.resolveOutputSelection = { [weak self] references, completion in
-                self?.readSelection({ try $0.resolveSelectionForOutput(references) }, completion: completion)
+                self?.readSelection({ try $0.resolveSelectionForRetainedOutput(references) }) { result in
+                    switch result {
+                    case .success(let retained): withExtendedLifetime(retained) { completion(.success(retained.records)) }
+                    case .failure(let error): completion(.failure(error))
+                    }
+                }
             }
             panel.onMoveSelection = { [weak self] references, boardID, completion in
                 self?.moveSelection({ try $0.moveSelection(references, to: boardID) }, completion: completion)
@@ -469,6 +489,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         sessionSuspended = !suspensionReasons.isEmpty
         if sessionSuspended {
             historyCleanup?.cancelPending()
+            storageSettings?.suspend()
             cancelSuggestions(); capture.stop(); paste.cancel(); panel.hideForSuspension(); stackKeys.stop()
             if let shareInbox { Task { try? await shareInbox.publishDestinations(allowImports: false) } }
         } else {
@@ -477,6 +498,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             processShareInbox()
             applyRetention()
             historyCleanup?.resumeDeferred()
+            storageSettings?.requestRecovery()
+            storageSettings?.requestAutomaticReclamation()
         }
         refresh()
     }
@@ -1085,12 +1108,50 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func configureOwnedLifetimes(store: HistoryStore) {
+        let publications = OwnedFilePublicationCoordinator(store: store)
+        ownedPublications = publications
+        publications.onError = { [weak self] error in self?.setStatus("文件使用保护未完成：\(error.localizedDescription)") }
+        paste.publications = publications
+        systemIntegration.publications = publications
+        panel.publications = publications
+        stack.retainer = { try store.retainCapturedOwnedFiles($0, purpose: .stack) }
+        stack.onRetentionError = { [weak self] error in self?.setStatus("Stack 未加入文件：\(error.localizedDescription)") }
+        if profile.allowsBackgroundIntegrations { publications.startObserving() }
+    }
+
+    private func configureStorageManagement(store: HistoryStore) {
+        let controller = StorageSettingsController(actions: .init(
+            scan: { try await Task.detached(priority: .utility) { try store.ownedStorageUsage() }.value },
+            prepare: { try await Task.detached(priority: .utility) { try store.prepareOwnedStorageCleanup() }.value },
+            commit: { plan in try await Task.detached(priority: .utility) { try store.commitOwnedStorageCleanup(plan) }.value },
+            recover: { try await Task.detached(priority: .utility) { try store.resumeOwnedStorageCleanup() }.value },
+            readExternalUses: { try await Task.detached(priority: .utility) { try store.ownedPublications().filter { $0.purpose != .clipboard } }.value },
+            releaseExternalUses: { ids in try await Task.detached(priority: .utility) { try store.clearConfirmedExternalOwnedPublications(expectedIDs: ids) }.value }
+        ), preferences: preferences)
+        storageSettings = controller
+        controller.isExternalMutationBusy = { [weak self] in
+            guard let self else { return true }
+            return self.selectionMutationInProgress || self.historyCleanup?.isBusy == true || self.sessionSuspended || self.isTerminating || self.terminationDecisionPending
+        }
+        controller.onBusyChanged = { [weak self] busy in
+            if !busy { DispatchQueue.main.async { [weak self] in self?.historyCleanup?.resumeDeferred() } }
+        }
+        controller.onMessage = { [weak self] message in self?.setStatus(message) }
+    }
+
+    @objc private func showStorageSettings() {
+        guard !demo else { setStatus("演示模式没有持久保存的托管文件。"); return }
+        cancelSuggestions()
+        panel.dismissForAction { [weak self] in self?.storageSettings?.present() }
+    }
+
     private func configureHistoryCleanup() {
         let coordinator = HistoryCleanupCoordinator()
         historyCleanup = coordinator
         coordinator.isExternalMutationBusy = { [weak self] in
             guard let self else { return true }
-            return self.selectionMutationInProgress || self.sessionSuspended || self.isTerminating || self.terminationDecisionPending
+            return self.selectionMutationInProgress || self.storageSettings?.isBusy == true || self.sessionSuspended || self.isTerminating || self.terminationDecisionPending
         }
         coordinator.onPrepare = { [weak self] request, completion in
             guard let self, !self.isTerminating, !self.terminationDecisionPending else {
@@ -1134,7 +1195,10 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
                 } catch { completion(.failure(error)) }
             }
         }
-        coordinator.onBusyChanged = { [weak self] _ in self?.refresh() }
+        coordinator.onBusyChanged = { [weak self] busy in
+            self?.refresh()
+            if !busy { DispatchQueue.main.async { [weak self] in self?.storageSettings?.resumeDeferred() } }
+        }
         coordinator.onSuccess = { [weak self] result, request in
             guard let self else { return }
             if case .retention(let days) = request {
@@ -1142,6 +1206,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             }
             let affected = Set(result.deletedIDs + result.preservedReferences.map(\.id))
             self.selectionUndoHistory.invalidate(recordIDs: affected)
+            self.storageSettings?.requestAutomaticReclamation()
             if result.summary.affectedCount > 0 { self.reload() }
             if !request.isAutomatic || result.summary.affectedCount > 0 {
                 var message = "历史清理完成：删除 \(result.summary.deletedCount) 条，\(result.summary.preservedPinnedCount) 条移出历史并保留在分组。"
@@ -1170,14 +1235,18 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
 
     private func outputImageFiles(_ records: [ClipboardRecord], directlyPaste: Bool) {
         guard !demo, let store else { return }
+        let lease: OwnedAssetLease
+        do { lease = try store.retainCapturedOwnedFiles(records, purpose: .output) }
+        catch { setStatus("文件使用保护未完成：\(error.localizedDescription)"); return }
         let isCurrent = panel.captureOutputContext(), originalTarget = target
         let directory = profile.validationDirectory?.appendingPathComponent("ImageExports", isDirectory: true)
         let references = records.map { ClipboardSelectionReference(id: $0.id, revision: $0.revision) }
         let operationID = UUID(), progress = "正在生成图片文件…"
         imageOutputOperationID = operationID
         setStatus(progress)
-        Task { @MainActor [weak self] in
+        Task { @MainActor [weak self, lease] in
             defer {
+                withExtendedLifetime(lease) {}
                 if let self, self.imageOutputOperationID == operationID {
                     self.imageOutputOperationID = nil
                     if self.statusMessage == progress { self.statusMessage = nil; self.refresh() }
@@ -1452,13 +1521,16 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             let generation = self.suggestionGeneration
             Task { @MainActor [weak self] in
                 do {
-                    let record = try await Task.detached(priority: .userInitiated) {
+                    let retained = try await Task.detached(priority: .userInitiated) {
                         guard let current = try store.item(id: id) else { throw HistoryStoreError.recordNotFound }
-                        return try store.resolveSelectionForOutput([.init(id: id, revision: current.revision)])[0]
+                        return try store.resolveSelectionForRetainedOutput([.init(id: id, revision: current.revision)])
                     }.value
                     guard let self, self.suggestionGeneration == generation else { return }
-                    self.paste.paste(record, plainText: self.outputAsPlainText([record], requested: false), target: target) {
-                        self.suggestionsPanel.dismiss()
+                    withExtendedLifetime(retained) {
+                        guard let record = retained.records.first else { return }
+                        self.paste.paste(record, plainText: self.outputAsPlainText([record], requested: false), target: target) {
+                            self.suggestionsPanel.dismiss()
+                        }
                     }
                 } catch {
                     guard let self, self.suggestionGeneration == generation else { return }
@@ -1665,12 +1737,13 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminationDecisionPending else { return .terminateLater }
-        guard !selectionMutationInProgress, historyCleanup?.isCommitting != true else {
+        guard !selectionMutationInProgress, historyCleanup?.isCommitting != true, storageSettings?.isCommitting != true else {
             setStatus("正在保存、撤销或清理，请完成后再退出。")
             return .terminateCancel
         }
         terminationDecisionPending = true
         historyCleanup?.cancelPending()
+        storageSettings?.cancelPending()
         panel.dismissForAction({ [weak self] in
             DispatchQueue.main.async { self?.finishTerminationDecision(true, sender: sender) }
         }, onCancel: { [weak self] in
@@ -1681,7 +1754,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
 
     private func finishTerminationDecision(_ accepted: Bool, sender: NSApplication) {
         guard terminationDecisionPending else { return }
-        if accepted, !selectionMutationInProgress, historyCleanup?.isCommitting != true,
+        if accepted, !selectionMutationInProgress, historyCleanup?.isCommitting != true, storageSettings?.isCommitting != true,
            historyCleanup?.terminate() != false {
             isTerminating = true
             terminationDecisionPending = false
@@ -1691,12 +1764,15 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             if accepted { setStatus("资料库修改尚未完成，请完成后再退出。") }
             sender.reply(toApplicationShouldTerminate: false)
             historyCleanup?.resumeDeferred()
+            storageSettings?.resumeDeferred()
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         isTerminating = true
         historyCleanup?.terminate()
+        storageSettings?.cancelPending()
+        ownedPublications?.stopObserving()
         cleanupConfirmation?.dismiss(); cleanupConfirmation = nil
         capture.stop(); globalShortcuts.stop(); stackKeys.stop(); stack.end(); paste.cancel()
         if let shortcutInputSourceObserver {

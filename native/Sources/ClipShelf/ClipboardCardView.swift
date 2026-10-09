@@ -73,6 +73,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     var onOpen: ((NSEvent.ModifierFlags) -> Void)?
     var onPrepareDrag: ((NSEvent) -> Void)?
     var onDragError: ((Error) -> Void)?
+    var publications: OwnedFilePublicationCoordinator?
     private(set) var activeGestureID: UUID?
     private(set) var draggedRecordIDs: [UUID] = []
     private(set) var draggedRecordRevisions: [UUID: Int] = [:]
@@ -86,6 +87,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     private enum DragKind { case ordering, payload }
     private var dragKind: DragKind?
     private var preparedWriters: [any NSPasteboardWriting] = []
+    private var preparedOwnedLease: OwnedAssetLease?
     private var mouseDownLocation = NSPoint.zero
     private var latestDragEvent: NSEvent?
     private var isDragging = false
@@ -288,6 +290,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         activeGestureID = nil
         latestDragEvent = nil
         preparedWriters.removeAll()
+        preparedOwnedLease = nil
     }
 
     func prepareOrderingDrag(contents: [ClipboardCardContent], originID: UUID) {
@@ -338,7 +341,9 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         trace("providePreparedPayload count=\(records.count) gestureMatches=\(activeGestureID == gestureID)")
         guard activeGestureID == gestureID, dragKind == .payload, !isDragging else { return false }
         do {
+            let lease = try publications?.retain(records)
             preparedWriters = try create()
+            preparedOwnedLease = lease
             draggedReferences = records.map { ClipboardSelectionReference(id: $0.id, revision: $0.revision) }
             draggedRecordIDs = records.map(\.id)
             draggedRecordRevisions = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0.revision) })
@@ -377,6 +382,17 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         // The window's mouse event sequence owns the gesture. Assistive input can deliver
         // valid mouseDragged events without changing the global physical-button mask.
         guard hasPreparedDragGesture, let event = latestDragEvent, window?.isVisible == true else { return }
+        do {
+            if let lease = preparedOwnedLease {
+                // Register before AppKit exposes any URL. Session endedAt only
+                // ends our gesture; the receiver may still be reading the file.
+                _ = try publications?.publish(lease: lease, purpose: .drag)
+            }
+        } catch {
+            resetDragGesture()
+            onDragError?(error)
+            return
+        }
         let icon = previewImage.image ?? NSImage(systemSymbolName: record.kind == .file ? "doc" : "doc.on.clipboard", accessibilityDescription: "剪贴板内容")
         let items = preparedWriters.map { writer in
             let dragging = NSDraggingItem(pasteboardWriter: writer)
@@ -415,6 +431,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         activeGestureID = nil
         dragKind = nil
         preparedWriters = []
+        preparedOwnedLease = nil
         latestDragEvent = nil
         isDragging = false
         draggedReferences = []

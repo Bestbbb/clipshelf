@@ -169,10 +169,12 @@ final class FileRepairTests: XCTestCase {
     func testProjectionRestoresOriginalBytesWithoutSQLOrCloudMutationAndAllowsEditedExistingFile() throws {
         let store = try store(); try store.configureSync(accountID: "A")
         let record = try owned(store), view = try snapshot(store, record), url = try XCTUnwrap(view.files[0].url)
-        let originalBytes = try Data(contentsOf: url), before = sqlite3_total_changes64(store.database)
+        let originalBytes = try Data(contentsOf: url)
         let operations = try store.pendingSyncOperations(accountID: "A")
         try FileManager.default.removeItem(at: url)
         let missingView = try snapshot(store, record)
+        // Snapshot preparation now registers its live asset lease; projection repair itself remains read-only in SQL.
+        let before = sqlite3_total_changes64(store.database)
         XCTAssertTrue(missingView.files[0].isOwned); XCTAssertEqual(missingView.files[0].status, .missing)
         XCTAssertEqual(try store.restoreMissingOwnedProjection(missingView, file: missingView.files[0]), .restored(url))
         XCTAssertEqual(try Data(contentsOf: url), originalBytes)

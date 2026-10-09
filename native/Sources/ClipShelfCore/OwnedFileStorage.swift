@@ -161,7 +161,7 @@ struct OwnedFileStorage {
     }
 
     /// Walk every component with O_NOFOLLOW; rejecting a link at the final file alone is insufficient.
-    private static func openDirectory(_ url: URL, create: Bool) throws -> Int32 {
+    static func openDirectory(_ url: URL, create: Bool) throws -> Int32 {
         guard url.isFileURL, url.path.hasPrefix("/"), !url.path.contains("\0") else { throw HistoryStoreError.invalidOwnedFile }
         var descriptor = Darwin.open("/", O_RDONLY | O_DIRECTORY)
         guard descriptor >= 0 else { throw HistoryStoreError.invalidOwnedFile }

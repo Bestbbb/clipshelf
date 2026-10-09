@@ -5,14 +5,15 @@ extension HistoryStore {
     /// Metadata, access, aggregate size, original bytes and account generations share one read snapshot.
     public func prepareEdit(_ reference: ClipboardSelectionReference) throws -> ClipboardEditSnapshot {
         try synchronized {
-            try selectionReadTransaction {
+            try ownedRetentionTransaction {
                 let items = try selectionItems([reference])
                 let sync = try syncConfigurationWithoutLock(), sharing = try sharingConfigurationWithoutLock()
                 try requireEditSnapshotAccess(items, sync: sync, sharing: sharing)
                 try preflightSelectionPayload([reference], maximumBytes: 512 * 1_024 * 1_024)
                 guard let original = try itemWithoutLock(id: reference.id) else { throw HistoryStoreError.recordNotFound }
                 return ClipboardEditSnapshot(record: original, syncConfiguration: sync,
-                                             sharingConfiguration: sharing, storeIdentity: selectionStoreIdentity)
+                                             sharingConfiguration: sharing, storeIdentity: selectionStoreIdentity,
+                                             ownedAssetLease: try retainOwnedAssetsWithoutLock(capturedOwnedIDsWithoutLock([original]), purpose: .edit))
             }
         }
     }

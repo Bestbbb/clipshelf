@@ -34,6 +34,7 @@ final class FileApplicationOpener {
     private let launcher: Launcher
     private let applicationName: (URL) -> String
     private let isApplication: (URL) -> Bool
+    var publications: OwnedFilePublicationCoordinator?
 
     init(provider: Provider? = nil, launcher: Launcher? = nil,
          applicationName: ((URL) -> String)? = nil, isApplication: ((URL) -> Bool)? = nil) {
@@ -99,6 +100,8 @@ final class FileApplicationOpener {
         guard Self.localURL(application.url), isApplication(application.url) else {
             completion(.failure(FileApplicationError.unavailableApplication)); return
         }
+        do { _ = try publications?.publish(fileURL: file, purpose: .externalOpen) }
+        catch { completion(.failure(error)); return }
         launcher(file, application.url, completion)
     }
 

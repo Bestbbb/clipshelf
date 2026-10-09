@@ -130,28 +130,30 @@ public final class HistoryStore: @unchecked Sendable {
     public func record(_ candidate: ClipboardRecord) throws -> ClipboardRecord {
         try validate(candidate)
         return try synchronized {
-            try transaction {
-                let latest = try latestRecord()
-                var stored = try assigningLocalOrigin(candidate, preserveOrigin: false)
-                stored.isInHistory = true
-                if let latest, latest.hasSameContents(as: stored), latest.originDeviceID == stored.originDeviceID,
-                   latest.originDeviceConflict == stored.originDeviceConflict, try canCoalesceSyncItem(id: latest.id) {
-                    stored = latest
-                    stored.copiedAt = candidate.copiedAt
-                    stored.isInHistory = true
-                    stored.revision += 1
-                    let statement = try prepare("UPDATE clipboard_records SET copied_at = ?, is_in_history = 1, revision = revision + 1 WHERE id = ?")
-                    defer { sqlite3_finalize(statement) }
-                    try check(sqlite3_bind_double(statement, 1, candidate.copiedAt.timeIntervalSinceReferenceDate))
-                    try bind(latest.id.uuidString, at: 2, to: statement)
-                    try stepToCompletion(statement)
-                } else {
-                    stored = try assigningNewPinboardOrder(stored)
-                    try insert(stored)
-                }
-                return stored
-            }
+            try transaction { try recordWithoutLock(candidate) }
         }
+    }
+
+    func recordWithoutLock(_ candidate: ClipboardRecord) throws -> ClipboardRecord {
+        let latest = try latestRecord()
+        var stored = try assigningLocalOrigin(candidate, preserveOrigin: false)
+        stored.isInHistory = true
+        if let latest, latest.hasSameContents(as: stored), latest.originDeviceID == stored.originDeviceID,
+           latest.originDeviceConflict == stored.originDeviceConflict, try canCoalesceSyncItem(id: latest.id) {
+            stored = latest
+            stored.copiedAt = candidate.copiedAt
+            stored.isInHistory = true
+            stored.revision += 1
+            let statement = try prepare("UPDATE clipboard_records SET copied_at = ?, is_in_history = 1, revision = revision + 1 WHERE id = ?")
+            defer { sqlite3_finalize(statement) }
+            try check(sqlite3_bind_double(statement, 1, candidate.copiedAt.timeIntervalSinceReferenceDate))
+            try bind(latest.id.uuidString, at: 2, to: statement)
+            try stepToCompletion(statement)
+        } else {
+            stored = try assigningNewPinboardOrder(stored)
+            try insert(stored)
+        }
+        return stored
     }
 
     public func delete(id: UUID) throws {
@@ -713,7 +715,7 @@ public final class HistoryStore: @unchecked Sendable {
             try check(sqlite3_step(versionStatement), allowingRow: true)
             return Int(sqlite3_column_int(versionStatement, 0))
         }()
-        if (1...10).contains(version) { try recoveryDatabaseBackup(reason: "migration-v\(version)") }
+        if (1...11).contains(version) { try recoveryDatabaseBackup(reason: "migration-v\(version)") }
         suppressSyncCapture = true
         defer { suppressSyncCapture = false }
         try transaction {
@@ -763,7 +765,7 @@ public final class HistoryStore: @unchecked Sendable {
                     try stepToCompletion(update)
                 }
                 try execute("PRAGMA user_version = 2")
-            case 2, 3, 4, 5, 6, 7, 8, 9, 10, 11: break
+            case 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12: break
             default: throw HistoryStoreError.unsupportedSchemaVersion(version)
             }
             try execute("CREATE TABLE IF NOT EXISTS pinboard_order_backfill(board_id TEXT PRIMARY KEY REFERENCES pinboards(id) ON DELETE CASCADE)")
@@ -789,7 +791,8 @@ public final class HistoryStore: @unchecked Sendable {
             try initializeSearchIndex()
             try initializeHistoryCleanupTokens()
             try createOwnedSyncSchema(markLegacy: version < 11)
-            try execute("PRAGMA user_version = 11")
+            try createOwnedStorageSchema(protectLegacy: version > 0 && version < 12)
+            try execute("PRAGMA user_version = 12")
             syncSchemaReady = true
         }
     }

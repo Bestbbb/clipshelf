@@ -121,6 +121,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     var onSelectionSnapshot: ((HistoryQuery, @escaping (Result<HistorySelectionSnapshot, Error>) -> Void) -> Void)?
     var onValidateSelection: (([ClipboardSelectionReference], @escaping (Result<Void, Error>) -> Void) -> Void)?
     var resolveSelection: (([ClipboardSelectionReference], @escaping (Result<[ClipboardRecord], Error>) -> Void) -> Void)?
+    var publications: OwnedFilePublicationCoordinator?
     /// Output also validates managed-file projections. Management/repair reads must remain possible when output is unavailable.
     var resolveOutputSelection: (([ClipboardSelectionReference], @escaping (Result<[ClipboardRecord], Error>) -> Void) -> Void)?
     var onMoveSelection: (([ClipboardSelectionReference], UUID?, @escaping (Result<[ClipboardSelectionReference], Error>) -> Void) -> Void)?
@@ -892,6 +893,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func makeCard(record: ClipboardCardContent, position: Int) -> ClipboardCardView {
         let card = ClipboardCardView(record: record, position: position, compact: compactMode)
+        card.publications = publications
         card.isSelected = selectedIDs.contains(record.id)
         updateShortcutLabel(card)
         card.onSelect = { [weak self] in
@@ -943,7 +945,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                         card.providePreparedPayload(records: records, gestureID: gestureID); return
                     }
                     let isCurrent = self.captureOutputContext()
+                    let retention: OwnedAssetLease?
+                    do { retention = try self.publications?.retain(records) }
+                    catch { card.rejectPreparedPayload(error, gestureID: gestureID); return }
                     Task { @MainActor [weak card] in
+                        defer { withExtendedLifetime(retention) {} }
                         do {
                             let prepared = try await Task.detached(priority: .userInitiated) {
                                 try ImageFileOutput.prepare(records)
@@ -2420,6 +2426,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         cancelBoundaryNavigation(); pendingActionID = nil
         linkPreview?.dismiss(); imagePreview?.dismiss(); detailWindow?.close(); filePreview?.dismiss()
         let preview = makeFilePreview?(record, preferUnavailable) ?? FileReferencePreviewController(record: record, preferUnavailable: preferUnavailable)
+        preview.publications = publications
         let session = viewGeneration, scope = scopeGeneration
         filePreview = preview
         let current: () -> Bool = { [weak self, weak preview] in

@@ -27,6 +27,7 @@ public struct ClipboardFileRepairSnapshot: Equatable, Sendable {
     public let sharingConfiguration: SyncConfiguration
     public let isReadOnly: Bool
     let storeIdentity: UUID
+    public let ownedAssetLease: OwnedAssetLease?
     /// A display-only snapshot, useful for previews/tests. Store mutations reject this unbound identity.
     public init(record: ClipboardRecord, files: [ClipboardFileReference], syncConfiguration: SyncConfiguration,
                 sharingConfiguration: SyncConfiguration, isReadOnly: Bool) {
@@ -34,10 +35,14 @@ public struct ClipboardFileRepairSnapshot: Equatable, Sendable {
                   sharingConfiguration: sharingConfiguration, isReadOnly: isReadOnly, storeIdentity: UUID())
     }
     init(record: ClipboardRecord, files: [ClipboardFileReference], syncConfiguration: SyncConfiguration,
-         sharingConfiguration: SyncConfiguration, isReadOnly: Bool, storeIdentity: UUID) {
+         sharingConfiguration: SyncConfiguration, isReadOnly: Bool, storeIdentity: UUID, ownedAssetLease: OwnedAssetLease? = nil) {
         self.record = record; self.files = files; self.syncConfiguration = syncConfiguration
-        self.sharingConfiguration = sharingConfiguration; self.isReadOnly = isReadOnly; self.storeIdentity = storeIdentity
+        self.sharingConfiguration = sharingConfiguration; self.isReadOnly = isReadOnly; self.storeIdentity = storeIdentity; self.ownedAssetLease = ownedAssetLease
     }
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.record == rhs.record && lhs.files == rhs.files && lhs.syncConfiguration == rhs.syncConfiguration && lhs.sharingConfiguration == rhs.sharingConfiguration && lhs.isReadOnly == rhs.isReadOnly && lhs.storeIdentity == rhs.storeIdentity
+    }
+
 }
 
 public enum OwnedFileProjectionRepairResult: Equatable, Sendable {

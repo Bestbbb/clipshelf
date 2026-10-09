@@ -70,11 +70,13 @@ extension HistoryStore {
             try transaction {
                 let items = try selectionItems(references)
                 try requireEditableSelection(items)
+                let owned = try references.flatMap { try ownedFileBindingsWithoutLock(recordID: $0.id) }
+                let retention = try retainOwnedAssetsWithoutLock(Set(owned.map(\.assetID)).union(ownedAssetIDsReferencedByRecordMetadata(recordIDs: Set(references.map(\.id)))), purpose: .undo)
                 let undo = HistorySelectionDeleteUndo(storeIdentity: selectionStoreIdentity, references: references,
                                                       syncConfiguration: try syncConfigurationWithoutLock(),
                                                       sharingConfiguration: try sharingConfigurationWithoutLock(),
                                                       consumption: HistorySelectionUndoConsumption(),
-                                                      ownedFileBindings: try references.flatMap { try ownedFileBindingsWithoutLock(recordID: $0.id) })
+                                                      ownedFileBindings: owned, ownedAssetLease: retention)
                 let statement = try prepare("DELETE FROM clipboard_records WHERE id = ?")
                 defer { sqlite3_finalize(statement) }
                 for item in items {

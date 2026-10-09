@@ -26,7 +26,8 @@ extension HistoryStore {
         return HistorySelectionEditUndo(original: original,
                                         expected: ClipboardSelectionReference(id: updated.id, revision: updated.revision),
                                         storeIdentity: selectionStoreIdentity,
-                                        syncConfiguration: sync, sharingConfiguration: sharing, ownedFileBindings: bindings)
+                                        syncConfiguration: sync, sharingConfiguration: sharing, ownedFileBindings: bindings,
+                                        ownedAssetLease: try retainOwnedAssetsWithoutLock(Set(bindings.map(\.assetID)).union(capturedOwnedIDsWithoutLock([original])), purpose: .undo))
     }
 
     @discardableResult
@@ -62,6 +63,6 @@ extension HistoryStore {
                                         expected: index.map { receipt.after[$0] } ?? undo.expected,
                                         storeIdentity: undo.storeIdentity,
                                         syncConfiguration: undo.syncConfiguration, sharingConfiguration: undo.sharingConfiguration,
-                                        ownedFileBindings: undo.ownedFileBindings)
+                                        ownedFileBindings: undo.ownedFileBindings, ownedAssetLease: undo.ownedAssetLease)
     }
 }

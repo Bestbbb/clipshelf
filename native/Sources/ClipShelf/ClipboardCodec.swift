@@ -32,7 +32,7 @@ enum ClipboardCodec {
         var html: Data?
         for item in items {
             var representations: [ClipboardRepresentation] = []
-            for type in item.types where type != CaptureService.internalType && type.rawValue != "io.github.bestbbb.clipshelf.record-id" {
+            for type in item.types where type != CaptureService.internalType && type != OwnedFilePublicationCoordinator.pasteboardType && type.rawValue != "io.github.bestbbb.clipshelf.record-id" {
                 guard let data = item.data(forType: type) else { continue }
                 byteCount += data.count
                 guard byteCount <= 64 * 1_024 * 1_024 else { throw ClipboardCodecError.tooLarge }
@@ -114,6 +114,10 @@ enum ClipboardCodec {
 
     private static func mark(_ item: NSPasteboardItem) {
         item.setString(UUID().uuidString, forType: CaptureService.internalType)
+    }
+
+    static func markPublication(_ id: UUID, in items: [NSPasteboardItem]) {
+        for item in items { item.setString(id.uuidString, forType: OwnedFilePublicationCoordinator.pasteboardType) }
     }
 
     static func supportsPlainText(_ record: ClipboardRecord) -> Bool {

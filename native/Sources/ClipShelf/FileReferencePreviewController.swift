@@ -22,6 +22,9 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
     var onRestoreOwned: ((ClipboardFileRepairSnapshot, ClipboardFileReference, @escaping SnapshotReply) -> Void)?
     var onDismiss: (() -> Void)?
     var isContextCurrent: (() -> Bool)?
+    var publications: OwnedFilePublicationCoordinator? {
+        didSet { applicationOpener.publications = publications }
+    }
     private(set) var snapshot: ClipboardFileRepairSnapshot?
     private(set) var snapshotIsCurrent = false
     var selectedFile: ClipboardFileReference? {
@@ -118,6 +121,7 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
         cancelApplicationSelection()
         let cancel = cancelPicker; cancelPicker = nil; cancel?()
         closeQuickLook()
+        snapshot = nil
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
         if let window { window.parent?.removeChildWindow(window); window.orderOut(nil) }
         updateActions()
@@ -192,6 +196,8 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
     @objc func openSelected() {
         performAvailable { [weak self] url in
             guard let self else { return }
+            do { _ = try self.publications?.publish(fileURL: url, purpose: .externalOpen) }
+            catch { self.fail(error.localizedDescription); return }
             if !self.openURL(url) { self.fail("系统未能打开此文件，请刷新状态后重试。") }
         }
     }

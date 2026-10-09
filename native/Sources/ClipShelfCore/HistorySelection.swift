@@ -48,6 +48,7 @@ public struct HistorySelectionDeleteUndo: Sendable {
     let sharingConfiguration: SyncConfiguration
     let consumption: HistorySelectionUndoConsumption
     let ownedFileBindings: [OwnedFileBinding]
+    let ownedAssetLease: OwnedAssetLease?
 }
 
 /// Captures the original content in the same transaction as a successful edit.
@@ -59,6 +60,7 @@ public struct HistorySelectionEditUndo: Sendable {
     let syncConfiguration: SyncConfiguration
     let sharingConfiguration: SyncConfiguration
     let ownedFileBindings: [OwnedFileBinding]
+    let ownedAssetLease: OwnedAssetLease?
 }
 
 /// Access is protected by the owning HistoryStore lock. Copies of a token share consumption state.

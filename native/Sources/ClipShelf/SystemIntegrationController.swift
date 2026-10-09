@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 final class SystemIntegrationController: NSObject {
     var onImport: ((ClipboardRecord) throws -> Void)?
     var onStatus: ((String) -> Void)?
+    var publications: OwnedFilePublicationCoordinator?
     private var picker: NSSharingServicePicker?
     private var cameraWindow: NSWindow?
 
@@ -26,6 +27,13 @@ final class SystemIntegrationController: NSObject {
     }
 
     func share(_ record: ClipboardRecord, from view: NSView) throws {
+        let values = try prepareSharingItems(record)
+        picker = NSSharingServicePicker(items: values)
+        picker?.show(relativeTo: NSRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1), of: view, preferredEdge: .maxY)
+    }
+
+    func prepareSharingItems(_ record: ClipboardRecord) throws -> [Any] {
+        let lease = record.kind == .file ? try publications?.retain([record]) : nil
         let values: [Any]
         if record.kind == .image, let image = Self.imageData(record).flatMap(NSImage.init(data:)) {
             values = [image]
@@ -38,8 +46,10 @@ final class SystemIntegrationController: NSObject {
             values = [url]
         } else { values = [record.text] }
         guard !values.isEmpty else { throw ClipboardCodecError.noContent }
-        picker = NSSharingServicePicker(items: values)
-        picker?.show(relativeTo: NSRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1), of: view, preferredEdge: .maxY)
+        // Sharing-service completion does not confirm that its destination has
+        // finished reading these URLs. Keep publication roots after the picker.
+        if let lease { _ = try publications?.publish(lease: lease, purpose: .sharing) }
+        return values
     }
 
     /// Compatibility entry point for callers exporting exactly one image part.

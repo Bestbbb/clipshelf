@@ -29,6 +29,31 @@ extension HistoryStore {
         }
     }
 
+    public func resolveSelectionForRetainedOutput(_ references: [ClipboardSelectionReference],
+                                          maximumPayloadBytes: Int = 512 * 1_024 * 1_024,
+                                          expectedSyncConfiguration: SyncConfiguration? = nil,
+                                          expectedSharingConfiguration: SyncConfiguration? = nil) throws -> RetainedClipboardRecords {
+        guard maximumPayloadBytes >= 0 else { throw HistoryStoreError.invalidSelection }
+        return try synchronized {
+            try ownedRetentionTransaction {
+                let sync = try syncConfigurationWithoutLock(), sharing = try sharingConfigurationWithoutLock()
+                if let expectedSyncConfiguration, expectedSyncConfiguration != sync { throw SyncError.accountChanged }
+                if let expectedSharingConfiguration, expectedSharingConfiguration != sharing { throw SyncError.accountChanged }
+                let records = try resolveSelectionWithoutLock(references, maximumPayloadBytes: maximumPayloadBytes)
+                for record in records {
+                    _ = try requireFileRepairAccess(record, sync: sync, sharing: sharing, write: false)
+                    for binding in try ownedFileBindingsWithoutLock(recordID: record.id) {
+                        guard try ownedBindingMatches(binding, record: record),
+                              ownedFileStorage.projectionAvailability(try ownedFileAssetWithoutLock(id: binding.assetID)) == .available else {
+                            throw ClipboardFileRepairError.unavailableOutput
+                        }
+                    }
+                }
+                return RetainedClipboardRecords(records: records, lease: try retainOwnedAssetsWithoutLock(capturedOwnedIDsWithoutLock(records), purpose: .output))
+            }
+        }
+    }
+
     /// Stack keeps each capture occurrence even after its history row is coalesced or deleted.
     /// Matching a URL here grants no ownership: it only applies the registered asset's stricter
     /// output checks to that immutable capture snapshot. Registry assets outlive history bindings.
@@ -57,7 +82,7 @@ extension HistoryStore {
 
     public func fileRepairSnapshot(_ reference: ClipboardSelectionReference) throws -> ClipboardFileRepairSnapshot {
         try synchronized {
-            try selectionReadTransaction {
+            try ownedRetentionTransaction {
                 _ = try selectionItems([reference])
                 try preflightSelectionPayload([reference], maximumBytes: 512 * 1_024 * 1_024)
                 guard let record = try itemWithoutLock(id: reference.id) else { throw HistoryStoreError.recordNotFound }
@@ -81,7 +106,8 @@ extension HistoryStore {
                 }
                 return ClipboardFileRepairSnapshot(record: record, files: files, syncConfiguration: sync,
                                                     sharingConfiguration: sharing, isReadOnly: readOnly,
-                                                    storeIdentity: selectionStoreIdentity)
+                                                    storeIdentity: selectionStoreIdentity,
+                                                    ownedAssetLease: try retainOwnedAssetsWithoutLock(capturedOwnedIDsWithoutLock([record]), purpose: .preview))
             }
         }
     }

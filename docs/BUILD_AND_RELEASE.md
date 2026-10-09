@@ -58,8 +58,9 @@ uses a frozen ordered set of item IDs and revisions across pages. New captures
 do not silently join that set. Edited or deleted selected items invalidate the
 batch. Text-field focus keeps the normal text-selection shortcuts.
 
-Payload resolution validates the whole selection in one SQLite read snapshot
-before reading attachments. The default aggregate raw-content budget is 512 MiB;
+Payload resolution validates the whole selection in one SQLite transaction snapshot
+before reading attachments. Retained owned-file output registers its lease under
+the writer lock before returning the selected records. The default aggregate raw-content budget is 512 MiB;
 missing content, stale revisions, corrupt attachments or a budget overflow fail
 the whole batch without truncation. This budget is not a process-memory ceiling.
 Move/reorder operations use metadata; purely local operations and their placement
@@ -278,8 +279,10 @@ That migration preserves row IDs, ordering, and owned-file bindings; its tokens 
 not alter archive schema 3 or cloud payloads. SQL insert/update triggers rotate
 the token, detecting same-ID/revision replacement through restore or a second
 connection without reading the clipboard payload during confirmation preparation.
-The current database version is 11, which separately adds the owned-file
-synchronization tables described below.
+The current database version is 12. Version 11 added the owned-file synchronization
+tables described below; version 12 adds local leases, persistent publication roots
+and the reclamation journal. Owned-file synchronization still uses wire v2 and
+portable backups still use archive schema 3.
 
 Manual clear and retention changes display a frozen metadata summary: deletion,
 pinned preservation, private/shared sync subsets, and excluded account/permission
@@ -293,8 +296,9 @@ Undo tickets depending on affected records are removed; unrelated Undo remains.
 
 Startup/hourly retention uses the same coordinator, coalesces while user mutations
 are active, and yields to manual requests. Selecting permanent retention clears
-queued automatic work. These operations do not perform physical owned-asset garbage
-collection or promise immediate disk reclamation. Automated tests use temporary
+queued automatic work. History retention removes records; the separate, optional
+owned-file reclamation pass described below can follow successful cleanup. Neither
+action promises immediate free disk space. Automated tests use temporary
 databases and unshown native windows; actual confirmation focus/keyboard behavior,
 large-library latency, disk-full recovery, and live sync propagation remain gates.
 
@@ -316,9 +320,9 @@ adoption. A prepared archive is bound to the current store and both account
 configuration generations. A portable recovery backup precedes database changes;
 SQL/outbox/commit failure removes only newly created owned assets.
 
-Unreferenced owned originals are currently retained so deletion/edit Undo and
-failed shared drafts keep their dependencies. There is no automatic asset garbage
-collection yet; deleting a history entry is not a secure erasure of those bytes.
+Owned originals remain protected while deletion/edit Undo, failed shared drafts or
+other live references need them. Schema 12 adds safe local reclamation after those
+dependencies end; deleting a history entry is not a secure erasure of those bytes.
 Local originals, projections, migration snapshots, and recovery backups are
 unencrypted. Owned-file byte synchronization is now a separate implemented protocol,
 not an effect of portable backup. Ordinary external references and legacy v1 URL-only
@@ -367,6 +371,68 @@ server quota behavior, live settings focus or signed distribution access. Those 
 release gates; see [the full protocol](SYNC_FILE_ASSETS_PLAN.zh-CN.md) and
 [the current implementation evidence](IMPLEMENTATION_STATUS.zh-CN.md).
 
+Storage Management reports the managed owned-file tree: registered originals,
+their opening projections, and reclamation quarantine. It does not report or clean
+the database, ordinary representation attachments, OCR cache, exported-file cache,
+independent backups, or external Finder originals. Logical file lengths and
+filesystem allocated bytes are separate measurements; neither is a promise of
+space that the volume will release. An incomplete scan reports measured lower
+bounds and an incomplete status; an unreadable scan is not displayed as zero.
+Unknown, unregistered asset directories are counted and preserved.
+
+Manual reclamation freezes a candidate set for confirmation and rechecks account
+generations, references, registry metadata and filesystem identity before mutation.
+Automatic owned-file reclamation is a separate preference, **off by default**.
+After the user enables it, startup, hourly and successful-history-cleanup requests
+reuse the same prepare/commit checks and defer while other mutations are active.
+Disabling it prevents new automatic commits; already submitted journaled work
+finishes normally. Opening storage settings neither enables sync nor contacts an
+account. Capacity admission/reservations and a complete profile-wide storage limit
+are not implemented by this feature.
+
+History references, pinned records, Undo, Stack, editing/preview and prepared output,
+pending sync operations, verified partial downloads, accepted shared replay and
+failed shared drafts retain their required originals. Temporary leases are registered
+atomically with resolution and held by process file locks; process exit releases the
+lock, without a time-based expiry. Missing or replaced lock identities remain protected.
+Completed private operation snapshots can be retired when no durable replay or pending
+operation requires them. Backup export and upload staging hold the database writer
+lock while copying owned originals into independent data.
+
+Published file URLs have persistent roots, because copy, drag, sharing or open returning
+does not prove that another app has finished using a file. Clipboard publications
+survive restart and are released only after a stable, completely readable pasteboard
+snapshot contains neither their marker nor any published URL; uncertain reads retain
+them. External-open, sharing and drag publications have no automatic expiry. Storage
+Management lists their purposes and paths for explicit confirmation that external
+consumers no longer need them. Releasing that exact reviewed set removes protection
+only; it does not immediately delete files or release current clipboard/lease roots.
+Migration from before schema 12 conservatively protects every existing registered
+asset as a legacy external use, subject to the same explicit review.
+
+Reclamation accepts only the verified owned layout and unchanged original/projection
+bytes. Externally modified projections, extra files, unsafe paths and unverifiable
+identities remain for inspection. A durable per-asset journal precedes atomic
+quarantine; a second writer transaction rechecks every matching intent before any
+rename. Metadata rollback or a pre-commit crash uses that identity proof to restore
+the quarantined directory; failed safe recovery retains its journal. After metadata
+commits, restart recovery continues bounded deletion. Recovery handles
+only existing authorized journal entries, even when automatic reclamation is off.
+Physical file/byte results count successful unlinks; completed groups are counted
+only after their journal completion commits. Pending recovery remains visible.
+The process uses no-follow directory/file checks and cannot delete ordinary external
+files or independent backups. It is not secure erasure or cloud-blob deletion.
+
+Synthetic regression coverage includes cross-connection/process leases, publication
+restart retention, legacy migration, modified/unknown file preservation, concurrent
+reclamation intents and failed metadata/journal commits. Historical milestone counts
+above apply only to their corresponding revisions, not this schema-12 change. Current
+unified test, build and CI evidence belongs in the implementation status document;
+live storage-window behavior, large-library responsiveness, actual cross-app file
+use and signed release acceptance remain open. Physical copies of a database plus
+owned tree may have different inode identities; recovery conservatively retains such
+unverifiable locks/journals rather than promising automatic cleanup of a cloned profile.
+
 File records now open a complete file/location list, including unavailable slots.
 Explicit external-file relocation uses a native one-item file/folder picker and
 stores a reference only. The affected part is rebuilt with file-URL representations
@@ -387,8 +453,9 @@ History copy, paste, payload drag, and system sharing validate owned projections
 through the store before output. Stack keeps captured occurrences across history
 coalescing and separately checks references to registered projections. Ordinary
 external symlinks remain external references; unsafe owned projections are rejected.
-Filesystem availability can still change after validation or after another app
-receives a URL; this is not a file-access lease.
+Owned-file retention leases and persistent publication roots prevent this app's GC
+from removing referenced assets. Filesystem availability can still change through
+external modification, and retention does not grant another app sandbox access.
 
 Image-file output now prepares every image part off the main thread, preserving
 other clipboard objects and their order. Option-drag uses native file promises,

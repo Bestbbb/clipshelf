@@ -12,6 +12,7 @@ final class PasteCoordinator {
 
     var onClipboardWrite: (() -> Void)?
     var onResult: ((String) -> Void)?
+    var publications: OwnedFilePublicationCoordinator?
     private var attempt: UUID?
     private let pasteboard: NSPasteboard
 
@@ -41,11 +42,20 @@ final class PasteCoordinator {
     @discardableResult
     func copy(_ records: [ClipboardRecord], plainText: Bool = false) -> Bool {
         let items: [NSPasteboardItem]
-        do { items = try ClipboardCodec.items(for: records, plainText: plainText) }
+        do {
+            // Register before exposing URLs. Failure leaves the existing clipboard
+            // untouched, and an ambiguous write keeps its durable protection.
+            let lease = plainText ? nil : try publications?.retain(records)
+            items = try ClipboardCodec.items(for: records, plainText: plainText)
+            if let lease, let publication = try publications?.publish(lease: lease, purpose: .clipboard) {
+                ClipboardCodec.markPublication(publication.id, in: items)
+            }
+        }
         catch { onResult?(error.localizedDescription); return false }
         pasteboard.clearContents()
         let success = pasteboard.writeObjects(items)
         onClipboardWrite?()
+        publications?.reconcileClipboard()
         if !success { onResult?("无法写入系统剪贴板，请重试。") }
         return success
     }

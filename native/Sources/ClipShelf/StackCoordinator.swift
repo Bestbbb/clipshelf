@@ -18,8 +18,11 @@ final class StackCoordinator {
         }
     }
     var onChange: (() -> Void)?
+    var retainer: (([ClipboardRecord]) throws -> OwnedAssetLease)?
+    var onRetentionError: ((Error) -> Void)?
 
     private var occurrenceIDs: [UUID] = []
+    private var leases: [OwnedAssetLease?] = []
     private var lastConsumed: ConsumedOccurrence?
 
     private struct ConsumedOccurrence {
@@ -28,6 +31,7 @@ final class StackCoordinator {
         let index: Int
         let precedingID: UUID?
         let followingID: UUID?
+        let lease: OwnedAssetLease?
     }
 
     var canRestoreLastConsumed: Bool { isActive && lastConsumed != nil }
@@ -43,6 +47,7 @@ final class StackCoordinator {
         guard !isActive else { return }
         queue.removeAll()
         occurrenceIDs.removeAll()
+        leases.removeAll()
         lastConsumed = nil
         isActive = true
         onChange?()
@@ -54,14 +59,23 @@ final class StackCoordinator {
         isActive = false
         queue.removeAll()
         occurrenceIDs.removeAll()
+        leases.removeAll()
         lastConsumed = nil
         onChange?()
     }
 
     func append(_ record: ClipboardRecord) {
         guard isActive else { return }
+        do { append(record, lease: try retainer?([record])) }
+        catch { onRetentionError?(error) }
+    }
+
+    /// Capture can pass a lease acquired atomically with the history write.
+    func append(_ record: ClipboardRecord, lease: OwnedAssetLease?) {
+        guard isActive else { return }
         queue.append(record)
         occurrenceIDs.append(UUID())
+        leases.append(lease)
         onChange?()
     }
 
@@ -70,6 +84,7 @@ final class StackCoordinator {
     func remove(at index: Int) -> ClipboardRecord? {
         guard isActive, queue.indices.contains(index) else { return nil }
         occurrenceIDs.remove(at: index)
+        leases.remove(at: index)
         let removed = queue.remove(at: index)
         onChange?()
         return removed
@@ -80,6 +95,7 @@ final class StackCoordinator {
         guard !queue.isEmpty || lastConsumed != nil else { return }
         queue.removeAll()
         occurrenceIDs.removeAll()
+        leases.removeAll()
         lastConsumed = nil
         onChange?()
     }
@@ -101,9 +117,11 @@ final class StackCoordinator {
             occurrenceID: occurrenceID,
             index: index,
             precedingID: index > 0 ? occurrenceIDs[index - 1] : nil,
-            followingID: index + 1 < occurrenceIDs.count ? occurrenceIDs[index + 1] : nil
+            followingID: index + 1 < occurrenceIDs.count ? occurrenceIDs[index + 1] : nil,
+            lease: leases[index]
         )
         occurrenceIDs.remove(at: index)
+        leases.remove(at: index)
         let record = queue.remove(at: index)
         // Keep an empty session active so its last consumption can still be restored.
         // The key integration must pass ordinary Cmd-V through when peek() is nil.
@@ -128,6 +146,7 @@ final class StackCoordinator {
         queue.insert(consumed.record, at: index)
         // A fresh token prevents an old dispatch completion from consuming the restore.
         occurrenceIDs.insert(UUID(), at: index)
+        leases.insert(consumed.lease, at: index)
         lastConsumed = nil
         onChange?()
         return consumed.record
