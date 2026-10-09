@@ -14,7 +14,7 @@ extension HistoryStore {
                 try syncExecute("UPDATE sync_configuration SET account_id = ?, generation = generation + 1 WHERE singleton = 1", [accountID])
                 if accountID != nil, includeLocalData {
                     // This flag represents an explicit upload choice, not ordinary enable/restart.
-                    try execute("DELETE FROM sync_local_only")
+                    try execute("DELETE FROM sync_local_only WHERE entity_kind != 'clipboard' OR entity_id NOT IN (SELECT record_id FROM owned_sync_local_recovery)")
                     for (table, kind) in [("pinboards", "pinboard"), ("clipboard_records", "clipboard")] {
                         try execute("""
                             INSERT INTO sync_dirty (entity_kind, entity_id, action)
@@ -28,10 +28,11 @@ extension HistoryStore {
         }
     }
 
-    public func pendingSyncOperations(accountID: String, limit: Int = 100) throws -> [SyncOperation] {
+    public func pendingSyncOperations(accountID: String, limit: Int = 100, excluding: Set<UUID> = []) throws -> [SyncOperation] {
         try synchronized {
             try requireSyncAccount(accountID)
-            let statement = try prepare("SELECT payload FROM sync_outbox WHERE account_id = ? ORDER BY rowid LIMIT ?")
+            let exclusions = excluding.map { "'" + $0.uuidString + "'" }.joined(separator: ",")
+            let statement = try prepare("SELECT payload FROM sync_outbox WHERE account_id = ?" + (excluding.isEmpty ? "" : " AND operation_id NOT IN (" + exclusions + ")") + " ORDER BY rowid LIMIT ?")
             defer { sqlite3_finalize(statement) }
             try bind(accountID, at: 1, to: statement)
             try check(sqlite3_bind_int64(statement, 2, Int64(clamping: max(0, min(limit, 1_000)))))
@@ -77,6 +78,9 @@ extension HistoryStore {
             defer { suppressSyncCapture = false }
             try transaction {
                 for operation in changes {
+                    for table in ["sync_log", "sync_inbox", "sync_outbox"] {
+                        if let existing = try syncScalar("SELECT account_id FROM \(table) WHERE operation_id=?", [operation.operationID.uuidString]), existing != accountID { throw SyncError.namespaceConflict }
+                    }
                     if accountID.hasPrefix("shared:") { try rememberAcceptedSharedOperation(operation) }
                     if try syncLogContains(accountID: accountID, id: operation.operationID) { continue }
                     let statement = try prepare("INSERT OR IGNORE INTO sync_inbox (operation_id, account_id, payload) VALUES (?, ?, ?)")
@@ -86,6 +90,7 @@ extension HistoryStore {
                     try bind(try JSONEncoder().encode(operation), at: 3, to: statement)
                     try stepToCompletion(statement)
                 }
+                if let scope = try ownedScopeWithoutLock(namespace: accountID) { try registerOwnedPendingDependencies(scope: scope) }
                 try drainSyncInbox(accountID: accountID)
                 let cursor = try prepare("INSERT INTO sync_cursors (account_id, cursor) VALUES (?, ?) ON CONFLICT(account_id) DO UPDATE SET cursor = excluded.cursor")
                 defer { sqlite3_finalize(cursor) }
@@ -111,7 +116,9 @@ extension HistoryStore {
                 if let record = operation.record, let boardID = record.pinboardID,
                    !(try pinboardsWithoutLock().contains { $0.id == boardID }),
                    !(try syncIsDeleted(accountID: accountID, kind: .pinboard, id: boardID)) { continue }
-                try applySyncOperation(operation)
+                guard let materialized = try materializedOwnedOperation(operation) else { continue }
+                try applySyncOperation(materialized)
+                try syncExecute("UPDATE owned_sync_transfers SET status='complete',error=NULL WHERE operation_id=? AND direction='download'", [operation.operationID.uuidString])
                 try syncExecute("DELETE FROM sync_inbox WHERE account_id = ? AND operation_id = ?", [accountID, operation.operationID.uuidString])
                 madeProgress = true
             }
@@ -298,9 +305,9 @@ extension HistoryStore {
         try syncScalar("SELECT entity_id FROM sync_local_only WHERE entity_kind = ? AND entity_id = ?", [kind.rawValue, id.uuidString]) != nil
     }
 
-    func enqueueSyncOperation(_ operation: SyncOperation) throws {
+    func enqueueSyncOperation(_ original: SyncOperation) throws {
+        let operation = try portableOwnedOperation(original)
         try validateSyncOperation(operation, accountID: operation.accountID)
-        if let record = operation.record { try snapshotOwnedFileBindingsWithoutLock(operationID: operation.operationID, record: record) }
         let payload = try JSONEncoder().encode(operation)
         guard payload.count <= 256 * 1_024 * 1_024 else { throw HistoryStoreError.valueTooLarge }
         let statement = try prepare("INSERT INTO sync_outbox(operation_id, account_id, payload) VALUES (?, ?, ?)")
@@ -322,6 +329,16 @@ extension HistoryStore {
     }
 
     func validateSyncOperation(_ operation: SyncOperation, accountID: String) throws {
+        if let manifest = operation.ownedFiles {
+            guard operation.formatVersion == 2, operation.action == .upsert, operation.entityKind == .clipboard,
+                  let record = operation.record else { throw SyncError.invalidOperation }
+            try manifest.validate(record: record)
+        } else {
+            guard operation.formatVersion == nil || operation.formatVersion == 1 else { throw SyncError.invalidOperation }
+            guard !(operation.record?.parts.flatMap(\.representations).contains(where: {
+                $0.typeIdentifier == "public.file-url" && String(data: $0.data, encoding: .utf8)?.hasPrefix("clipshelf-owned:") == true
+            }) ?? false) else { throw SyncError.invalidOperation }
+        }
         guard operation.accountID == accountID, !accountID.isEmpty,
               accountID.utf8.count <= 512, operation.baseRevision >= 0, operation.baseRevision < Int.max - 1,
               operation.revision == operation.baseRevision + 1,
@@ -407,6 +424,11 @@ extension HistoryStore {
                 record.isInHistory = true
             }
             if let current = try itemWithoutLock(id: record.id) {
+                if operation.ownedFiles == nil, try !ownedFileBindingsWithoutLock(recordID: current.id).isEmpty {
+                    // A legacy peer cannot revoke verified bytes by sending an unproven path.
+                    try preserveRemoteConflict(operation)
+                    return
+                }
                 record = resolvingOrigin(record, existing: current)
                 if record.pinboardID == current.pinboardID {
                     // Full snapshots carry their author's last-known position. Position-only operations
@@ -419,6 +441,7 @@ extension HistoryStore {
                 try insert(record)
                 try setSyncOrderHead(operation, boardID: record.pinboardID)
             }
+            if operation.ownedFiles != nil { try restoreOwnedFileOperationBindingsWithoutLock(operationID: operation.operationID, record: record) }
         } else if let board = operation.pinboard {
             try savePinboard(board, replace: try pinboardsWithoutLock().contains { $0.id == board.id })
         }
@@ -470,7 +493,15 @@ extension HistoryStore {
 
     func isOrderingOnlyConflict(_ operation: SyncOperation) throws -> Bool {
         guard let incoming = operation.record, let current = try itemWithoutLock(id: incoming.id) else { return false }
-        return incoming.hasSameContents(as: current) && incoming.copiedAt == current.copiedAt
+        var normalizedIncoming = incoming, normalizedCurrent = current
+        if let manifest = operation.ownedFiles {
+            for binding in manifest.bindings { normalizedIncoming.parts[binding.partIndex].representations[0].data = Data(SyncOwnedFileManifest.token(digest: binding.digest, filename: binding.filename).utf8) }
+            let temporary = SyncOperation(accountID: operation.accountID, entityID: current.id, entityKind: .clipboard, action: .upsert, baseRevision: 0, revision: 1, record: current)
+            normalizedCurrent = try portableOwnedOperation(temporary).record ?? current
+            try syncExecute("DELETE FROM owned_file_operation_bindings WHERE operation_id=?", [temporary.operationID.uuidString])
+            try syncExecute("DELETE FROM owned_sync_operation_proofs WHERE operation_id=?", [temporary.operationID.uuidString])
+        }
+        return normalizedIncoming.hasSameContents(as: normalizedCurrent) && incoming.copiedAt == current.copiedAt
             && incoming.renamedTitle == current.renamedTitle && incoming.ocrText == current.ocrText
             && incoming.pinboardID == current.pinboardID && incoming.isInHistory == current.isInHistory
     }
@@ -510,6 +541,7 @@ extension HistoryStore {
             }
             if try itemWithoutLock(id: id) == nil {
                 try insert(record)
+                if operation.ownedFiles != nil { try restoreOwnedFileOperationBindingsWithoutLock(operationID: operation.operationID, record: record) }
                 try setSyncNamespace(kind: .clipboard, id: id, accountID: operation.accountID)
             }
         } else if var board = operation.pinboard {

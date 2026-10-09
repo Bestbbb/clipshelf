@@ -5,7 +5,7 @@ import Foundation
 
 /// Each board has an independent zone and operation namespace. Construction is entirely local;
 /// CloudKit is contacted only after an explicit sharing action and a signing/configuration check.
-actor CloudSharedBoardTransport: SharedBoardLifecycleTransport {
+actor CloudSharedBoardTransport: SharedBoardLifecycleTransport, SharedBoardOwnedFileTransport {
     static let recordType = "ClipShelfSharedOperationV1"
     static let maximumPayloadBytes = 256 * 1_024 * 1_024
     private let configuration: CloudSyncConfiguration
@@ -50,8 +50,9 @@ actor CloudSharedBoardTransport: SharedBoardLifecycleTransport {
         let staging = FileManager.default.temporaryDirectory.appendingPathComponent("ClipShelf-shared-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: staging) }
-        var records: [CKRecord] = [], hashes: [CKRecord.ID: String] = [:]
+        var records: [CKRecord] = [], expectedRecords: [CKRecord.ID: CKRecord] = [:]
         for operation in operations {
+            try await verifyOwnedDependencies(operation, board: board, context: context)
             let data = try CloudSyncService.encodeOperation(operation)
             guard data.count <= Self.maximumPayloadBytes else { throw HistoryStoreError.valueTooLarge }
             let file = staging.appendingPathComponent(operation.operationID.uuidString + ".json")
@@ -62,25 +63,27 @@ actor CloudSharedBoardTransport: SharedBoardLifecycleTransport {
             record["payload"] = CKAsset(fileURL: file)
             record["sha256"] = hash as NSString
             record["namespace"] = board.namespace as NSString
-            record["formatVersion"] = 1 as NSNumber
-            records.append(record); hashes[record.recordID] = hash
+            let version = try CloudOperationCodec.version(data)
+            record["formatVersion"] = version as NSNumber
+            if version == 2 { record["payloadByteCount"] = data.count as NSNumber }
+            records.append(record); expectedRecords[record.recordID] = record
         }
         // The server remains authoritative if permissions change after fetching CKShare.
-        let result = try await request(context.session) {
+        let result = try await boardRequest(board, context: context, writing: true) {
             try await context.database.modifyRecords(saving: records, deleting: [], savePolicy: .ifServerRecordUnchanged, atomically: false)
         }
         var acknowledged = Set<UUID>(), firstError: Error?
         for (id, outcome) in result.saveResults {
-            guard let expected = hashes[id], let operationID = UUID(uuidString: id.recordName) else { throw SyncError.invalidOperation }
+            guard let expected = expectedRecords[id], let operationID = UUID(uuidString: id.recordName) else { throw SyncError.invalidOperation }
             switch outcome {
             case .success(let record):
-                guard Self.matches(record, id: id, namespace: board.namespace, digest: expected) else { throw SyncError.invalidOperation }
+                guard CloudOperationCodec.matches(record, expected: expected) else { throw SyncError.invalidOperation }
                 acknowledged.insert(operationID)
             case .failure(let error):
                 if Self.isPermissionDenied(error) { throw SharedBoardError.remotePermissionDenied }
                 if let cloud = error as? CKError, cloud.code == .serverRecordChanged,
                    let record = cloud.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord,
-                   Self.matches(record, id: id, namespace: board.namespace, digest: expected) {
+                   CloudOperationCodec.matches(record, expected: expected) {
                     acknowledged.insert(operationID)
                 } else { firstError = firstError ?? error }
             }
@@ -103,30 +106,135 @@ actor CloudSharedBoardTransport: SharedBoardLifecycleTransport {
         } catch { if Self.isRevocation(error) { throw SharedBoardError.revoked }; throw error }
         let result: (modificationResultsByID: [CKRecord.ID: Result<CKDatabase.RecordZoneChange.Modification, Error>], deletions: [CKDatabase.RecordZoneChange.Deletion], changeToken: CKServerChangeToken, moreComing: Bool)
         do {
-            result = try await request(context.session) {
-                try await context.database.recordZoneChanges(inZoneWith: context.zoneID, since: token, resultsLimit: max(1, min(100, limit)))
+            result = try await boardRequest(board, context: context, writing: false) {
+                try await context.database.recordZoneChanges(inZoneWith: context.zoneID, since: token, desiredKeys: CloudOperationCodec.metadataKeys + CloudOwnedBlobCodec.metadataKeys, resultsLimit: max(1, min(100, limit)))
             }
         } catch let error as CKError where error.code == .changeTokenExpired && mayResetExpiredToken {
             // Applied IDs and tombstones persist locally, so a full immutable-log replay is safe.
             return try await pull(board: board, token: nil, limit: limit, mayResetExpiredToken: false)
         } catch { if Self.isRevocation(error) { throw SharedBoardError.revoked }; throw error }
-        if result.deletions.contains(where: { $0.recordID.recordName == board.shareRecordName }) { throw SharedBoardError.revoked }
-        guard result.deletions.isEmpty else {
-            throw SyncError.unavailable("共享板的云端操作日志不完整。已停止同步并保留本地内容。")
+        if result.deletions.contains(where: { $0.recordID.zoneID == context.zoneID && $0.recordID.recordName == board.shareRecordName }) { throw SharedBoardError.revoked }
+        let scope = blobScope(board: board, context: context)
+        for deletion in result.deletions {
+            guard CloudOwnedBlobCodec.isBlobDeletion(id: deletion.recordID, type: deletion.recordType, scope: scope) else {
+                throw SyncError.unavailable("共享板的云端操作日志不完整。已停止同步并保留本地内容。")
+            }
         }
         var operations: [SyncOperation] = []
         for (id, modification) in result.modificationResultsByID {
-            let record: CKRecord
-            do { record = try modification.get().record }
+            let metadata: CKRecord
+            do { metadata = try modification.get().record }
             catch { if Self.isPermissionDenied(error) { throw SharedBoardError.remotePermissionDenied }; throw error }
-            // A zone-wide share is itself included in the zone change feed.
+            guard metadata.recordID == id, id.zoneID == context.zoneID else { throw SyncError.invalidOperation }
             if id.recordName == board.shareRecordName {
-                guard record is CKShare, id.zoneID == context.zoneID else { throw SyncError.invalidOperation }
+                guard metadata is CKShare else { throw SyncError.invalidOperation }
                 continue
             }
-            operations.append(try Self.decodeOperation(record, board: board))
+            if metadata.recordType == CloudOwnedBlobCodec.recordType {
+                try CloudOwnedBlobCodec.validateMetadata(metadata, scope: scope)
+                continue
+            }
+            guard metadata.recordType == Self.recordType else { throw SyncError.invalidOperation }
+            let operation = try await boardRequest(board, context: context, writing: false) {
+                let records = try await context.database.records(for: [id], desiredKeys: CloudOperationCodec.metadataKeys + ["payload"])
+                guard let result = records[id] else { throw SyncError.invalidOperation }
+                let record = try result.get()
+                guard CloudOperationCodec.matches(record, expected: metadata) else { throw SyncError.invalidOperation }
+                return try Self.decodeOperation(record, board: board)
+            }
+            operations.append(operation)
         }
         return SyncChangeBatch(operations: operations, cursor: try Self.encodeCursor(result.changeToken, board: board), hasMore: result.moreComing)
+    }
+
+    func ownedFileScope(board: SharedBoardDescriptor) async throws -> SyncOwnedFileScope {
+        let context = try await context(for: board)
+        return ownedScope(board: board, context: context)
+    }
+    private func ownedScope(board: SharedBoardDescriptor, context: Context) -> SyncOwnedFileScope {
+        SyncOwnedFileScope(accountID: context.session.accountID, containerIdentifier: context.session.identifier,
+                           database: context.isOwnerDatabase ? .privateDatabase : .sharedDatabase,
+                           zoneOwnerName: board.zoneOwnerName, zoneName: board.zoneName, namespace: board.namespace)
+    }
+    private func blobScope(board: SharedBoardDescriptor, context: Context) -> CloudOwnedBlobScope {
+        CloudOwnedBlobScope(containerIdentifier: context.session.identifier, namespace: board.namespace, zoneID: context.zoneID, shared: true)
+    }
+    private func boardRequest<T>(_ board: SharedBoardDescriptor, context: Context, writing: Bool,
+                                 _ operation: () async throws -> T) async throws -> T {
+        let share: CKShare
+        do { share = try await fetchShare(board, context: context) }
+        catch { if Self.isRevocation(error) { throw SharedBoardError.revoked }; throw error }
+        let access = Self.access(of: share, userRecordName: context.session.userRecordName)
+        guard access != .revoked else { throw SharedBoardError.revoked }
+        guard !writing || access.canWrite else { throw SharedBoardError.readOnly }
+        return try await request(context.session, operation)
+    }
+    func uploadOwnedFile(_ upload: PreparedSyncOwnedUpload, board: SharedBoardDescriptor) async throws {
+        let context = try await context(for: board)
+        guard upload.scope == ownedScope(board: board, context: context) else { throw SyncError.namespaceConflict }
+        try upload.file.validate()
+        let scope = blobScope(board: board, context: context)
+        let id = CloudOwnedBlobCodec.recordID(digest: upload.file.digest, scope: scope)
+        let found = try await boardRequest(board, context: context, writing: true) {
+            try await context.database.records(for: [id], desiredKeys: CloudOwnedBlobCodec.metadataKeys)
+        }
+        guard let result = found[id] else { throw SyncError.invalidOperation }
+        switch result {
+        case .success(let record):
+            guard CloudOwnedBlobCodec.matches(record, digest: upload.file.digest, byteCount: upload.file.byteCount, scope: scope) else { throw SyncError.invalidOperation }
+            return
+        case .failure(let error):
+            if Self.isPermissionDenied(error) { throw SharedBoardError.remotePermissionDenied }
+            guard (error as? CKError)?.code == .unknownItem else { throw error }
+        }
+        let staging = try CloudAssetStaging()
+        let record = try CloudOwnedBlobCodec.encode(file: upload.fileURL, digest: upload.file.digest, byteCount: upload.file.byteCount, scope: scope, staging: staging)
+        let saved = try await boardRequest(board, context: context, writing: true) {
+            try await context.database.modifyRecords(saving: [record], deleting: [], savePolicy: .ifServerRecordUnchanged, atomically: true)
+        }
+        guard let outcome = saved.saveResults[id] else { throw SyncError.invalidOperation }
+        let acknowledged: CKRecord
+        do { acknowledged = try outcome.get() }
+        catch {
+            if Self.isPermissionDenied(error) { throw SharedBoardError.remotePermissionDenied }
+            guard let cloud = error as? CKError, cloud.code == .serverRecordChanged,
+                  let server = cloud.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord else { throw error }
+            acknowledged = server
+        }
+        guard CloudOwnedBlobCodec.matches(acknowledged, digest: upload.file.digest, byteCount: upload.file.byteCount, scope: scope) else { throw SyncError.invalidOperation }
+        withExtendedLifetime(staging) {}
+    }
+    func downloadOwnedFile(_ request: SyncOwnedDownloadRequest, board: SharedBoardDescriptor) async throws -> SyncOwnedFileStaging {
+        let context = try await context(for: board)
+        guard request.scope == ownedScope(board: board, context: context) else { throw SyncError.namespaceConflict }
+        try request.file.validate()
+        let scope = blobScope(board: board, context: context)
+        let id = CloudOwnedBlobCodec.recordID(digest: request.file.digest, scope: scope)
+        return try await boardRequest(board, context: context, writing: false) {
+            let records = try await context.database.records(for: [id], desiredKeys: CloudOwnedBlobCodec.metadataKeys + CloudOwnedBlobCodec.assetKeys)
+            guard let response = records[id] else { throw SyncError.invalidOperation }
+            let temporary = try CloudAssetStaging()
+            let file = try CloudOwnedBlobCodec.decode(try response.get(), digest: request.file.digest, byteCount: request.file.byteCount, scope: scope, staging: temporary)
+            return try SyncOwnedFileStaging.copy(from: file, descriptor: request.file)
+        }
+    }
+    private func verifyOwnedDependencies(_ operation: SyncOperation, board: SharedBoardDescriptor, context: Context) async throws {
+        guard let manifest = operation.ownedFiles else { return }
+        guard let record = operation.record else { throw SyncError.invalidOperation }
+        try manifest.validate(record: record)
+        let scope = blobScope(board: board, context: context)
+        var checked = Set<String>()
+        for file in manifest.files where checked.insert(file.digest).inserted {
+            let id = CloudOwnedBlobCodec.recordID(digest: file.digest, scope: scope)
+            let results = try await boardRequest(board, context: context, writing: true) {
+                try await context.database.records(for: [id], desiredKeys: CloudOwnedBlobCodec.metadataKeys)
+            }
+            guard let outcome = results[id] else { throw SyncError.invalidOperation }
+            let blob: CKRecord
+            do { blob = try outcome.get() }
+            catch { if Self.isPermissionDenied(error) { throw SharedBoardError.remotePermissionDenied }; throw error }
+            guard CloudOwnedBlobCodec.matches(blob, digest: file.digest, byteCount: file.byteCount, scope: scope) else { throw SyncError.invalidOperation }
+        }
     }
 
     /// Creates only a dedicated shared-copy zone; never shares a user's private history zone.
@@ -335,21 +443,14 @@ actor CloudSharedBoardTransport: SharedBoardLifecycleTransport {
               url.port == nil || url.port == 443 else { return false }
         return host == "icloud.com" || host.hasSuffix(".icloud.com")
     }
-    static func matches(_ record: CKRecord, id: CKRecord.ID, namespace: String, digest: String) -> Bool {
+    static func matches(_ record: CKRecord, id: CKRecord.ID, namespace: String, digest: String, version: Int = 1) -> Bool {
         record.recordID == id && record.recordType == recordType && record["namespace"] as? String == namespace
-            && record["sha256"] as? String == digest && (record["formatVersion"] as? NSNumber)?.intValue == 1
+            && record["sha256"] as? String == digest && CloudOwnedBlobCodec.exactInteger(record["formatVersion"]) == version
+            && (version == 1 || version == 2) && record["account"] == nil
     }
     static func decodeOperation(_ record: CKRecord, board: SharedBoardDescriptor) throws -> SyncOperation {
-        let zoneID = CKRecordZone.ID(zoneName: board.zoneName, ownerName: board.zoneOwnerName)
-        guard record.recordID.zoneID == zoneID, record.recordType == recordType,
-              record["namespace"] as? String == board.namespace, (record["formatVersion"] as? NSNumber)?.intValue == 1,
-              let expected = record["sha256"] as? String, let file = (record["payload"] as? CKAsset)?.fileURL else { throw SyncError.invalidOperation }
-        let properties = try file.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-        guard properties.isRegularFile == true, let size = properties.fileSize, size <= maximumPayloadBytes else { throw HistoryStoreError.valueTooLarge }
-        let data = try Data(contentsOf: file)
-        guard data.count <= maximumPayloadBytes, CloudSyncService.digest(data) == expected else { throw SyncError.invalidOperation }
-        let operation = try JSONDecoder().decode(SyncOperation.self, from: data)
-        guard operation.operationID.uuidString == record.recordID.recordName else { throw SyncError.invalidOperation }
+        let operation = try CloudOperationCodec.decode(record, type: recordType, namespace: board.namespace, shared: true,
+                                                       zone: CKRecordZone.ID(zoneName: board.zoneName, ownerName: board.zoneOwnerName))
         try validate(operation, board: board)
         return operation
     }
@@ -419,6 +520,7 @@ final class CloudSharedBoardSharingPresenter: NSObject, NSCloudSharingServiceDel
         preparing = true
         defer { preparing = false }
         let snapshot = try await transport.sharingSnapshot(for: board)
+        try Task.checkCancellation()
         guard view.window?.isVisible == true else { throw CancellationError() }
         let provider = NSItemProvider()
         provider.registerCloudKitShare(snapshot.share, container: snapshot.container)

@@ -45,6 +45,14 @@ final class CloudSyncConfigurationTests: XCTestCase {
         XCTAssertEqual(try store.load(), [record])
     }
 
+    func testDisabledFileStatusDoesNotEnableOrInspectCloudKit() async throws {
+        let store = try HistoryStore(databaseURL: directory.appendingPathComponent("history.sqlite3"))
+        let service = CloudSyncService(store: store, configuration: CloudSyncConfiguration(containerIdentifier: nil))
+        let states = try await service.ownedFileTransferStates()
+        XCTAssertTrue(states.isEmpty)
+        XCTAssertNil(try store.syncConfiguration().accountID)
+    }
+
     func testImmutableOperationEncodingIsStableAcrossDecodeAndRetry() throws {
         let record = ClipboardRecord(text: "same bytes 👩🏽‍💻", rtf: Data([0, 255, 1]))
         let operation = SyncOperation(accountID: "synthetic-account", entityID: record.id, entityKind: .clipboard,

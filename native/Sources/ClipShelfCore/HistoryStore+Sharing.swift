@@ -72,15 +72,22 @@ extension HistoryStore {
     public func updateSharedAccess(boardID: UUID, accountID: String, access: SharedBoardAccess) throws {
         try synchronized {
             _ = try requireSharedBoard(boardID: boardID, accountID: accountID)
-            try transaction { try syncExecute("UPDATE shared_boards SET access = ? WHERE board_id = ? AND account_id = ?", [access.rawValue, boardID.uuidString, accountID]) }
+            try transaction {
+                let namespace = "shared:" + boardID.uuidString
+                if try sharedStateForNamespace(namespace)?.access != access {
+                    try syncExecute("INSERT INTO owned_sync_access(namespace,generation) VALUES (?,1) ON CONFLICT(namespace) DO UPDATE SET generation=generation+1", [namespace])
+                }
+                try syncExecute("UPDATE shared_boards SET access = ? WHERE board_id = ? AND account_id = ?", [access.rawValue, boardID.uuidString, accountID])
+            }
         }
     }
 
-    public func pendingSharedOperations(boardID: UUID, accountID: String, limit: Int = 100) throws -> [SyncOperation] {
+    public func pendingSharedOperations(boardID: UUID, accountID: String, limit: Int = 100, excluding: Set<UUID> = []) throws -> [SyncOperation] {
         try synchronized {
             let state = try requireSharedBoard(boardID: boardID, accountID: accountID)
             guard state.access.canWrite else { throw state.access == .revoked ? SharedBoardError.revoked : SharedBoardError.readOnly }
-            let statement = try prepare("SELECT payload FROM sync_outbox WHERE account_id = ? ORDER BY rowid LIMIT ?")
+            let exclusions = excluding.map { "'" + $0.uuidString + "'" }.joined(separator: ",")
+            let statement = try prepare("SELECT payload FROM sync_outbox WHERE account_id = ?" + (excluding.isEmpty ? "" : " AND operation_id NOT IN (" + exclusions + ")") + " ORDER BY rowid LIMIT ?")
             defer { sqlite3_finalize(statement) }
             try bind(state.descriptor.namespace, at: 1, to: statement)
             try check(sqlite3_bind_int64(statement, 2, Int64(max(0, min(1_000, limit)))))
@@ -154,10 +161,12 @@ extension HistoryStore {
                     try bind(try JSONEncoder().encode(draft), at: 4, to: statement)
                     try stepToCompletion(statement)
                 }
+                try syncExecute("DELETE FROM owned_sync_transfers WHERE direction='upload' AND operation_id IN (SELECT operation_id FROM sync_outbox WHERE account_id=?)", [state.descriptor.namespace])
                 try syncExecute("DELETE FROM sync_outbox WHERE account_id = ?", [state.descriptor.namespace])
                 if !operations.isEmpty || clearCachedContent {
                     // Rebuild accepted content locally so a downgrade remains readable even while offline.
                     let personalPosition = try syncScalar("SELECT CAST(position AS TEXT) FROM pinboard_local_order WHERE board_id = ?", [boardID.uuidString])
+                    try syncExecute("DELETE FROM owned_sync_transfers WHERE direction='download' AND operation_id IN (SELECT operation_id FROM sync_inbox WHERE account_id=?)", [state.descriptor.namespace])
                     for table in ["sync_inbox", "sync_heads", "sync_content_heads", "sync_order_heads", "sync_log", "sync_tombstones", "sync_cursors"] {
                         try syncExecute("DELETE FROM \(table) WHERE account_id = ?", [state.descriptor.namespace])
                     }
@@ -174,7 +183,7 @@ extension HistoryStore {
                         defer { sqlite3_finalize(accepted) }
                         try bind(state.descriptor.namespace, at: 1, to: accepted)
                         for operation in try syncReadOperations(accepted) {
-                            guard let original = operation.record,
+                            guard operation.ownedFiles == nil, let original = operation.record,
                                   let current = try itemWithoutLock(id: original.id) else { continue }
                             let prior = try rebasingOwnedFileOperationRecordWithoutLock(operationID: operation.operationID, record: original)
                             if current.parts == original.parts || current.parts == prior.parts {
@@ -226,9 +235,15 @@ extension HistoryStore {
                 try check(status, allowingRow: true)
                 guard let data = dataColumn(statement, 0),
                       var record = try JSONDecoder().decode(FailedSharedDraft.self, from: data).operation.record else { throw HistoryStoreError.recordNotFound }
-                record = try rebasingOwnedFileOperationRecordWithoutLock(operationID: operationID, record: record)
+                let draftOperation = try JSONDecoder().decode(FailedSharedDraft.self, from: data).operation
+                if draftOperation.ownedFiles != nil {
+                    guard let local = try materializedOwnedOperation(draftOperation)?.record else { throw HistoryStoreError.corruptOwnedFile }
+                    record = local
+                } else { record = try rebasingOwnedFileOperationRecordWithoutLock(operationID: operationID, record: record) }
                 record.id = UUID(); record.pinboardID = nil; record.pinboardOrder = nil; record.isInHistory = true; record.revision = 1
+                try markSyncLocalOnly(kind: .clipboard, id: record.id)
                 try insert(record)
+                try syncExecute("INSERT INTO owned_sync_local_recovery(record_id) VALUES (?)", [record.id.uuidString])
                 try restoreOwnedFileOperationBindingsWithoutLock(operationID: operationID, record: record)
                 return record
             }
@@ -319,6 +334,7 @@ extension HistoryStore {
         if let existing = try sharedStateForNamespace(descriptor.namespace), existing.descriptor.accountID != descriptor.accountID {
             throw SharedBoardError.accountChanged
         }
+        try syncExecute("INSERT INTO owned_sync_access(namespace,generation) VALUES (?,1) ON CONFLICT(namespace) DO UPDATE SET generation=generation+1", [descriptor.namespace])
         let statement = try prepare("INSERT INTO shared_boards(board_id, namespace, account_id, descriptor, access) VALUES (?, ?, ?, ?, ?) ON CONFLICT(board_id) DO UPDATE SET descriptor = excluded.descriptor, access = excluded.access")
         defer { sqlite3_finalize(statement) }
         try bind(descriptor.boardID.uuidString, at: 1, to: statement)

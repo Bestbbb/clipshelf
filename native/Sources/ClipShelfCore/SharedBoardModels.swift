@@ -72,15 +72,18 @@ public protocol SharedBoardLifecycleTransport: SharedBoardTransport {
 public actor SharedBoardCoordinator {
     private let store: HistoryStore
     private let transport: any SharedBoardTransport
+    private let maximumTransferBytes: Int
     private var running = Set<UUID>()
-    public init(store: HistoryStore, transport: any SharedBoardTransport) { self.store = store; self.transport = transport }
+    public init(store: HistoryStore, transport: any SharedBoardTransport, maximumTransferBytes: Int = SyncOwnedFileLimits.maximumPassBytes) { self.store = store; self.transport = transport; self.maximumTransferBytes = max(0, min(maximumTransferBytes, SyncOwnedFileLimits.maximumPassBytes)) }
 
     public func synchronize(_ board: SharedBoardDescriptor) async throws -> SyncRunSummary {
         guard running.insert(board.boardID).inserted else { throw SyncError.unavailable("此共享板正在同步。") }
         defer { running.remove(board.boardID) }
+        let configuration = try store.sharingConfiguration()
         do {
             return try await synchronizePass(board)
         } catch let error as SharedBoardError {
+            guard try store.sharingConfiguration() == configuration else { throw SharedBoardError.accountChanged }
             switch error {
             case .readOnly:
                 try store.updateSharedAccess(boardID: board.boardID, accountID: board.accountID, access: .readOnly)
@@ -99,53 +102,112 @@ public actor SharedBoardCoordinator {
     private func synchronizePass(_ board: SharedBoardDescriptor) async throws -> SyncRunSummary {
         let configuration = try store.sharingConfiguration()
         guard configuration.accountID == board.accountID else { throw SharedBoardError.accountChanged }
+        var activeContext: SyncTransferContext?
+        var expectedAccessGeneration = try store.synchronized { try store.ownedAccessGeneration(board.namespace) }
         func checkAccount() throws {
-            guard try store.sharingConfiguration() == configuration else { throw SharedBoardError.accountChanged }
+            guard try store.sharingConfiguration() == configuration,
+                  try store.sharedBoards(accountID: board.accountID).first(where: { $0.descriptor.boardID == board.boardID })?.descriptor == board,
+                  try store.synchronized({ try store.ownedAccessGeneration(board.namespace) }) == expectedAccessGeneration else { throw SharedBoardError.accountChanged }
+            if let activeContext { try store.validateSyncTransferContext(activeContext) }
         }
-        let access = try await transport.access(for: board)
+        let access: SharedBoardAccess
+        do { access = try await transport.access(for: board) } catch { try checkAccount(); throw error }
         try checkAccount()
         try store.updateSharedAccess(boardID: board.boardID, accountID: board.accountID, access: access)
+        expectedAccessGeneration = try store.synchronized { try store.ownedAccessGeneration(board.namespace) }
         if !access.canWrite {
             try store.rejectPendingSharedEdits(boardID: board.boardID, accountID: board.accountID,
                                               reason: access == .revoked ? "共享访问已撤销" : "共享权限已变为只读", clearCachedContent: access == .revoked)
             if access == .revoked { throw SharedBoardError.revoked }
         }
-        var downloaded = 0, uploaded = 0
+        let capable = transport as? any SharedBoardOwnedFileTransport
+        let context: SyncTransferContext?
+        if let capable {
+            let scope: SyncOwnedFileScope
+            do { scope = try await capable.ownedFileScope(board: board) } catch { try checkAccount(); throw error }
+            try checkAccount(); context = try store.makeSyncTransferContext(scope: scope)
+        } else { context = nil }
+        activeContext = context
+        var downloaded = 0, uploaded = 0, bytes = 0
+        var attemptedDownloads = Set<String>()
+        func downloadFiles() async throws {
+            guard let capable, let context else { return }
+            while true {
+                let requests = try store.pendingSyncOwnedDownloads(context: context, limit: 100, excluding: attemptedDownloads)
+                if requests.isEmpty { return }
+                for request in requests {
+                    attemptedDownloads.insert(request.transferID)
+                    guard request.file.byteCount <= maximumTransferBytes - bytes else { continue }
+                    bytes += request.file.byteCount
+                    do {
+                        let staging = try await capable.downloadOwnedFile(request, board: board)
+                        try checkAccount(); try store.validateSyncTransferContext(context)
+                        guard staging.descriptor == request.file else { throw SyncError.invalidOperation }
+                        try store.acceptSyncOwnedDownload(request, stagedFileURL: staging.fileURL, context: context)
+                    } catch {
+                        try checkAccount(); try store.validateSyncTransferContext(context)
+                        if error is CancellationError || error is SharedBoardError { throw error }
+                        try store.failSyncOwnedDownload(request, context: context, error: error.localizedDescription)
+                    }
+                }
+            }
+        }
         func download() async throws {
             var batches = 0
             while true {
                 try Task.checkCancellation(); try checkAccount()
                 let cursor = try store.sharedCursor(boardID: board.boardID, accountID: board.accountID)
-                let batch = try await transport.pull(board: board, after: cursor, limit: 100)
+                let batch: SyncChangeBatch
+                do { batch = try await transport.pull(board: board, after: cursor, limit: 100) } catch { try checkAccount(); throw error }
                 try checkAccount()
                 try store.applySharedChanges(boardID: board.boardID, accountID: board.accountID, changes: batch.operations, nextCursor: batch.cursor)
-                downloaded += batch.operations.count
-                batches += 1
+                if capable == nil, try store.hasPendingOwnedFileOperations(namespace: board.namespace) { throw SyncError.unavailable("此共享服务不支持托管文件传输，请升级后重试。") }
+                downloaded += batch.operations.count; batches += 1
+                try await downloadFiles()
                 if !batch.hasMore { return }
                 guard batches < 1_000, batch.cursor != cursor else { throw SyncError.invalidCursor }
             }
         }
         try await download()
         if access.canWrite {
+            var attempted = Set<UUID>()
             while true {
                 try Task.checkCancellation(); try checkAccount()
-                let pending = try store.pendingSharedOperations(boardID: board.boardID, accountID: board.accountID, limit: 100)
+                let pending = try store.pendingSharedOperations(boardID: board.boardID, accountID: board.accountID, limit: 100, excluding: attempted)
                 if pending.isEmpty { break }
-                do {
-                    let acknowledged = try await transport.push(pending, board: board)
+                for operation in pending {
+                    attempted.insert(operation.operationID)
+                    var ready = true
+                    for file in operation.ownedFiles?.files ?? [] {
+                        guard let capable, let context else { throw SyncError.unavailable("此共享服务不支持托管文件传输，请升级后重试。") }
+                        if try store.syncOwnedUploadIsComplete(operationID: operation.operationID, file: file, context: context) { continue }
+                        guard file.byteCount <= maximumTransferBytes - bytes else { ready = false; continue }
+                        bytes += file.byteCount
+                        do {
+                            let upload = try store.prepareSyncOwnedUpload(operationID: operation.operationID, file: file, context: context)
+                            try await capable.uploadOwnedFile(upload, board: board)
+                            try checkAccount(); try store.recordSyncOwnedUpload(operationID: operation.operationID, file: file, context: context)
+                        } catch {
+                            try checkAccount(); try store.validateSyncTransferContext(context, writing: true)
+                            if error is CancellationError || error is SharedBoardError { throw error }
+                            try store.recordSyncOwnedUpload(operationID: operation.operationID, file: file, context: context, error: error.localizedDescription)
+                            ready = false
+                        }
+                    }
+                    if !ready { continue }
+                    let acknowledged: Set<UUID>
+                    do { acknowledged = try await transport.push([operation], board: board) } catch { try checkAccount(); throw error }
                     try checkAccount()
-                    guard !acknowledged.isEmpty, acknowledged.isSubset(of: Set(pending.map(\.operationID))) else { throw SyncError.invalidOperation }
+                    guard acknowledged == [operation.operationID] else { throw SyncError.invalidOperation }
                     try store.acknowledgeSharedOperations(boardID: board.boardID, accountID: board.accountID, operationIDs: acknowledged)
                     uploaded += acknowledged.count
-                } catch SharedBoardError.remotePermissionDenied {
-                    try store.updateSharedAccess(boardID: board.boardID, accountID: board.accountID, access: .revoked)
-                    try store.rejectPendingSharedEdits(boardID: board.boardID, accountID: board.accountID,
-                                                      reason: "服务端已拒绝离线修改", clearCachedContent: true)
-                    throw SharedBoardError.remotePermissionDenied
                 }
             }
             try await download()
         }
-        return SyncRunSummary(uploadedOperations: uploaded, downloadedOperations: downloaded)
+        let states = try context.map { try store.syncOwnedTransferStates(context: $0) } ?? []
+        return SyncRunSummary(uploadedOperations: uploaded, downloadedOperations: downloaded,
+                              pendingFiles: states.filter { $0.status == .pending }.count,
+                              failedFiles: states.filter { $0.status == .failed }.count)
     }
 }

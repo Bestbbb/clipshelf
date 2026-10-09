@@ -218,8 +218,34 @@ PROVISIONING_PROFILE_PATH='/absolute/private/path/profile.provisionprofile' \
 Use your actual identifiers and signing material. Specifying these environment
 variables does not create a container, grant access, initialize its schema, or
 deploy the development schema to production. Those are separate Apple developer
-operations. Private synchronization and shared Pinboards need two real accounts
-and devices for the acceptance cases in the specification.
+operations. Private synchronization needs two real Macs on the same account;
+shared Pinboards additionally need distinct owner/participant accounts. Neither
+real-device path has completed acceptance. The current source implements owned-file
+transfer through both adapters, but local CKRecord tests do not provision or validate
+a development or production container.
+
+Provision the following CloudKit record types and fields, preserving the existing
+operation type names for compatibility:
+
+| Record type | Record name | Fields |
+| --- | --- | --- |
+| `ClipShelfOperationV1` | Operation UUID | `payload` (Asset), `sha256` (String), `account` (String), `formatVersion` (Int); v2 adds `payloadByteCount` (Int) |
+| `ClipShelfSharedOperationV1` | Operation UUID | `payload` (Asset), `sha256` (String), `namespace` (String), `formatVersion` (Int); v2 adds `payloadByteCount` (Int) |
+| `ClipShelfOwnedFileV1` | `owned-<sha256>` | `sha256` (String), `byteCount` (Int), `chunkCount` (Int), `formatVersion` (Int, currently 1), `container` (String), `namespace` (String), `scopeKind` (String), `zoneName` (String), `chunk0` (Asset), optional `chunk1` (Asset) |
+
+Owned blobs use one or two assets of at most 32 MiB each, retaining the 64 MiB
+original-file limit. This chunk size is an implementation budget, not evidence
+that production service limits and quota behavior have been accepted. Verify the
+record types, field types, zone permissions and schema deployment in the actual
+container. Shared owners use their private database; invited members use the
+shared database. Cloud records bind a shared board's namespace and zone, never
+the uploading participant's actual account. Local transfer caches still bind the
+actual account, container, database, zone owner/name and namespace.
+
+Required live cases include same-account private transfer, different-account
+read-only/read-write participants, owner aliases, revocation during a request,
+offline/restart recovery, account changes, missing assets, quotas, and 64 MiB
+multi-asset round trips. See [the owned-file protocol and acceptance gates](SYNC_FILE_ASSETS_PLAN.zh-CN.md).
 
 When a signing identity is supplied, the script requests the hardened runtime
 and a timestamp. Notarization and stapling are separate release steps; they have
@@ -242,16 +268,18 @@ or end-to-end encrypted iCloud synchronization.
 
 Image and rich-text representations include their original bytes. Ordinary
 Finder records remain external file-URL references. New Share Inbox files use
-an explicit local asset registry in database schema 9. Each asset has a checked
+an explicit local asset registry introduced in database schema 9. Each asset has a checked
 immutable original and a separate file projection for opening in other apps.
 Edits made by another app to that projection are not added to the stored
 original or its backup. Local file copies and trusted Undo retain asset bindings.
 
-Database schema 10 adds per-record local mutation tokens for history cleanup.
-The migration preserves row IDs, ordering, and owned-file bindings; it does not
-change archive schema 3 or the cloud wire format. SQL insert/update triggers rotate
+Database schema 10 introduced per-record local mutation tokens for history cleanup.
+That migration preserves row IDs, ordering, and owned-file bindings; its tokens do
+not alter archive schema 3 or cloud payloads. SQL insert/update triggers rotate
 the token, detecting same-ID/revision replacement through restore or a second
 connection without reading the clipboard payload during confirmation preparation.
+The current database version is 11, which separately adds the owned-file
+synchronization tables described below.
 
 Manual clear and retention changes display a frozen metadata summary: deletion,
 pinned preservation, private/shared sync subsets, and excluded account/permission
@@ -292,9 +320,52 @@ Unreferenced owned originals are currently retained so deletion/edit Undo and
 failed shared drafts keep their dependencies. There is no automatic asset garbage
 collection yet; deleting a history entry is not a secure erasure of those bytes.
 Local originals, projections, migration snapshots, and recovery backups are
-unencrypted. Cloud operations still carry file URLs; portable backup does not
-implement owned-file byte synchronization. Paste's file-retention semantics remain
-pending baseline validation.
+unencrypted. Owned-file byte synchronization is now a separate implemented protocol,
+not an effect of portable backup. Ordinary external references and legacy v1 URL-only
+operations still do not contain recoverable file bytes. Paste's file-retention
+semantics remain pending baseline validation.
+
+Schema 11 stores immutable operation/manifest proofs, exact transfer scopes,
+shared-access generations, verified local asset mappings, durable transfer states,
+legacy backfill markers, and explicit local-recovery markers. Upgrade first creates
+a database-and-attachments recovery copy. Existing v1 outbox IDs and JSON bytes are
+preserved; eligible registered originals receive new causal v2 operations only within
+the already-enabled account and writable scope. Read-only sharing and old-account
+items are not backfilled as new writes. Archive format remains schema 3 and does not
+export cloud authorization, transfer confirmations or account queues.
+
+New owned-file operations use `formatVersion: 2` with a portable manifest and internal
+file tokens, followed by receiver-local IDs, paths and registry bindings. Unsupported
+versions and outer/inner version disagreements are rejected. The adapters upload and
+verify the immutable original's blobs before publishing its operation; edits to a
+projection or later revision cannot replace that queued original. Successful responses
+and lost-response retries compare complete CloudKit identity, scope, version and hash;
+v2 operation metadata also binds its payload length. Legacy v1 encoding stays stable.
+
+Change feeds request metadata without payload/chunk assets, then fetch operation
+payloads and needed blobs separately. Auxiliary blob records/deletions are distinguished
+from immutable operation-log deletions. Asset bytes are copied immediately from CloudKit
+temporary files using bounded regular-file/no-follow reads into independently held
+staging. Core revalidates them before caching or publishing a usable local revision.
+The inbox and cursor persist before files finish; an old usable revision remains
+available while its replacement waits. Per-file failures remain retryable, independent
+operations can progress, and transaction failures roll back only newly staged assets.
+
+Limits are 64 MiB per original, 256 MiB of manifest file bytes and at most 64 files/bindings
+per operation, and 512 MiB of attempted file transfer per coordinator pass, combining
+uploads and downloads. Files move sequentially; budget-deferred work stays pending for
+a later pass. These limits are neither process-memory nor total-disk ceilings. The
+existing operation JSON limit is separately 256 MiB. Settings expose outstanding
+upload/download tasks, failure reasons and explicit retry without enabling synchronization
+or looking up an account merely to show status.
+
+Synthetic two-store and CloudKit-codec tests exercise reconstruction, immutable retries,
+shared members with different accounts, account/permission changes, migration,
+commit rollback, malformed assets, version compatibility and chunked 64 MiB files.
+They do not establish real two-Mac convergence, production schema availability,
+server quota behavior, live settings focus or signed distribution access. Those remain
+release gates; see [the full protocol](SYNC_FILE_ASSETS_PLAN.zh-CN.md) and
+[the current implementation evidence](IMPLEMENTATION_STATUS.zh-CN.md).
 
 File records now open a complete file/location list, including unavailable slots.
 Explicit external-file relocation uses a native one-item file/folder picker and

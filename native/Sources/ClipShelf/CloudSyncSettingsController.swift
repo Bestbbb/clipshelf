@@ -8,6 +8,9 @@ final class CloudSyncSettingsController: NSWindowController {
     private let status = NSTextField(wrappingLabelWithString: "正在检查此构建的同步配置…")
     private let toggle = NSButton(title: "开启 iCloud 同步…", target: nil, action: nil)
     private let sync = NSButton(title: "立即同步", target: nil, action: nil)
+    private let fileTransfers = OwnedFileTransferStatusView()
+    private var fileItems: [OwnedFileTransferStatusItem] = []
+    private var transferReadGeneration: UInt64 = 0
     private var enabled = false
     private var running = false
     private var operation: Task<Void, Never>?
@@ -18,28 +21,36 @@ final class CloudSyncSettingsController: NSWindowController {
     init(store: HistoryStore, preferences: UserDefaults = .standard) {
         service = CloudSyncService(store: store)
         self.preferences = preferences
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 300),
-                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 520),
+                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "ClipShelf · iCloud 同步"
+        window.minSize = NSSize(width: 560, height: 500)
         window.isReleasedWhenClosed = false
         super.init(window: window)
         toggle.target = self; toggle.action = #selector(toggleSync)
         sync.target = self; sync.action = #selector(syncNow)
+        fileTransfers.onRetry = { [weak self] in self?.syncNow() }
         sync.isEnabled = false; toggle.isEnabled = false
         let explanation = NSTextField(wrappingLabelWithString: "开启后，将历史与分组同步到当前 Apple Account 的私有 iCloud 数据库。可以选择是否上传已有本地内容。同步不会改写任何设备当前的系统剪贴板。")
         let detail = NSTextField(wrappingLabelWithString: "关闭只停止本机传输，保留已保存的本地与云端内容。离线编辑会在恢复连接后同步，冲突版本保留为副本。切换 Apple Account 后需要重新确认；旧账号内容不会上传到新账号。")
         detail.textColor = .secondaryLabelColor
         let actions = NSStackView(views: [toggle, sync]); actions.spacing = 12
-        let body = NSStackView(views: [status, explanation, detail, actions])
+        let body = NSStackView(views: [status, explanation, detail, actions, fileTransfers])
         body.orientation = .vertical; body.alignment = .leading; body.spacing = 20
         body.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
         window.contentView = body
         for text in [status, explanation, detail] { text.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -48).isActive = true }
+        fileTransfers.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -48).isActive = true
+        fileTransfers.heightAnchor.constraint(equalToConstant: 180).isActive = true
+        fileTransfers.update([], isRunning: false, enabled: false)
         Task { @MainActor [weak self] in await self?.refreshAvailability() }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func present() { window?.center(); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+    func present() {
+        refreshFileTransfers()
+        window?.center(); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+    }
 
     /// A previous explicit opt-in may resume, but never adopts additional pre-existing local data.
     func resumeIfEnabled() {
@@ -53,6 +64,7 @@ final class CloudSyncSettingsController: NSWindowController {
 
     func stop() {
         generation &+= 1
+        transferReadGeneration &+= 1
         timer?.invalidate(); timer = nil
         operation?.cancel(); operation = nil
     }
@@ -81,6 +93,7 @@ final class CloudSyncSettingsController: NSWindowController {
                     self.toggle.title = "开启 iCloud 同步…"
                 } catch { self.status.stringValue = "未能保存关闭状态，请重试。" }
                 self.running = false; await self.refreshAvailability()
+                self.refreshFileTransfers()
             }
             return
         }
@@ -127,6 +140,7 @@ final class CloudSyncSettingsController: NSWindowController {
     @objc private func syncNow() {
         guard enabled, !running else { return }
         running = true; toggle.isEnabled = true; sync.isEnabled = false
+        fileTransfers.update(fileItems, isRunning: true, enabled: enabled)
         status.stringValue = "正在同步… 本地内容仍可使用。"
         generation &+= 1
         let current = generation
@@ -135,13 +149,15 @@ final class CloudSyncSettingsController: NSWindowController {
             defer {
                 if current == self.generation {
                     self.running = false; self.toggle.isEnabled = true; self.sync.isEnabled = self.enabled
+                    self.refreshFileTransfers()
+                    self.onDataChanged?()
                 }
             }
             do {
                 let summary = try await self.service.synchronize()
                 guard current == self.generation, !Task.isCancelled else { return }
-                self.status.stringValue = "已同步 · 上传 \(summary.uploadedOperations) 项变更，下载 \(summary.downloadedOperations) 项变更 · \(Date().formatted(date: .omitted, time: .shortened))"
-                self.onDataChanged?()
+                let completion = summary.pendingFiles == 0 && summary.failedFiles == 0 ? "已同步" : "记录已处理，部分文件尚未完成"
+                self.status.stringValue = "\(completion) · 上传 \(summary.uploadedOperations) 项变更，接收 \(summary.downloadedOperations) 项变更 · \(Date().formatted(date: .omitted, time: .shortened))"
             } catch SyncError.accountChanged {
                 guard current == self.generation, !Task.isCancelled else { return }
                 self.enabled = false; self.timer?.invalidate(); self.timer = nil
@@ -151,6 +167,27 @@ final class CloudSyncSettingsController: NSWindowController {
             } catch {
                 guard current == self.generation, !Task.isCancelled else { return }
                 self.status.stringValue = "同步暂未完成，将保留本地变更并重试。\n\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func refreshFileTransfers() {
+        transferReadGeneration &+= 1
+        let current = transferReadGeneration
+        guard enabled else {
+            fileItems = []; fileTransfers.update([], isRunning: running, enabled: false); return
+        }
+        fileTransfers.update(fileItems, isRunning: running, enabled: enabled)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let states = try await self.service.ownedFileTransferStates()
+                guard current == self.transferReadGeneration, self.enabled else { return }
+                self.fileItems = OwnedFileTransferStatusItem.outstanding(states)
+                self.fileTransfers.update(self.fileItems, isRunning: self.running, enabled: true)
+            } catch {
+                guard current == self.transferReadGeneration, self.enabled else { return }
+                self.fileTransfers.unavailable(error.localizedDescription, isRunning: self.running, enabled: true)
             }
         }
     }

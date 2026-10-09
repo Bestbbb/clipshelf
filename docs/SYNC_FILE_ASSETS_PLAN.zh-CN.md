@@ -1,133 +1,120 @@
-# 托管文件跨 Mac 同步提案
+# 托管文件跨 Mac 同步协议与验收
 
-状态：**提案，尚未实现**。代码审计基线为 `469ca0d`（2026-10-10）。本文件不改变 TECHNICAL_SPEC 中 F16 的目标或当前完成状态，也不属于本轮 F06 图片输出与指定 App 打开实现。
+状态：**Core、私有及共享 CloudKit 适配器和本地传输状态界面已实现；真实双机 CloudKit 与生产发布验收未完成。** 本文按 2026-10-10 工作树更新，保留原提案文件名便于已有链接继续访问。它不代表 F16 已完成，也不替代 [技术规格](TECHNICAL_SPEC.zh-CN.md) 中的完整同步范围。
 
-## 1. 结论与边界
+## 1. 范围与数据流
 
-当前同步会传输 `ClipboardRecord.parts` 中已有的图片、RTF、HTML 等表示字节，但托管文件只传其 `public.file-url` 路径。CloudKit 的 CKAsset 目前封装整个操作 JSON，**不是该路径指向的托管原件**。另一台 Mac 因此不能恢复文件字节或取得本地托管绑定。
+已明确登记的托管原件可以随记录传输。数据库 schema v11 保存作用域、操作证明、附件状态与本机映射；包含托管原件的新操作使用 immutable wire v2。普通 Finder 文件仍是外部引用，不会因同步被自动读取、复制或上传。外部 App 编辑打开副本，也不会替换原件或生成新的上传内容。
 
-建议独立一轮实施「已明确登记的托管原件同步」：数据库 schema v11（待实施）、带文件清单的 wire v2、私有及共享 zone 内的独立文件 CKAsset、持久附件待下载状态、本机路径物化，以及冲突比较和历史协议兼容。schema v10 已用于本地历史清理的逐记录变更标记，不包含云资产实现。普通 Finder 文件仍是引用，不自动复制、读取或上传其内容；外部 App 对打开副本的编辑也不自动替换原件或触发上传。
+| 环节 | 当前实现 |
+| --- | --- |
+| 本地存储 | `OwnedFileStorage` 保存不可变 `payload` 和可供外部 App 打开的独立 projection；registry 显式登记记录与槽位 |
+| outbox | 与记录修改同一事务生成不可变文件清单、内部 token、操作级 bindings 和证明；旧 revision 不会改用当前记录的文件 |
+| 上传 | 从受信原件生成独立 staging，逐文件确认当前 zone 内的 blob，全部依赖成功后才发布该 operation |
+| 拉取 | change feed 只取 metadata；逐个读取 operation JSON，文件 blob 按 durable inbox 的缺失依赖另行下载 |
+| 等待与重试 | cursor 与 inbox 一起持久化；附件状态为 `pending`、`failed` 或 `complete`，失败或预算不足不提前发布可用 revision |
+| 物化 | 已验证文件逐个存入本机受控资产和 scope 映射；操作的所有依赖齐备后才原子改写本机 URL、登记 bindings 并应用记录 |
+| 共享 | 同一协议支持拥有者的 private database 和成员的 shared database；accepted replay、降权和失败草稿继续使用受信文件证明 |
+| 冲突 | 按可移植文件身份比较内容，发送端与接收端的不同绝对路径不单独制造正文冲突 |
 
-该轮可在无真实 Apple 账号的条件下完成 Core、两种 CloudKit 适配器和合成双库回归；真实两 Mac、生产容器、签名 entitlement、容量和撤权验收仍是独立发布 gate。不能因合成测试通过就宣称 F16 全部完成。
+代码入口：[模型与预算](../native/Sources/ClipShelfCore/SyncOwnedFileModels.swift)、[文件同步存储](../native/Sources/ClipShelfCore/HistoryStore+OwnedSync.swift)、[私有协调器](../native/Sources/ClipShelfCore/SyncModels.swift)、[共享协调器](../native/Sources/ClipShelfCore/SharedBoardModels.swift)、[CloudKit 编码器](../native/Sources/ClipShelf/CloudOwnedBlobCodec.swift)、[私有适配器](../native/Sources/ClipShelf/CloudSyncService.swift)、[共享适配器](../native/Sources/ClipShelf/CloudSharedBoardTransport.swift)。
 
-## 2. 已核实的数据流
+## 2. Wire v2 与身份
 
-| 环节 | 当前实现 | 必须补齐 |
+`SyncOperation` 增加可选 `formatVersion` 和 `ownedFiles`。无清单的旧 v1 保持缺省字段，解码后重编码不补写 `formatVersion: 1`，以保留旧 JSON hash；含清单的新操作显式使用 `formatVersion: 2`。未知版本、v1 携带清单、v2 缺清单、CloudKit 外层与 JSON 内层版本不一致都会拒绝。
+
+文件清单结构为：
+
+```swift
+SyncOwnedFileDescriptor(digest: String, byteCount: Int, filename: String)
+SyncOwnedFileBinding(partIndex: Int, representationIndex: Int,
+                     digest: String, filename: String)
+SyncOwnedFileManifest(version: Int, files: [SyncOwnedFileDescriptor],
+                      bindings: [SyncOwnedFileBinding])
+```
+
+`digest` 是原件 SHA-256；`filename` 必须是通过校验的叶子名称。只有 registry 中的显式本地绑定或已验证的远端清单可以形成 ownership，路径相似、远端 UUID 和任意 file URL 均不是证明。
+
+托管文件 part 在 wire 中规范化为一个 `public.file-url` 表示，其数据是 `clipshelf-owned://<digest>/<base64(filename)>` 内部 token。发送端旧路径、fallback、opaque 定位及预览表示不会跟随这个托管 part 到另一台 Mac；其他独立 parts 保留。该 token 只在 inbox 中等待物化，不能作为可用文件直接交给粘贴板。接收端生成自己的 asset ID 和 projection URL，并保存 `(scope, digest, filename) → localAssetID`，不会采用远端 asset ID 作为本机 registry 主键。
+
+本机 `SyncOwnedFileScope` 包含真实账号、容器、database、zone owner、zone name 和 namespace。异步 `SyncTransferContext` 另外绑定 Store、账号配置 generation 和共享访问 generation。账号 A→B→A、共享权限或 descriptor 变化都会使旧上下文失效。只读状态查询不创建 context、不补发操作，也不发起网络请求。
+
+共享云记录属于共享 zone，**不写上传成员的真实 account 字段**。共享 operation 的 namespace 为 `shared:<boardUUID>`；blob 另外校验容器、zone name 和 scope kind，完整 owner 由 `CKRecord.ID.zoneID` 及当前 descriptor 校验。拥有者看到的 `__defaultOwner__` 与接收成员看到的实际 owner 不会被写成相互矛盾的文件正文。本机缓存及上传确认仍包含实际当前账号和 database，不能借同一摘要跨账号、私有/共享或不同板复用授权。
+
+## 3. CloudKit record 布局
+
+operation 和 blob 是不同类型，所有文件名语义保留在 operation 清单中；同一 zone 内同摘要但不同文件名可共用 blob bytes。
+
+| Record type / record name | 字段 | 校验与用途 |
 | --- | --- | --- |
-| 本地持久化 | `RepresentationStorage` 把表示的 Data 保存为摘要命名的 blob；file URL 表示保存的是 URL 字符串 | 区分表示字节和文件内容，不能把 URL 的 blob 当作文件原件 |
-| 托管原件 | `OwnedFileStorage` 保存不可变 `payload` 及可编辑 `files/<filename>`；本地 registry 显式登记槽位 | 上传只能安全读取并校验 `payload`，不能读取已被外部编辑的 projection |
-| outbox | `enqueueSyncOperation` 保存不可变 `SyncOperation` JSON；`owned_file_operation_bindings` 另存本地槽位证明 | 将受信证明变成可移植、不可变的文件清单；保存上传进度与依赖 |
-| 私有/共享 CKAsset | `payload` 字段是 JSON 文件，`sha256` 校验该 JSON；当前 formatVersion=1 | 新文件 blob 的字节、摘要、名称、作用域及完成状态 |
-| inbox/apply | 远端 JSON 进入 durable inbox；因果父操作/板存在后直接 insert 或 replace；cursor 同事务提交 | 还须等待所需文件验证完成，生成本机资产与路径，并登记绑定 |
-| 共享缓存重放 | 目前仅本机创建过的操作有 ownership snapshot，远端 URL 不取得 ownership | 已验证下载文件的受信映射也需支持 accepted replay、只读降权与失败草稿 |
-| 冲突判断 | `isOrderingOnlyConflict` 使用包含表示 Data 的内容比较 | 同一原件在两台 Mac 的不同绝对 URL 不能制造内容冲突 |
+| `ClipShelfOperationV1` / operation UUID | `payload: CKAsset`、`sha256: String`、`account: String`、`formatVersion: Int`；v2 另有 `payloadByteCount: Int` | 私有不可变操作；名称保留 `V1` 以兼容旧记录，字段版本支持 1/2 |
+| `ClipShelfSharedOperationV1` / operation UUID | `payload: CKAsset`、`sha256: String`、`namespace: String`、`formatVersion: Int`；v2 另有 `payloadByteCount: Int` | 共享不可变操作；不得含上传者 `account` |
+| `ClipShelfOwnedFileV1` / `owned-<sha256>` | `sha256: String`、`byteCount: Int`、`chunkCount: Int`、`formatVersion: Int = 1`、`container: String`、`namespace: String`、`scopeKind: String`、`zoneName: String`、`chunk0: CKAsset`、可选 `chunk1: CKAsset` | 当前 zone 的不可变原件；scope kind 为 `private` 或 `shared`，摘要与长度针对完整原件 |
 
-代码入口：[SyncModels](../native/Sources/ClipShelfCore/SyncModels.swift)、[同步存储](../native/Sources/ClipShelfCore/HistoryStore+Sync.swift)、[托管绑定](../native/Sources/ClipShelfCore/HistoryStore+OwnedFiles.swift)、[共享存储](../native/Sources/ClipShelfCore/HistoryStore+Sharing.swift)、[私有适配器](../native/Sources/ClipShelf/CloudSyncService.swift)、[共享适配器](../native/Sources/ClipShelf/CloudSharedBoardTransport.swift)。
+单个 chunk 至多 32 MiB，原件至多 64 MiB，因此每个 blob 有 1 或 2 个 CKAsset；空文件使用一个空 chunk。下载按顺序拼接、校验每段长度、总长度和完整 SHA-256。32 MiB 是实现采用的分块预算，不是已经验证的生产 CloudKit 容量承诺。
 
-## 3. 协议与身份
+成功响应和 `serverRecordChanged` 重试都核对完整 record ID、type、版本、namespace/account、摘要及适用的长度字段。冲突响应的 CKAsset URL 可能不存在，因此上传幂等确认比较受约束 metadata；下载则必须拿到全部资产并验证实际字节。旧 operation ID 不能替换为不同 JSON 或不同清单。
 
-以下类型与签名是待实施的接口契约示意，不是当前 API。
+change feed 的 `desiredKeys` 排除 `payload`、`chunk0`、`chunk1`，只取 metadata。operation 随后逐条显式读取 `payload`；blob 只在存在缺失依赖时显式读取 chunk。blob record 和删除事件按类型及 zone 分流：删除辅助 blob 不等价于删除用户记录，确实缺失的下载会保留为可重试失败；操作日志删除仍中止同步并保留本地内容。共享 CKShare 删除按撤权处理。
 
-```swift
-struct SyncOwnedFileDescriptor: Codable, Equatable, Sendable {
-    let digest: String       // 原件 SHA-256，作为当前云作用域内的 blob key
-    let byteCount: Int
-    let filename: String    // 校验后的叶子名称，不含目录或绝对路径
-}
-struct SyncOwnedFileBinding: Codable, Equatable, Sendable {
-    let partIndex: Int
-    let representationIndex: Int
-    let digest: String
-    let filename: String
-}
-struct SyncOwnedFileManifest: Codable, Equatable, Sendable {
-    let version: Int
-    let files: [SyncOwnedFileDescriptor]
-    let bindings: [SyncOwnedFileBinding]
-}
-// SyncOperation 增加可选 ownedFiles 清单；旧 v1 解码为 nil。
-```
+这避免依赖 CloudKit 临时文件长期存在。适配器在响应内用 regular-file、`O_NOFOLLOW` 和有界读取将字节复制到自身 staging；返回 `SyncOwnedFileStaging` lease 持有独立文件，Core 接受前再次校验。参考：[CKAsset](https://developer.apple.com/documentation/cloudkit/ckasset)、[desiredKeys](https://developer.apple.com/documentation/cloudkit/ckfetchrecordzonechangesoperation/zoneconfiguration/desiredkeys)。
 
-- 仅本地显式登记绑定或已经验证的远端清单可以产生该字段。文件 URL、任意远端 UUID、相似目录名均不是 ownership 证明。
-- wire 中绑定槽位使用明确的内部文件 token，不携带发送设备的受控绝对路径；普通外部引用保持原语义。wire token 不能直接交给 NSPasteboard。
-- 同一文件对象的 URL aliases 必须一致；旧路径 fallback、预览及 opaque 文件定位表示不能让接收 App 选中发送端的旧文件。实现须制定并测试明确的文件 part 规范化策略，保留其他 parts；不应仅替换一个槽位后留下互相矛盾的表示。
-- blob key 只在当前私有库或单个共享 zone 内去重。作用域至少包含真实账号、容器、私有/共享标识，以及共享 zone owner/name；不能只靠 `shared:<boardUUID>` 跨账号复用缓存或授权。
-- 本地生成全新的 `OwnedFileAsset.id`，持久保存 `(scope, digest, filename) → localAssetID` 映射。不能直接把远端资产 ID 当作本机 registry 主键。
-- 同步内容等价性按「绑定槽位、名称、长度、摘要、其他表示内容」比较；本机投影路径、localAssetID 不属于跨设备正文。普通编辑/排序继续保留原件绑定，纯排序不得创建内容冲突副本。
+## 4. 事务、重试与预算
 
-## 4. Core 与 transport 接口
-
-建议保留现有普通 `SyncOperation` 因果、墓碑与 namespace 契约，增加以下能力。所有异步结果提交均携带开始时的配置 generation；共享还需 descriptor/当前读写权限校验。
+当前 API 包括：
 
 ```swift
-// opaque 准备态持有独立私有 staging 文件；生命周期覆盖网络请求。
-func prepareSyncOwnedUpload(operationID: UUID,
-                            context: SyncTransferContext) throws -> PreparedSyncOwnedUpload
-func pendingSyncOwnedDownloads(context: SyncTransferContext,
-                               limit: Int) throws -> [SyncOwnedDownloadRequest]
-func acceptSyncOwnedDownload(_ request: SyncOwnedDownloadRequest,
-                             stagedFileURL: URL,
-                             context: SyncTransferContext) throws
-func syncOwnedTransferStates(context: SyncTransferContext) throws -> [SyncOwnedTransferState]
+makeSyncTransferContext(scope: SyncOwnedFileScope) throws -> SyncTransferContext
+prepareSyncOwnedUpload(operationID: UUID, file: SyncOwnedFileDescriptor,
+                       context: SyncTransferContext) throws -> PreparedSyncOwnedUpload
+recordSyncOwnedUpload(operationID: UUID, file: SyncOwnedFileDescriptor,
+                      context: SyncTransferContext, error: String? = nil) throws
+pendingSyncOwnedDownloads(context: SyncTransferContext, limit: Int = 100,
+                          excluding: Set<String> = []) throws -> [SyncOwnedDownloadRequest]
+acceptSyncOwnedDownload(_ request: SyncOwnedDownloadRequest, stagedFileURL: URL,
+                        context: SyncTransferContext) throws
+syncOwnedTransferStates() throws -> [SyncOwnedTransferState]
 ```
 
-`SyncTransferContext` 绑定真实账号、完整作用域、私有/共享配置 generation。准备态、下载请求由 Core 创建且不可由外部任意伪造；stagedFileURL 始终视为未信任输入，提交前重新检查长度、摘要、regular file 与路径安全。
+`SyncOwnedFileTransport` 和 `SharedBoardOwnedFileTransport` 提供明确的 scope、upload 和 download 能力，后者始终带 board 参数。不具备文件传输能力的旧 transport 会明确报错并保留 durable inbox，不会借 cursor 已前进而宣称附件完成。
 
-私有 `SyncTransport` 与 `SharedBoardTransport` 分别增加文件上传/下载方法，后者保留 board 参数，避免误用私有 zone。返回成功必须核对完整作用域、blob identity 和摘要；不允许旧适配器通过默认空实现忽略文件依赖。内存 transport 同样模拟文件失败、重试与权限变化。
+上传按操作级 bindings 读取不可变原件，绝不读取被外部 App 编辑过的 projection。每个文件的确认写入本地状态；适配器在发布 operation 前还会验证当前 zone 内的 blob metadata。单个文件失败、达到本轮预算、或 operation 发布失败都保留重试依据；独立的无依赖文本操作仍可继续。已发布 operation 的响应丢失后沿用原 ID 和 JSON hash 重试。
 
-### 上传
+下载先持久化操作和 cursor，再逐文件验证及缓存。全部依赖齐备前，新记录不成为可粘贴记录；已有记录保持旧可用 revision。文件缓存、映射和 inbox 应用复用 Store 的事务和新资产回滚追踪：SQL/outbox/COMMIT 失败只回滚本次新建资产，不删除旧原件。远端 apply 不反向生成 outbox。墓碑、因果顺序和共享 accepted replay 仍由原同步逻辑处理；共享撤权后不能以旧 manifest 发起新的网络请求，失败草稿恢复为显式本地副本。
 
-1. 内容/清单/local bindings/outbox 在同一事务内固定，之后不根据当前记录重新拼装旧操作。
-2. 按操作的本地受信绑定读取原件并校验 SHA；复制到独立 staging，禁止直接上传可编辑 projection，也不能以当前记录替代旧 revision 的原件。
-3. 先上传当前作用域的不可变 blob，确认摘要一致；再发布引用这些 blob 的不可变 operation record。操作确认丢失后，只认可相同 ID、作用域、manifest 和 payload hash。
-4. 某个文件失败时该 revision 不发布为远端可用；其他无依赖操作仍可推进。上传日志和错误可重试，切账号或共享降权后拒绝继续提交旧上下文。
+| 预算 | 当前值 |
+| --- | --- |
+| 单个原件 | 64 MiB |
+| 每个操作的清单总字节 | 256 MiB |
+| 每个操作的文件清单项 / 绑定数 | 各至多 64 |
+| 每轮协调器文件传输预算 | 512 MiB，上传与下载合计；失败尝试也计入本轮预算 |
+| 单个 CloudKit 文件 chunk | 32 MiB |
+| operation JSON payload | 至多 256 MiB，沿用已有操作限制 |
 
-### 下载与物化
+这些是内容和传输预算，不是 RSS 或总磁盘占用上限。文件逐个流转；预算不足保留可见的 pending 状态，下一轮可继续。设置窗口显示当前作用域待上传、待下载、失败文件及原因，并提供显式重试；读取状态本身不启用同步、不查询账号、不产生补发。
 
-1. 增量拉取 operation 元数据/清单；持久保存到 inbox 后才推进 cursor。附带的 blob 辅助记录需按 record type 分流，不能当作操作解码。
-2. 缺文件的操作标记 `pending/downloading/failed`，显示已知条目/待下载状态；不能让不存在的本机 URL 成为可粘贴内容。旧 revision 已可用时保留旧版，同时显示更新未完成。
-3. 附件逐个下载到受控 staging 并校验；进程重启仍从持久 inbox/传输状态继续，不能依赖 CloudKit 临时 URL。官方说明 CKAsset 临时文件会被系统回收，并支持通过 desiredKeys 排除资产字段以先取得元数据。[Apple CKAsset](https://developer.apple.com/documentation/cloudkit/ckasset)、[desiredKeys](https://developer.apple.com/documentation/cloudkit/ckfetchrecordzonechangesoperation/zoneconfiguration/desiredkeys)
-4. 全部依赖就绪后，在同一事务内创建本机资产、改写文件槽位、登记 bindings、应用冲突/排序/墓碑与新 revision，并完成 inbox 操作。远端 apply 不反向生成 outbox。
-5. 复用 `HistoryStore.transaction` 的新资产目录跟踪：包括 outbox flush 或 COMMIT 失败，都只能删除本次新建目录，不能删除旧原件。失败不产生半个可用条目。
-6. 共享 accepted replay 与失败草稿必须携带已验证资产映射；权限撤销不能靠旧 manifest 继续网络读写。恢复本地失败草稿是显式本地副本，不自动重发。
+## 5. Schema v11、迁移与兼容
 
-使用独立 blob record 可让多次排序/改标题复用同一文件，而不为每次完整操作重复上传原件。现有 zone 拉取会拒绝所有记录删除；新实现需区分操作日志缺失与 blob 不可用，后者进入附件失败状态，不能解释成删除用户内容。
+schema v11 新增 `owned_sync_operation_proofs`、`owned_sync_scopes`、`owned_sync_access`、`owned_sync_assets`、`owned_sync_transfers`、`owned_sync_backfill` 和 `owned_sync_local_recovery`，保留原有 `owned_file_assets`、`owned_file_bindings`、`owned_file_operation_bindings`。schema v10 的逐记录历史清理 token 继续保留。
 
-## 5. 数据库、兼容与迁移 gate
+从旧数据库升级前先创建 SQLite 与附件恢复包；迁移事务登记已有受信绑定的 backfill 标记，不扫描任意 URL 认领 ownership。真正进入用户已启用的同步后，只为当前 namespace、非 local-only、当前账号及可写共享内容生成新的因果后继 v2 操作。旧 outbox 的 operation ID 和 JSON bytes 保持不变；不能借补文件将 A 账号数据转给 B 账号，也不能为只读共享制造写操作。
 
-建议后续 schema v11 新增（当前 v10 已用于本地清理变更标记）：
+旧 v1 URL-only 数据仍可解码，但没有发送端字节时不能恢复托管原件，不能读取远端给出的任意本机路径补造 ownership。对于已经有受信托管身份的内容，旧 peer 的 URL-only 更新不能静默清除该身份；正文和排序冲突以可移植语义及受信证明处理。
 
-- 操作级不可变 manifest/传输版本记录，与 outbox 同事务生成。
-- namespace 隔离的已验证资产映射与下载状态表。
-- 待补发旧已同步托管记录的标记，避免迁移时扫描 URL 自动认领资产。
+逻辑备份继续为 archive schema 3：包含可移植原件和记录绑定，不导出云账号授权、同步队列或传输确认。物理数据库恢复包保留对应数据库状态与附件。文件同步不意味着本地加密、iCloud 端到端加密、自动资产垃圾回收或安全擦除；Undo、失败草稿等仍可能保留原件。Paste 自身的文件保留细节仍待基线验证。
 
-保留 `owned_file_assets`、`owned_file_bindings`、`owned_file_operation_bindings` 的本地证明用途；补足 scope 外键/关联校验。逻辑备份继续只导出可移植原件与记录绑定，不导出云上传授权、账号队列或设备配置；物理数据库回退包应保留新表及其资产。
+## 6. 验证证据与发布 gate
 
-必须通过以下兼容 gate：
+本轮使用合成 CKRecord、临时文件、不同根目录的临时数据库和内存 transport，没有连接真实 Apple 账号。回归入口为 [OwnedFileSyncIntegrationTests](../native/Tests/ClipShelfCoreTests/OwnedFileSyncIntegrationTests.swift)、[CloudOwnedBlobCodecTests](../native/Tests/ClipShelfSyncTests/CloudOwnedBlobCodecTests.swift)、[CloudOperationCodecTests](../native/Tests/ClipShelfSyncTests/CloudOperationCodecTests.swift)、[CloudSharedTransportTests](../native/Tests/ClipShelfSyncTests/CloudSharedTransportTests.swift)。完整测试、构建与 CI 的最终证据以 [实现状态](IMPLEMENTATION_STATUS.zh-CN.md) 为准，不用定向通过代替全量验收。
 
-1. **旧 operationID 与 JSON hash 不可变。** 已发布/可能已发布的 v1 操作不能追加文件字段后用原 ID 重试；否则 CloudKit 同 ID 冲突无法幂等确认。
-2. 新建含托管清单的操作使用 wire v2；无清单 v1 继续支持。未知 wire 版本明确拒绝，不能旧客户端忽略新字段后将 token 当普通可用文件。
-3. 既有托管记录需按当前账号和可写共享权限生成新的因果后继 v2 操作；不可改写旧日志，不能把 A 账号内容借 B 账号重新上传。只读共享不能以补文件为理由生成写操作。
-4. 升级时先建迁移回退包。不开启任何云传输，也不扩大已有同步范围；补发只处理已有 namespace 归属和显式允许同步的内容。
-5. 旧远端 v1 文件 URL 无字节时保持引用/不可用状态；没有发送端原件就不能补造恢复成功，也不得打开远端传来的任意本机路径来“补文件”。
-6. 同一内容跨设备路径差异、旧 peer 缺 manifest、正文与排序交错须有明确合并规则。旧 peer 的 URL-only 更新不能静默清除已验证托管身份；不可判定时保留冲突/待升级状态。
-7. 新增文件大小/数量/批次预算要公开且预检。沿用现有单原件 64 MiB 上限，文件逐个流转，另设显式的总预算；不能在现有 100 操作批次中额外一次加载全部文件，也不能先做无界 Base64 编码后才限额。
+现有用例覆盖：两库原件往返与重启、不可变旧 revision、失败/丢失响应重试、缺 blob 等待、提交失败回滚、不同账号的只读共享接收、账号 ABA、跨 scope 同摘要、accepted replay/失败草稿、下载与删除交错、排序与改名、v1 兼容和迁移补发。Cloud 编码器覆盖 64 MiB 原件分块、缺 chunk/坏摘要/长度、链接路径拒绝、独立 lease、共享 owner 别名、版本不一致、记录身份和 metadata-only 冲突确认。
 
-这些 gate 意味着实现不仅涉及两处 CKAsset 赋值：Core 的操作比较、冲突副本、shared cache replay、撤销所需绑定和旧版本迁移必须一并覆盖。
+仍需完成：
 
-## 6. 实施边界与验证
+1. 开发者自己的 CloudKit 容器、签名 entitlement 与 development/production schema 配置；上述 record types、字段类型及共享权限必须在真实环境核对并部署。
+2. 同一真实账号的两台 Mac 私有同步，以及不同真实账号的共享拥有者/成员同步；验证 private/shared database、owner 别名和 readonly/revoke 行为。
+3. 真实离线重连、账号切换、配额/网络错误、生产 CKAsset 多 chunk 上传下载、操作确认丢失和重启恢复。
+4. 真实设置窗口、待下载记录体验与跨 App 文件输出；当前合成控制器测试不证明焦点、权限弹窗或接收 App 行为。
+5. Developer ID、hardened runtime、notarization/stapling 和分发工件检查；当前 ad-hoc 开发包不是已签名公证的公开发行版。
 
-可并行分工：Core 负责模型/schema/清单与待下载状态/物化/语义比较；私有适配器负责私有 zone blob 与分阶段拉取；共享适配器负责共享 zone 隔离及每次请求的服务端权限；App 只接可用/待下载/失败状态和重试。独立提交，勿与当前 F06 输出改动混合。
-
-最低回归集合：
-
-- 两个不同根目录的合成资料库，同一托管记录往返、重启、重复拉取后原件 bytes 相同、本机 URL 不同、绑定完整且不产生重复条目。
-- 缺 blob、错误摘要/长度、非法 filename/槽位、symlink、越作用域请求及重复 digest 矛盾全部拒绝；失败不提前推进可用 revision。
-- 上传完成但 operation 未发布、operation 已发布但确认丢失、下载中断/重启、游标已提交但文件尚未就绪均可恢复。
-- 纯排序、改标题、正文并发编辑、删除与下载交错、整板删除后的冲突副本均保留正确文件与墓碑语义。
-- 本地原件与被外部编辑的 projection 不混淆；普通 Finder 引用和恶意远端路径从不取得托管资格。
-- 私有 A→B→A、两个共享板/账号同 digest、只读/撤权、accepted replay/failed draft 本地恢复，以及私有板转共享副本不跨作用域借用上传确认。
-- v1/v2 混合、未知版本、旧 outbox 不改写、补发新 ID、旧记录无原件不可恢复、迁移/COMMIT 失败的文件和数据库回退。
-- CloudKit record/CKAsset 编码解码可用本地合成记录测试；真实容器与两 Mac 断网重连另行验证，不能以 mock 覆盖声明替代。
-
-本轮仅完成上述只读审计与提案，没有修改同步协议、数据库 schema、云记录或用户数据。
+这些 gate 仍然打开；本地协议实现和合成回归不能证明生产 CloudKit 的容量、服务端 schema 或真实双机体验。

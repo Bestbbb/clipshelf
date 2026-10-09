@@ -23,13 +23,13 @@ enum CloudSyncAvailability: Equatable, Sendable {
 }
 
 /// Private CloudKit transport. Construction does not create a container, inspect an account, or send network requests.
-actor CloudSyncService: SyncTransport {
+actor CloudSyncService: SyncOwnedFileTransport {
     private let store: HistoryStore
     private let configuration: CloudSyncConfiguration
     private var enabledAccount: String?
     private var container: CKContainer?
     private var coordinator: SyncCoordinator?
-    private let recordType = "ClipShelfOperationV1"
+    static let recordType = "ClipShelfOperationV1"
 
     init(store: HistoryStore, configuration: CloudSyncConfiguration = .from()) {
         self.store = store
@@ -78,7 +78,7 @@ actor CloudSyncService: SyncTransport {
     }
 
     func push(_ operations: [SyncOperation], accountID: String) async throws -> Set<UUID> {
-        guard operations.count <= 100, operations.allSatisfy({ $0.accountID == accountID }) else { throw SyncError.invalidOperation }
+        guard operations.count <= 100, Set(operations.map(\.operationID)).count == operations.count, operations.allSatisfy({ $0.accountID == accountID }) else { throw SyncError.invalidOperation }
         let container = try await checkedContainer(accountID: accountID)
         if operations.isEmpty { return [] }
         let staging = FileManager.default.temporaryDirectory.appendingPathComponent("ClipShelf-sync-\(UUID().uuidString)", isDirectory: true)
@@ -86,20 +86,23 @@ actor CloudSyncService: SyncTransport {
         defer { try? FileManager.default.removeItem(at: staging) }
         let zoneID = CKRecordZone.ID(zoneName: configuration.zoneName, ownerName: CKCurrentUserDefaultName)
         var records: [CKRecord] = []
-        var expectedHashes: [CKRecord.ID: String] = [:]
+        var expectedRecords: [CKRecord.ID: CKRecord] = [:]
         for operation in operations {
+            try await verifyOwnedDependencies(operation, accountID: accountID)
             let data = try Self.encodeOperation(operation)
             guard data.count <= 256 * 1_024 * 1_024 else { throw HistoryStoreError.valueTooLarge }
             let file = staging.appendingPathComponent(operation.operationID.uuidString + ".json")
             try data.write(to: file, options: .withoutOverwriting)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-            let record = CKRecord(recordType: recordType, recordID: CKRecord.ID(recordName: operation.operationID.uuidString, zoneID: zoneID))
+            let record = CKRecord(recordType: Self.recordType, recordID: CKRecord.ID(recordName: operation.operationID.uuidString, zoneID: zoneID))
             let digest = Self.digest(data)
             record["payload"] = CKAsset(fileURL: file)
             record["sha256"] = digest as NSString
             record["account"] = accountID as NSString
-            record["formatVersion"] = 1 as NSNumber
-            expectedHashes[record.recordID] = digest
+            let version = try CloudOperationCodec.version(data)
+            record["formatVersion"] = version as NSNumber
+            if version == 2 { record["payloadByteCount"] = data.count as NSNumber }
+            expectedRecords[record.recordID] = record
             records.append(record)
         }
         let result = try await container.privateCloudDatabase.modifyRecords(saving: records, deleting: [], savePolicy: .ifServerRecordUnchanged, atomically: false)
@@ -107,15 +110,16 @@ actor CloudSyncService: SyncTransport {
         var acknowledged = Set<UUID>()
         var firstError: Error?
         for (id, outcome) in result.saveResults {
+            guard let expected = expectedRecords[id], let uuid = UUID(uuidString: id.recordName) else { throw SyncError.invalidOperation }
             switch outcome {
-            case .success:
-                if let uuid = UUID(uuidString: id.recordName) { acknowledged.insert(uuid) }
+            case .success(let record):
+                guard CloudOperationCodec.matches(record, expected: expected) else { throw SyncError.invalidOperation }
+                acknowledged.insert(uuid)
             case .failure(let error):
                 // A retry after a lost response sees the already-created immutable record.
                 if let cloudError = error as? CKError, cloudError.code == .serverRecordChanged,
                    let server = cloudError.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord,
-                   server["sha256"] as? String == expectedHashes[id], server["account"] as? String == accountID,
-                   let uuid = UUID(uuidString: id.recordName) {
+                   CloudOperationCodec.matches(server, expected: expected) {
                     acknowledged.insert(uuid)
                 } else { firstError = firstError ?? error }
             }
@@ -135,33 +139,126 @@ actor CloudSyncService: SyncTransport {
         let zoneID = CKRecordZone.ID(zoneName: configuration.zoneName, ownerName: CKCurrentUserDefaultName)
         let result: (modificationResultsByID: [CKRecord.ID: Result<CKDatabase.RecordZoneChange.Modification, Error>], deletions: [CKDatabase.RecordZoneChange.Deletion], changeToken: CKServerChangeToken, moreComing: Bool)
         do {
-            result = try await container.privateCloudDatabase.recordZoneChanges(inZoneWith: zoneID, since: token, resultsLimit: max(1, min(100, limit)))
+            result = try await container.privateCloudDatabase.recordZoneChanges(inZoneWith: zoneID, since: token, desiredKeys: CloudOperationCodec.metadataKeys + CloudOwnedBlobCodec.metadataKeys, resultsLimit: max(1, min(100, limit)))
         } catch let error as CKError where error.code == .changeTokenExpired && token != nil {
             // A full replay is safe because applied operation IDs and tombstones persist locally.
             return try await pull(accountID: accountID, after: nil, limit: limit)
         }
         _ = try await checkedContainer(accountID: accountID)
-        guard result.deletions.isEmpty else {
-            throw SyncError.unavailable("云端同步日志有缺失记录。为避免把缺失数据解释为删除，已停止并保留本地历史。")
+        let scope = blobScope(accountID: accountID)
+        for deletion in result.deletions {
+            guard CloudOwnedBlobCodec.isBlobDeletion(id: deletion.recordID, type: deletion.recordType, scope: scope) else {
+                throw SyncError.unavailable("云端同步日志有缺失记录。为避免把缺失数据解释为删除，已停止并保留本地历史。")
+            }
         }
         var operations: [SyncOperation] = []
         for (id, modification) in result.modificationResultsByID {
-            let record = try modification.get().record
-            guard record.recordType == recordType, record["account"] as? String == accountID,
-                  (record["formatVersion"] as? NSNumber)?.intValue == 1,
-                  let asset = record["payload"] as? CKAsset, let file = asset.fileURL,
-                  let expectedDigest = record["sha256"] as? String else { throw SyncError.invalidOperation }
-            let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max
-            guard size <= 256 * 1_024 * 1_024 else { throw HistoryStoreError.valueTooLarge }
-            // Read CloudKit's temporary asset now; it may remove its staging file after the fetch.
-            let data = try Data(contentsOf: file)
-            guard Self.digest(data) == expectedDigest else { throw SyncError.invalidOperation }
-            let operation = try JSONDecoder().decode(SyncOperation.self, from: data)
-            guard operation.operationID.uuidString == id.recordName, operation.accountID == accountID else { throw SyncError.invalidOperation }
+            let metadata = try modification.get().record
+            guard metadata.recordID == id, id.zoneID == zoneID else { throw SyncError.invalidOperation }
+            if metadata.recordType == CloudOwnedBlobCodec.recordType {
+                try CloudOwnedBlobCodec.validateMetadata(metadata, scope: scope)
+                continue
+            }
+            guard metadata.recordType == Self.recordType else { throw SyncError.invalidOperation }
+            // Fetch one operation payload at a time; blob CKAssets are deliberately excluded
+            // from the change feed and fetched only for durable inbox dependencies.
+            let responses = try await container.privateCloudDatabase.records(for: [id], desiredKeys: CloudOperationCodec.metadataKeys + ["payload"])
+            guard let response = responses[id] else { throw SyncError.invalidOperation }
+            let record = try response.get()
+            guard CloudOperationCodec.matches(record, expected: metadata) else { throw SyncError.invalidOperation }
+            let operation = try Self.decodeOperation(record, accountID: accountID, zoneID: zoneID)
+            _ = try await checkedContainer(accountID: accountID)
             operations.append(operation)
         }
         let next = try NSKeyedArchiver.archivedData(withRootObject: result.changeToken, requiringSecureCoding: true)
         return SyncChangeBatch(operations: operations, cursor: next, hasMore: result.moreComing)
+    }
+
+    private func localOwnedScope(accountID: String) throws -> SyncOwnedFileScope {
+        guard let identifier = configuration.containerIdentifier, enabledAccount == accountID,
+              try store.syncConfiguration().accountID == accountID else { throw SyncError.accountChanged }
+        return SyncOwnedFileScope(accountID: accountID, containerIdentifier: identifier, database: .privateDatabase,
+                                  zoneOwnerName: CKCurrentUserDefaultName, zoneName: configuration.zoneName, namespace: accountID)
+    }
+    /// Local status only: settings never resolve an account or make CloudKit requests.
+    func ownedFileTransferStates() throws -> [SyncOwnedTransferState] {
+        guard let account = enabledAccount else { return [] }
+        let scope = try localOwnedScope(accountID: account)
+        return try store.syncOwnedTransferStates().filter { $0.scope == scope }
+    }
+    func ownedFileScope(accountID: String) async throws -> SyncOwnedFileScope {
+        _ = try await checkedContainer(accountID: accountID)
+        return try localOwnedScope(accountID: accountID)
+    }
+    private func blobScope(accountID: String) -> CloudOwnedBlobScope {
+        CloudOwnedBlobScope(containerIdentifier: configuration.containerIdentifier ?? "", namespace: accountID,
+                            zoneID: CKRecordZone.ID(zoneName: configuration.zoneName, ownerName: CKCurrentUserDefaultName), shared: false)
+    }
+    func uploadOwnedFile(_ upload: PreparedSyncOwnedUpload) async throws {
+        let account = upload.scope.accountID
+        let container = try await checkedContainer(accountID: account)
+        guard upload.scope == (try localOwnedScope(accountID: account)) else { throw SyncError.namespaceConflict }
+        try upload.file.validate()
+        let scope = blobScope(accountID: account)
+        let id = CloudOwnedBlobCodec.recordID(digest: upload.file.digest, scope: scope)
+        let found = try await container.privateCloudDatabase.records(for: [id], desiredKeys: CloudOwnedBlobCodec.metadataKeys)
+        _ = try await checkedContainer(accountID: account)
+        guard let result = found[id] else { throw SyncError.invalidOperation }
+        switch result {
+        case .success(let record):
+            guard CloudOwnedBlobCodec.matches(record, digest: upload.file.digest, byteCount: upload.file.byteCount, scope: scope) else { throw SyncError.invalidOperation }
+            return
+        case .failure(let error):
+            guard (error as? CKError)?.code == .unknownItem else { throw error }
+        }
+        let staging = try CloudAssetStaging()
+        let record = try CloudOwnedBlobCodec.encode(file: upload.fileURL, digest: upload.file.digest, byteCount: upload.file.byteCount, scope: scope, staging: staging)
+        let saved = try await container.privateCloudDatabase.modifyRecords(saving: [record], deleting: [], savePolicy: .ifServerRecordUnchanged, atomically: true)
+        _ = try await checkedContainer(accountID: account)
+        guard let outcome = saved.saveResults[id] else { throw SyncError.invalidOperation }
+        let acknowledged: CKRecord
+        do { acknowledged = try outcome.get() }
+        catch {
+            guard let cloud = error as? CKError, cloud.code == .serverRecordChanged,
+                  let server = cloud.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord else { throw error }
+            acknowledged = server
+        }
+        guard CloudOwnedBlobCodec.matches(acknowledged, digest: upload.file.digest, byteCount: upload.file.byteCount, scope: scope) else { throw SyncError.invalidOperation }
+        withExtendedLifetime(staging) {}
+    }
+    func downloadOwnedFile(_ request: SyncOwnedDownloadRequest) async throws -> SyncOwnedFileStaging {
+        let account = request.scope.accountID
+        let container = try await checkedContainer(accountID: account)
+        guard request.scope == (try localOwnedScope(accountID: account)) else { throw SyncError.namespaceConflict }
+        try request.file.validate()
+        let scope = blobScope(accountID: account)
+        let id = CloudOwnedBlobCodec.recordID(digest: request.file.digest, scope: scope)
+        let records = try await container.privateCloudDatabase.records(for: [id], desiredKeys: CloudOwnedBlobCodec.metadataKeys + CloudOwnedBlobCodec.assetKeys)
+        guard let response = records[id] else { throw SyncError.invalidOperation }
+        let record = try response.get()
+        // Copy before another await; CloudKit's temporary URLs must not survive the response.
+        let temporary = try CloudAssetStaging()
+        let file = try CloudOwnedBlobCodec.decode(record, digest: request.file.digest, byteCount: request.file.byteCount, scope: scope, staging: temporary)
+        let lease = try SyncOwnedFileStaging.copy(from: file, descriptor: request.file)
+        _ = try await checkedContainer(accountID: account)
+        return lease
+    }
+    private func verifyOwnedDependencies(_ operation: SyncOperation, accountID: String) async throws {
+        guard let manifest = operation.ownedFiles else { return }
+        guard let record = operation.record else { throw SyncError.invalidOperation }
+        try manifest.validate(record: record)
+        let scope = blobScope(accountID: accountID)
+        var checked = Set<String>()
+        for file in manifest.files where checked.insert(file.digest).inserted {
+            let container = try await checkedContainer(accountID: accountID)
+            let id = CloudOwnedBlobCodec.recordID(digest: file.digest, scope: scope)
+            let records = try await container.privateCloudDatabase.records(for: [id], desiredKeys: CloudOwnedBlobCodec.metadataKeys)
+            _ = try await checkedContainer(accountID: accountID)
+            guard let outcome = records[id], CloudOwnedBlobCodec.matches(try outcome.get(), digest: file.digest, byteCount: file.byteCount, scope: scope) else { throw SyncError.invalidOperation }
+        }
+    }
+    static func decodeOperation(_ record: CKRecord, accountID: String, zoneID: CKRecordZone.ID) throws -> SyncOperation {
+        try CloudOperationCodec.decode(record, type: recordType, namespace: accountID, shared: false, zone: zoneID)
     }
 
     private func checkedContainer(accountID: String) async throws -> CKContainer {

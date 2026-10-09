@@ -163,6 +163,24 @@ final class CloudSharedTransportTests: XCTestCase {
         XCTAssertFalse(CloudSharedBoardTransport.matches(record, id: anotherID, namespace: item.namespace, digest: hash))
     }
 
+    func testV2OperationBelongsToBoardAcrossDifferentParticipantAccounts() throws {
+        let owner = board(account: container + ":owner"), recipient = board()
+        let member = board(id: owner.boardID, account: recipient.accountID, owner: owner.zoneOwnerName)
+        let digest = CloudSyncService.digest(Data("owned".utf8))
+        let file = SyncOwnedFileDescriptor(digest: digest, byteCount: 5, filename: "sample.txt")
+        var value = ClipboardRecord(text: "shared file", pinboardID: owner.boardID, isInHistory: false)
+        value.parts = [ClipboardPart(representations: [ClipboardRepresentation(typeIdentifier: "public.file-url", data: Data(SyncOwnedFileManifest.token(digest: digest, filename: file.filename).utf8))])]
+        let manifest = SyncOwnedFileManifest(files: [file], bindings: [SyncOwnedFileBinding(partIndex: 0, representationIndex: 0, digest: digest, filename: file.filename)])
+        let operation = SyncOperation(accountID: owner.namespace, entityID: value.id, entityKind: .clipboard, action: .upsert,
+                                      baseRevision: 0, revision: 1, record: value, formatVersion: 2, ownedFiles: manifest)
+        let cloud = try cloudRecord(operation, board: owner)
+        cloud["formatVersion"] = 2 as NSNumber
+        cloud["payloadByteCount"] = (try CloudSyncService.encodeOperation(operation)).count as NSNumber
+        XCTAssertEqual(try CloudSharedBoardTransport.decodeOperation(cloud, board: member), operation)
+        cloud["account"] = owner.accountID as NSString
+        XCTAssertThrowsError(try CloudSharedBoardTransport.decodeOperation(cloud, board: member))
+    }
+
     func testCursorBoundToAccountBoardAndZoneOwner() throws {
         let item = board(), token = Data("synthetic opaque token".utf8)
         let cursor = try CloudSharedBoardTransport.encodeCursorData(token, board: item)

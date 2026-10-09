@@ -3,16 +3,21 @@ import ClipShelfCore
 
 @MainActor
 final class SharingSettingsController: NSWindowController {
+    typealias Completion = @MainActor () -> Void
     private let store: HistoryStore
     private let transport = CloudSharedBoardTransport()
     private let coordinator: CloudSharingCoordinator
     private let sharingPresenter: CloudSharedBoardSharingPresenter
     private let preferences: UserDefaults
+    private let readStates: @MainActor () async throws -> [SharedBoardState]
     private let status = NSTextField(wrappingLabelWithString: "共享板默认关闭。私人历史不会随共享板公开。")
     private let toggle = NSButton(title: "开启共享板…", target: nil, action: nil)
     private let create = NSButton(title: "创建共享副本…", target: nil, action: nil)
     private let join = NSButton(title: "接受邀请…", target: nil, action: nil)
     private let rows = NSStackView()
+    private let fileTransfers = OwnedFileTransferStatusView()
+    private var fileItems: [OwnedFileTransferStatusItem] = []
+    private var transferReadGeneration: UInt64 = 0
     private var states: [SharedBoardState] = []
     private var enabled = false
     private var busy = false
@@ -23,13 +28,18 @@ final class SharingSettingsController: NSWindowController {
     var onDataChanged: (() -> Void)?
     var onCopyLink: ((URL) -> Void)?
 
-    init(store: HistoryStore, preferences: UserDefaults = .standard) {
+    init(store: HistoryStore, preferences: UserDefaults = .standard,
+         readStates: (@MainActor () async throws -> [SharedBoardState])? = nil,
+         availability: (@MainActor () async -> CloudSyncAvailability)? = nil) {
         self.store = store; self.preferences = preferences
-        coordinator = CloudSharingCoordinator(store: store, transport: transport)
+        let coordinator = CloudSharingCoordinator(store: store, transport: transport)
+        self.coordinator = coordinator
+        self.readStates = readStates ?? { try await coordinator.states() }
         sharingPresenter = CloudSharedBoardSharingPresenter(transport: transport)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 450),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 670),
                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "ClipShelf · 共享板"; window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 680, height: 640)
         super.init(window: window)
         sharingPresenter.onChange = { [weak self] _ in self?.synchronize() }
         sharingPresenter.onError = { [weak self] error in self?.status.stringValue = "成员管理未完成：\(error.localizedDescription)" }
@@ -40,6 +50,7 @@ final class SharingSettingsController: NSWindowController {
         toggle.target = self; toggle.action = #selector(toggleSharing)
         create.target = self; create.action = #selector(createShare)
         join.target = self; join.action = #selector(joinShare)
+        fileTransfers.onRetry = { [weak self] in self?.synchronize() }
         create.isEnabled = false; join.isEnabled = false; toggle.isEnabled = false
         let description = NSTextField(wrappingLabelWithString: "共享会创建独立副本，原私有分组保留。持有邀请链接的 Apple Account 用户可按设定权限访问该共享副本；链接需由你自行发送。共享和私人历史同步是独立开关。")
         description.textColor = .secondaryLabelColor
@@ -47,29 +58,43 @@ final class SharingSettingsController: NSWindowController {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         rows.orientation = .vertical; rows.alignment = .leading; rows.spacing = 12
         rows.translatesAutoresizingMaskIntoConstraints = false; scroll.documentView = rows
-        let body = NSStackView(views: [status, description, controls, scroll])
+        let body = NSStackView(views: [status, description, controls, fileTransfers, scroll])
         body.orientation = .vertical; body.alignment = .leading; body.spacing = 18
         body.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24); window.contentView = body
         NSLayoutConstraint.activate([
-            body.widthAnchor.constraint(greaterThanOrEqualToConstant: 680), body.heightAnchor.constraint(greaterThanOrEqualToConstant: 420),
+            body.widthAnchor.constraint(greaterThanOrEqualToConstant: 680), body.heightAnchor.constraint(greaterThanOrEqualToConstant: 620),
             status.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -48), description.widthAnchor.constraint(equalTo: status.widthAnchor),
+            fileTransfers.widthAnchor.constraint(equalTo: status.widthAnchor), fileTransfers.heightAnchor.constraint(equalToConstant: 160),
             scroll.widthAnchor.constraint(equalTo: status.widthAnchor), scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
             rows.widthAnchor.constraint(equalTo: scroll.widthAnchor, constant: -18)
         ])
+        fileTransfers.update([], isRunning: false, enabled: false)
+        let initialGeneration = generation
         Task { @MainActor [weak self] in
             guard let self else { return }
-            if case .unavailable(let reason) = await self.transport.configurationStatus() { self.status.stringValue = reason }
+            let result: CloudSyncAvailability
+            if let availability { result = await availability() }
+            else { result = await self.transport.configurationStatus() }
+            guard initialGeneration == self.generation, !Task.isCancelled else { return }
+            if case .unavailable(let reason) = result { self.status.stringValue = reason }
             else { self.toggle.isEnabled = true }
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func present() { window?.center(); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+    func present() {
+        refreshFileTransfers()
+        window?.center(); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+    }
     func resumeIfEnabled() {
         guard preferences.bool(forKey: "sharingEnabled"), let account = preferences.string(forKey: "sharingAccount") else { return }
         enable(expectedAccount: account)
     }
-    func stop() { generation &+= 1; task?.cancel(); timer?.invalidate(); timer = nil }
+    func stop() {
+        generation &+= 1; transferReadGeneration &+= 1
+        task?.cancel(); task = nil; busy = false
+        timer?.invalidate(); timer = nil
+    }
 
     func offerInvitation(_ url: URL) {
         present()
@@ -79,11 +104,13 @@ final class SharingSettingsController: NSWindowController {
 
     @objc private func toggleSharing() {
         if enabled {
-            stop(); busy = false
+            stop()
             perform {
                 try await self.coordinator.disable()
-                self.enabled = false; self.preferences.set(false, forKey: "sharingEnabled")
-                self.status.stringValue = "本机共享传输已关闭。已共享的云端内容继续存在；停止共享需单独操作。"
+                return {
+                    self.enabled = false; self.preferences.set(false, forKey: "sharingEnabled")
+                    self.status.stringValue = "本机共享传输已关闭。已共享的云端内容继续存在；停止共享需单独操作。"
+                }
             }
             return
         }
@@ -97,12 +124,14 @@ final class SharingSettingsController: NSWindowController {
     private func enable(expectedAccount: String?) {
         perform {
             let account = try await self.coordinator.enable(expectedAccountID: expectedAccount)
-            self.enabled = true; self.preferences.set(true, forKey: "sharingEnabled"); self.preferences.set(account, forKey: "sharingAccount")
-            self.timer?.invalidate()
-            self.timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.synchronize() }
+            return {
+                self.enabled = true; self.preferences.set(true, forKey: "sharingEnabled"); self.preferences.set(account, forKey: "sharingAccount")
+                self.timer?.invalidate()
+                self.timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.synchronize() }
+                }
+                self.status.stringValue = "共享已开启。选择分组创建共享副本，或接受邀请。"
             }
-            self.status.stringValue = "共享已开启。选择分组创建共享副本，或接受邀请。"
         }
     }
 
@@ -122,7 +151,7 @@ final class SharingSettingsController: NSWindowController {
         let id = boards[board.indexOfSelectedItem].id, allowEditing = edit.state == .on
         perform {
             _ = try await self.coordinator.createSharedCopy(boardID: id, allowEditing: allowEditing)
-            self.status.stringValue = "共享副本已创建。请从分组操作中复制邀请链接；不会自动发送邀请。"
+            return { self.status.stringValue = "共享副本已创建。请从分组操作中复制邀请链接；不会自动发送邀请。" }
         }
     }
 
@@ -147,7 +176,7 @@ final class SharingSettingsController: NSWindowController {
     private func accept(_ url: URL) {
         perform {
             _ = try await self.coordinator.acceptShare(url: url)
-            self.status.stringValue = "已接受邀请，共享内容可在主面板分组中使用。"
+            return { self.status.stringValue = "已接受邀请；下载完整的内容可在分组中使用，未完成文件的状态见下方。" }
         }
     }
 
@@ -155,29 +184,64 @@ final class SharingSettingsController: NSWindowController {
         guard enabled, !busy else { return }
         perform {
             let errors = await self.coordinator.synchronizeAll()
-            self.status.stringValue = errors.isEmpty ? "共享板已同步。" : "\(errors.count) 个共享板尚未同步：\(errors.values.first ?? "请稍后重试。")"
+            return { self.status.stringValue = errors.isEmpty ? "共享板变更已处理；文件传输状态见下方。" : "\(errors.count) 个共享板尚未同步：\(errors.values.first ?? "请稍后重试。")" }
         }
     }
 
-    private func perform(_ action: @escaping @MainActor () async throws -> Void) {
-        guard !busy else { return }
+    /// The async operation returns UI work instead of applying it before its lifetime is checked.
+    @discardableResult
+    func perform(_ action: @escaping @MainActor () async throws -> Completion) -> Task<Void, Never>? {
+        guard !busy else { return nil }
         busy = true; generation &+= 1; let current = generation
+        transferReadGeneration &+= 1
+        fileTransfers.update(fileItems, isRunning: true, enabled: enabled)
         create.isEnabled = false; join.isEnabled = false; toggle.isEnabled = enabled
         status.stringValue = "正在处理共享操作…"
         task = Task { @MainActor [weak self] in
             guard let self else { return }
-            do { try await action() }
+            let completion: Completion
+            do { completion = try await action() }
             catch {
-                guard current == self.generation else { return }
-                self.status.stringValue = "共享操作未完成：\(error.localizedDescription)"
+                completion = { self.status.stringValue = "共享操作未完成：\(error.localizedDescription)" }
             }
+            guard current == self.generation, !Task.isCancelled else { return }
+            let nextStates = (try? await self.readStates()) ?? []
+            guard current == self.generation, !Task.isCancelled else { return }
+            self.states = nextStates
+            completion()
             guard current == self.generation, !Task.isCancelled else { return }
             self.busy = false; self.toggle.isEnabled = true
             self.toggle.title = self.enabled ? "关闭本机共享传输" : "开启共享板…"
             self.create.isEnabled = self.enabled; self.join.isEnabled = self.enabled
-            self.states = (try? await self.coordinator.states()) ?? []
-            self.renderRows(); self.onDataChanged?()
+            self.renderRows()
+            self.refreshFileTransfers()
+            self.onDataChanged?()
+            guard current == self.generation, !Task.isCancelled else { return }
             self.drainExternalStops()
+        }
+        return task
+    }
+
+    private func refreshFileTransfers() {
+        transferReadGeneration &+= 1
+        let current = transferReadGeneration
+        guard enabled else {
+            fileItems = []; fileTransfers.update([], isRunning: busy, enabled: false); return
+        }
+        fileTransfers.update(fileItems, isRunning: busy, enabled: true)
+        let store = store
+        Task { @MainActor [weak self] in
+            do {
+                let states = try await Task.detached(priority: .utility) {
+                    try store.syncOwnedTransferStates().filter { $0.scope.namespace.hasPrefix("shared:") }
+                }.value
+                guard let self, current == self.transferReadGeneration, self.enabled else { return }
+                self.fileItems = OwnedFileTransferStatusItem.outstanding(states)
+                self.fileTransfers.update(self.fileItems, isRunning: self.busy, enabled: true)
+            } catch {
+                guard let self, current == self.transferReadGeneration, self.enabled else { return }
+                self.fileTransfers.unavailable(error.localizedDescription, isRunning: self.busy, enabled: true)
+            }
         }
     }
 
@@ -186,7 +250,7 @@ final class SharingSettingsController: NSWindowController {
         pendingExternalStops.remove(id)
         perform {
             try await self.coordinator.sharingStoppedExternally(boardID: id)
-            self.status.stringValue = "系统已停止共享；可用缓存已保留为独立本地副本。"
+            return { self.status.stringValue = "系统已停止共享；可用缓存已保留为独立本地副本。" }
         }
     }
 
@@ -230,11 +294,15 @@ final class SharingSettingsController: NSWindowController {
             keepCopy = keep.state == .on
         }
         perform {
+            var completionMessage = "操作已完成。"
+            var copiedLink: URL?
             switch action {
             case 1:
-                if let url = try await self.coordinator.invitationURL(boardID: state.id) { self.onCopyLink?(url) }
+                if let url = try await self.coordinator.invitationURL(boardID: state.id) { copiedLink = url }
                 else { throw SyncError.unavailable("邀请链接尚不可用。") }
-            case 2: _ = try await self.coordinator.synchronize(boardID: state.id)
+            case 2:
+                _ = try await self.coordinator.synchronize(boardID: state.id)
+                completionMessage = "共享板变更已处理；文件传输状态见下方。"
             case 3:
                 let drafts = try await self.coordinator.failedDrafts(boardID: state.id)
                 for draft in drafts where draft.operation.record != nil {
@@ -244,11 +312,14 @@ final class SharingSettingsController: NSWindowController {
             case 6: try await self.coordinator.stopSharing(boardID: state.id, keepLocalCopy: keepCopy)
             case 7: try await self.coordinator.leave(boardID: state.id, keepLocalCopy: keepCopy)
             case 8:
-                guard let view = self.window?.contentView else { return }
+                guard let view = self.window?.contentView else { return {} }
                 try await self.sharingPresenter.present(board: state.descriptor, relativeTo: view)
-            default: return
+            default: return {}
             }
-            self.status.stringValue = "操作已完成。"
+            return {
+                self.status.stringValue = completionMessage
+                if let copiedLink { self.onCopyLink?(copiedLink) }
+            }
         }
     }
 }

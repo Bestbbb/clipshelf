@@ -713,7 +713,7 @@ public final class HistoryStore: @unchecked Sendable {
             try check(sqlite3_step(versionStatement), allowingRow: true)
             return Int(sqlite3_column_int(versionStatement, 0))
         }()
-        if (1...9).contains(version) { try recoveryDatabaseBackup(reason: "migration-v\(version)") }
+        if (1...10).contains(version) { try recoveryDatabaseBackup(reason: "migration-v\(version)") }
         suppressSyncCapture = true
         defer { suppressSyncCapture = false }
         try transaction {
@@ -763,7 +763,7 @@ public final class HistoryStore: @unchecked Sendable {
                     try stepToCompletion(update)
                 }
                 try execute("PRAGMA user_version = 2")
-            case 2, 3, 4, 5, 6, 7, 8, 9, 10: break
+            case 2, 3, 4, 5, 6, 7, 8, 9, 10, 11: break
             default: throw HistoryStoreError.unsupportedSchemaVersion(version)
             }
             try execute("CREATE TABLE IF NOT EXISTS pinboard_order_backfill(board_id TEXT PRIMARY KEY REFERENCES pinboards(id) ON DELETE CASCADE)")
@@ -788,7 +788,8 @@ public final class HistoryStore: @unchecked Sendable {
             try execute("CREATE TABLE IF NOT EXISTS pinboard_local_order(board_id TEXT PRIMARY KEY REFERENCES pinboards(id) ON DELETE CASCADE, position INTEGER NOT NULL)")
             try initializeSearchIndex()
             try initializeHistoryCleanupTokens()
-            try execute("PRAGMA user_version = 10")
+            try createOwnedSyncSchema(markLegacy: version < 11)
+            try execute("PRAGMA user_version = 11")
             syncSchemaReady = true
         }
     }

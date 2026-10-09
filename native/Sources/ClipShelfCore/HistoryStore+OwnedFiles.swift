@@ -48,6 +48,8 @@ extension HistoryStore {
                 try validate(current)
                 try replaceContents(current)
                 try setOwnedFileBindingsWithoutLock(previous + imported, record: current)
+                try syncExecute("INSERT OR IGNORE INTO owned_sync_backfill(record_id) VALUES (?)", [current.id.uuidString])
+                try publishOwnedSyncBackfillWithoutLock()
                 return current
             }
         }
@@ -228,7 +230,7 @@ extension HistoryStore {
         return try rebasingOwnedFileURLsWithoutLock(record, bindings: bindings)
     }
 
-    private func ownedFileOperationBindingsWithoutLock(operationID: UUID, recordID: UUID) throws -> [OwnedFileBinding] {
+    func ownedFileOperationBindingsWithoutLock(operationID: UUID, recordID: UUID) throws -> [OwnedFileBinding] {
         let statement = try prepare("SELECT bindings FROM owned_file_operation_bindings WHERE operation_id = ?")
         defer { sqlite3_finalize(statement) }
         try bind(operationID.uuidString, at: 1, to: statement)

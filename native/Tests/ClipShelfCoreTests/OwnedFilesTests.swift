@@ -180,19 +180,35 @@ final class OwnedFilesTests: XCTestCase {
         XCTAssertNotNil(try store.itemMetadata(id: original.id))
     }
 
-    func testAdoptionUsesExactRevisionAndAccountGenerationWithoutCloudPathEdit() throws {
+    func testAdoptionUsesExactRevisionAndAccountGenerationWithImmutableCausalUpgrade() throws {
         let store = try store()
         try store.configureSync(accountID: "A")
         let old = try store.create(candidate())
         let sync = try store.syncConfiguration(), sharing = try store.sharingConfiguration()
         let queue = try store.pendingSyncOperations(accountID: "A")
+        func storedPayload(_ id: UUID) throws -> Data {
+            let statement = try store.prepare("SELECT payload FROM sync_outbox WHERE operation_id = ?")
+            defer { sqlite3_finalize(statement) }
+            try store.bind(id.uuidString, at: 1, to: statement)
+            XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+            return try XCTUnwrap(store.dataColumn(statement, 0))
+        }
+        let beforePayloads = try queue.map { try storedPayload($0.operationID) }
         let imports = [OwnedFileImport(partIndex: 0, representationIndex: 0, filename: "legacy.txt", data: Data([4, 5]))]
         XCTAssertThrowsError(try store.registerOwnedFiles(recordID: old.id, expectedRevision: old.revision + 1, ownedFiles: imports,
                                                         expectedSyncConfiguration: sync, expectedSharingConfiguration: sharing))
         let adopted = try store.registerOwnedFiles(recordID: old.id, expectedRevision: old.revision, ownedFiles: imports,
                                                    expectedSyncConfiguration: sync, expectedSharingConfiguration: sharing)
         XCTAssertEqual(adopted.revision, old.revision + 1)
-        XCTAssertEqual(try store.pendingSyncOperations(accountID: "A"), queue)
+        let upgraded = try store.pendingSyncOperations(accountID: "A")
+        XCTAssertEqual(Array(upgraded.prefix(queue.count)), queue)
+        XCTAssertEqual(try queue.map { try storedPayload($0.operationID) }, beforePayloads)
+        XCTAssertEqual(upgraded.count, queue.count + 1)
+        let successor = try XCTUnwrap(upgraded.last)
+        XCTAssertFalse(queue.contains { $0.operationID == successor.operationID })
+        XCTAssertEqual(successor.baseOperationID, queue.last?.operationID)
+        XCTAssertEqual(successor.formatVersion, 2)
+        XCTAssertEqual(successor.ownedFiles?.bindings.count, 1)
         XCTAssertEqual(try store.ownedFileBindings(recordID: old.id).count, 1)
         try store.configureSync(accountID: "B")
         let current = try store.syncConfiguration()
