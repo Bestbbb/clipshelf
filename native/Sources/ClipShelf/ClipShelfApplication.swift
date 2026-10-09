@@ -311,11 +311,13 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         panel.onDeleteRecords = { [weak self] selected in
             self?.deleteSelection(selected)
         }
-        panel.onEdit = { [weak self] record, text, rtf in
-            guard let self else { return }
-            var edited = record
-            edited.text = text; edited.rtf = rtf; edited.html = nil; edited.parts = []; edited.ocrText = nil
-            self.updateRecord(edited)
+        panel.onPrepareEdit = { [weak self] reference, completion in
+            guard let self else { completion(.failure(EditorOperationError.unavailable)); return }
+            self.prepareEditor(reference, completion: completion)
+        }
+        panel.onEdit = { [weak self] snapshot, edited, completion in
+            guard let self else { completion(.failure(EditorOperationError.unavailable)); return }
+            self.saveEditor(edited, snapshot: snapshot, completion: completion)
         }
         panel.onRename = { [weak self] record, title in
             var edited = record; edited.renamedTitle = title
@@ -427,16 +429,16 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
                 self.capture.noteFrontmostApplication(bundleID: app.bundleIdentifier)
                 guard app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
                 if let pid = self.suggestionTargetPID, app.processIdentifier != pid { self.cancelSuggestions() }
-                if self.panel.isVisible, app.processIdentifier != self.target?.application.processIdentifier {
+                if self.panel.isVisible, self.panel.hasOpenEditor || app.processIdentifier != self.target?.application.processIdentifier {
                     self.paste.cancel()
-                    self.panel.dismiss()
+                    self.panel.hidePreservingDraft()
                 }
             }
         }
         outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, !self.panel.contains(screenPoint: NSEvent.mouseLocation) else { return }
-                self.paste.cancel(); self.panel.dismiss(); self.cancelSuggestions()
+                self.paste.cancel(); self.panel.hidePreservingDraft(); self.cancelSuggestions()
             }
         }
         for (notification, reason, suspended) in [
@@ -455,7 +457,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         if suspended { suspensionReasons.insert(reason) } else { suspensionReasons.remove(reason) }
         sessionSuspended = !suspensionReasons.isEmpty
         if sessionSuspended {
-            cancelSuggestions(); capture.stop(); paste.cancel(); panel.dismiss(); stackKeys.stop()
+            cancelSuggestions(); capture.stop(); paste.cancel(); panel.hideForSuspension(); stackKeys.stop()
             if let shareInbox { Task { try? await shareInbox.publishDestinations(allowImports: false) } }
         } else {
             if !validation, preferences.bool(forKey: "recordingEnabled"), pausedUntil == nil, store != nil { capture.start() }
@@ -518,8 +520,13 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func checkShareInbox() {
+        cancelSuggestions()
+        panel.dismissForAction { [weak self] in self?.performCheckShareInbox() }
+    }
+
+    private func performCheckShareInbox() {
         guard !demo else { return }
-        cancelSuggestions(); panel.dismiss()
+        cancelSuggestions()
         guard shareInbox != nil else { processShareInbox(userInitiated: true); return }
         let alert = NSAlert(); alert.messageText = "系统分享收件箱"
         alert.informativeText = "通过其他应用的分享菜单保存的内容会自动导入。如果上次导入因退出而中断，可以重试未确认项；请先检查历史，避免重复保存已手动恢复的内容。"
@@ -751,8 +758,12 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func enableDirectPaste() {
+        cancelSuggestions()
+        panel.dismissForAction { [weak self] in self?.performEnableDirectPaste() }
+    }
+
+    private func performEnableDirectPaste() {
         guard !demo else { return }
-        panel.dismiss()
         paste.requestPermission()
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
@@ -761,9 +772,13 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func editExclusions() {
+        cancelSuggestions()
+        panel.dismissForAction { [weak self] in self?.performEditExclusions() }
+    }
+
+    private func performEditExclusions() {
         guard !demo else { return }
         cancelSuggestions()
-        panel.dismiss()
         let alert = NSAlert()
         alert.messageText = "排除应用"
         alert.informativeText = "这些应用中之后复制的内容不会记录。填写应用的 Bundle ID，用逗号或换行分隔；已有历史不会自动删除。"
@@ -785,9 +800,13 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func newText() {
+        cancelSuggestions()
+        panel.dismissForAction { [weak self] in self?.performNewText() }
+    }
+
+    private func performNewText() {
         guard !demo, store != nil, mutationIsAvailable() else { return }
         cancelSuggestions()
-        panel.dismiss()
         let alert = NSAlert()
         alert.messageText = "新建文本"
         alert.informativeText = "保存到本地历史，可从面板搜索和粘贴。"
@@ -810,15 +829,19 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func clearHistory() {
-        guard !demo, store != nil else { return }
-        panel.dismiss()
+        cancelSuggestions()
+        panel.dismissForAction { [weak self] in self?.performClearHistory() }
+    }
+
+    private func performClearHistory() {
+        guard !demo, store != nil, mutationIsAvailable() else { return }
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "清空本地历史？"
         alert.informativeText = "此操作会清空本地历史，固定在分组中的内容会保留。未固定记录的删除无法撤销。"
         alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "清空")
         NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        guard alert.runModal() == .alertSecondButtonReturn, mutationIsAvailable() else { return }
         do { try store?.clearHistory(); reload(); Task { try? await ocrCache.clear() } }
         catch { showError("清空失败", detail: "无法写入数据库，请稍后重试。") }
     }
@@ -841,6 +864,78 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             capture.start(); preferences.set(true, forKey: "recordingEnabled")
         }
         refresh()
+    }
+
+    private func prepareEditor(_ reference: ClipboardSelectionReference,
+                               completion: @escaping (Result<ClipboardEditSnapshot, Error>) -> Void) {
+        guard !isTerminating else { completion(.failure(EditorOperationError.unavailable)); return }
+        if demo {
+            guard let record = records.first(where: { $0.id == reference.id && $0.revision == reference.revision }) else {
+                completion(.failure(EditorOperationError.changed)); return
+            }
+            completion(.success(ClipboardEditSnapshot(record: record)))
+            return
+        }
+        readSelection({ try $0.prepareEdit(reference) }) { result in
+            completion(result.mapError { EditorOperationError.wrapping($0) })
+        }
+    }
+
+    private func saveEditor(_ edited: ClipboardRecord, snapshot: ClipboardEditSnapshot,
+                            completion: @escaping (Result<ClipboardSelectionReference, Error>) -> Void) {
+        guard !isTerminating else { completion(.failure(EditorOperationError.unavailable)); return }
+        if demo {
+            guard let index = records.firstIndex(where: { $0 == snapshot.record }),
+                  edited.id == snapshot.record.id, edited.revision == snapshot.record.revision,
+                  edited.revision < Int.max else { completion(.failure(EditorOperationError.changed)); return }
+            var updated = edited; updated.revision += 1
+            records[index] = updated
+            completion(.success(.init(id: updated.id, revision: updated.revision)))
+            refresh()
+            return
+        }
+        guard let store else { completion(.failure(EditorOperationError.unavailable)); return }
+        guard !selectionMutationInProgress else { completion(.failure(SelectionOperationError.busy)); return }
+        selectionMutationInProgress = true
+        Task { @MainActor in
+            do {
+                let undo = try await Task.detached(priority: .userInitiated) {
+                    try store.commitEdit(edited, snapshot: snapshot)
+                }.value
+                selectionUndoHistory.register(.edit(undo)) { [weak self] in self?.undoSelection($0, store: store) }
+                selectionMutationInProgress = false
+                completion(.success(undo.committedReference))
+                reload()
+            } catch {
+                selectionMutationInProgress = false
+                completion(.failure(EditorOperationError.wrapping(error)))
+            }
+        }
+    }
+
+    private enum EditorOperationError: LocalizedError {
+        case unavailable, changed, removed, tooLarge, accountChanged, failed
+        var errorDescription: String? {
+            switch self {
+            case .unavailable: return "资料库暂不可用，请稍后重试。"
+            case .changed: return "原条目或资料库已变化，未覆盖现有内容。草稿仍保留，可复制所需内容后重新打开条目。"
+            case .removed: return "原条目已被删除，未保存修改。草稿仍保留。"
+            case .tooLarge: return "内容过大，无法保留完整撤销，本次修改未保存。"
+            case .accountChanged: return "同步账号已变化，旧草稿不能保存到当前账号。草稿仍保留。"
+            case .failed: return "保存失败，请稍后重试。草稿仍保留。"
+            }
+        }
+        static func wrapping(_ error: Error) -> Error {
+            switch error {
+            case HistoryStoreError.staleRevision, HistoryStoreError.invalidSelection: return changed
+            case HistoryStoreError.recordNotFound: return removed
+            case HistoryStoreError.selectionPayloadTooLarge, HistoryStoreError.valueTooLarge: return tooLarge
+            case SyncError.accountChanged, SyncError.namespaceConflict: return accountChanged
+            case is SharedBoardError: return error
+            case is HistoryStoreError: return failed
+            default: return error
+            }
+        }
     }
 
     private func updateRecord(_ record: ClipboardRecord) {
@@ -1146,7 +1241,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
 
     @objc private func showSettings() {
         cancelSuggestions()
-        panel.dismiss()
+        panel.dismissForAction { [weak self] in self?.performShowSettings() }
+    }
+
+    private func performShowSettings() {
+        cancelSuggestions()
         if shortcutSettings == nil {
             let controller = ShortcutSettingsController()
             controller.onValidate = { [weak self] configuration in
@@ -1228,9 +1327,13 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showMCPSettings() {
+        cancelSuggestions()
+        panel.dismissForAction { [weak self] in self?.performShowMCPSettings() }
+    }
+
+    private func performShowMCPSettings() {
         guard profile.allowsBackgroundIntegrations, let store else { return }
         cancelSuggestions()
-        panel.dismiss()
         do {
             if mcpSettings == nil {
                 mcpSettings = try MCPSettingsController(store: store)
@@ -1242,15 +1345,25 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showCloudSettings() {
+        cancelSuggestions()
+        panel.dismissForAction { [weak self] in self?.performShowCloudSettings() }
+    }
+
+    private func performShowCloudSettings() {
         guard profile.allowsBackgroundIntegrations else { return }
         cancelSuggestions()
-        panel.dismiss(); cloudSettings?.present()
+        cloudSettings?.present()
     }
 
     @objc private func showSharingSettings() {
+        cancelSuggestions()
+        panel.dismissForAction { [weak self] in self?.performShowSharingSettings() }
+    }
+
+    private func performShowSharingSettings() {
         guard profile.allowsBackgroundIntegrations else { return }
         cancelSuggestions()
-        panel.dismiss(); sharingSettings?.present()
+        sharingSettings?.present()
     }
 
     func application(_ application: NSApplication, userDidAcceptCloudKitShareWith metadata: CKShare.Metadata) {
@@ -1259,9 +1372,14 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func importFromCamera() {
+        cancelSuggestions()
+        panel.dismissForAction { [weak self] in self?.performImportFromCamera() }
+    }
+
+    private func performImportFromCamera() {
         guard profile.allowsBackgroundIntegrations else { return }
         cancelSuggestions()
-        panel.dismiss(); systemIntegration.presentCameraImport()
+        systemIntegration.presentCameraImport()
     }
 
     private func configureSuggestions() {
@@ -1296,10 +1414,15 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showSuggestions() {
-        guard profile.allowsBackgroundIntegrations, let store else { return }
+        guard profile.allowsBackgroundIntegrations, store != nil else { return }
         let originalTarget = panel.isVisible ? target : paste.captureTarget()
         guard let originalTarget else { setStatus("请回到需要粘贴的应用后再打开智能建议。"); return }
-        cancelSuggestions(); panel.dismiss()
+        cancelSuggestions()
+        panel.dismissForAction { [weak self] in self?.startSuggestions(target: originalTarget) }
+    }
+
+    private func startSuggestions(target originalTarget: PasteCoordinator.Target) {
+        guard profile.allowsBackgroundIntegrations, let store, !sessionSuspended, !isTerminating else { return }
         suggestionTargetPID = originalTarget.application.processIdentifier
         suggestionGeneration &+= 1; let generation = suggestionGeneration
         suggestionsPanel.showLoading(target: originalTarget)
@@ -1345,9 +1468,13 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func exportBackup() {
+        cancelSuggestions()
+        panel.dismissForAction { [weak self] in self?.performExportBackup() }
+    }
+
+    private func performExportBackup() {
         guard !demo, let store, mutationIsAvailable() else { return }
         cancelSuggestions()
-        panel.dismiss()
         let options = NSAlert(); options.messageText = "导出备份"
         options.informativeText = "备份包含剪贴板正文和附件。加密密码不会保存，遗忘后无法恢复。"
         let encrypt = NSButton(checkboxWithTitle: "使用密码加密备份", target: nil, action: nil); encrypt.state = .on
@@ -1390,9 +1517,13 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func restoreBackup() {
+        cancelSuggestions()
+        panel.dismissForAction { [weak self] in self?.performRestoreBackup() }
+    }
+
+    private func performRestoreBackup() {
         guard !demo, let store, mutationIsAvailable() else { return }
         cancelSuggestions()
-        panel.dismiss()
         let open = NSOpenPanel(); open.allowsMultipleSelection = false; open.canChooseDirectories = false
         open.title = "选择 ClipShelf 备份"
         guard open.runModal() == .OK, let url = open.url else { return }
@@ -1469,6 +1600,19 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quitApplication() { NSApp.terminate(nil) }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !selectionMutationInProgress else {
+            setStatus("正在保存或撤销，请完成后再退出。")
+            return .terminateCancel
+        }
+        panel.dismissForAction({
+            DispatchQueue.main.async { sender.reply(toApplicationShouldTerminate: true) }
+        }, onCancel: {
+            DispatchQueue.main.async { sender.reply(toApplicationShouldTerminate: false) }
+        })
+        return .terminateLater
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         isTerminating = true

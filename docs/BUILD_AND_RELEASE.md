@@ -311,6 +311,26 @@ Choosing an application revalidates the file and invokes NSWorkspace explicitly,
 without changing default file associations. Tests inject discovery/open callbacks;
 passing them does not prove real Launch Services or sandbox access.
 
+Text, link, and RGB editing capture a store-bound snapshot before enabling the
+editor. Save revalidates the complete original, revision, account generations, and
+write access in one transaction; only successful commits register Undo, and only
+successful save replies automatically close the editor. Failures retain the in-memory draft, formatting, selection, and text
+Undo state. RTF conversion failure never silently falls back to plain text.
+Link text, public.url, and RTF targets are rebuilt consistently; RGB is validated
+as six ASCII hexadecimal digits and saved as #RRGGBB. Multiple objects, embedded
+attachments, and unknown non-text formats cannot be flattened by this editor.
+HTML-only editing explicitly converts to text/RTF. Actual source-app formatting
+and native Writing Tools remain acceptance gates.
+
+App switching and session suspension hide content windows while keeping dirty or
+save-pending editors in memory. Unmodified editors close, as do hidden editors
+whose save succeeds. Explicit reopening restores any still-unsaved draft; it does
+not paste or recapture account authorization. Dirty close confirmations must settle before a
+subsequent settings/import/backup action runs. Stale confirmations and save replies
+cannot affect a later editor. Drafts are not persisted across process exit. Native
+discard sheets, app-switch focus, color wells, and quit cancellation still require
+desktop acceptance in addition to injected controller tests.
+
 MCP access and refresh credentials are held in the local Keychain. Developer
 signing material and runtime history must never be included in a release archive.
 

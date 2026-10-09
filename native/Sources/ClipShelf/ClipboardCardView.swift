@@ -229,9 +229,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     }
 
     static func hexColor(_ value: String) -> NSColor? {
-        let hex = value.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "#", with: "")
-        guard hex.count == 6, let number = UInt32(hex, radix: 16) else { return nil }
-        return NSColor(srgbRed: CGFloat((number >> 16) & 0xff) / 255, green: CGFloat((number >> 8) & 0xff) / 255, blue: CGFloat(number & 0xff) / 255, alpha: 1)
+        ClipboardEditPlan.color(from: value)
     }
 
     func setQuickPasteLabel(_ value: String?) {
