@@ -15,8 +15,9 @@ at the original input position, and continue working without an extra click.
 The macOS target includes rich clipboard history, search, previews and editing,
 Pinboards, sequential pasting, privacy controls, system integrations, sync,
 sharing, intelligent suggestions, and MCP access. Delivery will be staged;
-these capabilities are planned, not implemented or verified. iPhone and iPad
-scope remains under review.
+these capabilities are planned, not implemented or verified. The current scope
+is confirmed as full macOS parity, including sync between Macs. iPhone and iPad
+clients are outside this scope and may be planned separately later.
 
 ## Design documents
 
