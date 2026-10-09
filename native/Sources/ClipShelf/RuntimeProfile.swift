@@ -8,10 +8,12 @@ struct RuntimeProfile {
     let preferences: UserDefaults
     let validationDirectory: URL?
     let validationPreferenceDomain: String?
+    let includesSearchFixtures: Bool
 
     static let current = RuntimeProfile(arguments: CommandLine.arguments)
 
     init(arguments: [String], temporaryDirectory: URL = FileManager.default.temporaryDirectory) {
+        includesSearchFixtures = arguments.contains("--validation") && arguments.contains("--validation-search")
         if arguments.contains("--validation") {
             mode = .validation
             let identifier = UUID().uuidString

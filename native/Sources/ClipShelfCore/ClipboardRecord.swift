@@ -35,6 +35,9 @@ public struct ClipboardRecord: Identifiable, Equatable, Codable, Sendable {
     public var pinboardOrder: Int64?
     public var isInHistory: Bool
     public var revision: Int
+    public var originDeviceID: UUID?
+    public var originDeviceName: String?
+    public var originDeviceConflict: Bool
 
     public init(
         id: UUID = UUID(),
@@ -50,7 +53,10 @@ public struct ClipboardRecord: Identifiable, Equatable, Codable, Sendable {
         pinboardID: UUID? = nil,
         isInHistory: Bool = true,
         revision: Int = 1,
-        pinboardOrder: Int64? = nil
+        pinboardOrder: Int64? = nil,
+        originDeviceID: UUID? = nil,
+        originDeviceName: String? = nil,
+        originDeviceConflict: Bool = false
     ) {
         self.id = id
         self.text = text
@@ -66,6 +72,9 @@ public struct ClipboardRecord: Identifiable, Equatable, Codable, Sendable {
         self.pinboardOrder = pinboardOrder
         self.isInHistory = isInHistory
         self.revision = revision
+        self.originDeviceID = originDeviceID
+        self.originDeviceName = originDeviceName
+        self.originDeviceConflict = originDeviceConflict
     }
 
     public var title: String {
@@ -100,6 +109,7 @@ public struct ClipboardRecord: Identifiable, Equatable, Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, text, sourceApp, sourceBundleID, copiedAt, rtf, html, parts
         case renamedTitle, ocrText, pinboardID, isInHistory, revision, pinboardOrder
+        case originDeviceID, originDeviceName, originDeviceConflict
     }
 
     public init(from decoder: Decoder) throws {
@@ -116,6 +126,9 @@ public struct ClipboardRecord: Identifiable, Equatable, Codable, Sendable {
         ocrText = try values.decodeIfPresent(String.self, forKey: .ocrText)
         pinboardID = try values.decodeIfPresent(UUID.self, forKey: .pinboardID)
         pinboardOrder = try values.decodeIfPresent(Int64.self, forKey: .pinboardOrder)
+        originDeviceID = try values.decodeIfPresent(UUID.self, forKey: .originDeviceID)
+        originDeviceName = try values.decodeIfPresent(String.self, forKey: .originDeviceName)
+        originDeviceConflict = try values.decodeIfPresent(Bool.self, forKey: .originDeviceConflict) ?? false
         isInHistory = try values.decodeIfPresent(Bool.self, forKey: .isInHistory) ?? true
         revision = try values.decodeIfPresent(Int.self, forKey: .revision) ?? 1
     }

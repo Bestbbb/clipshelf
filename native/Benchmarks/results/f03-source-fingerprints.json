@@ -1,0 +1,41 @@
+{
+  "baselineCommit": "45edfd6a5053eb7cab9f62b6ab4a938694650e38",
+  "beforeSchema": 7,
+  "afterSchema": 8,
+  "beforeSources": {
+    "native/Benchmarks/HistoryBenchmark/main.swift": "f810a72b4a42590f9bc0e155305daa9ac3bf632f837f4a6072904f6673581020",
+    "native/Package.swift": "4bda4f00e88abff858c95557ebfa1f70eff5fd8a6e3b7319c24345d055af1aad",
+    "native/Sources/ClipShelfCore/ClipboardRecord.swift": "8679ce61e77e9ecb525e0d7210a81bf1ca5ab770f930af5bfaaa7c1949b4586f",
+    "native/Sources/ClipShelfCore/HistoryModels.swift": "aae23a44d1cbc956ad96f5c8a8b816dcac17740efbee06e9db29b7046c399954",
+    "native/Sources/ClipShelfCore/HistoryStore+Ordering.swift": "624f83c377478608017fd8d6d171ea4983588f5c39944e02b6953f65018251c5",
+    "native/Sources/ClipShelfCore/HistoryStore+Sharing.swift": "2a452b0ff909605e568c80469384b073ab1140df312686a886384fc3c2e4bbc9",
+    "native/Sources/ClipShelfCore/HistoryStore+Sync.swift": "c5bff3400781424d9ee7e3312dad74f210826f00d27b4adab8410aab47e9d3a4",
+    "native/Sources/ClipShelfCore/HistoryStore.swift": "be632c54e2a65d840284a0a03b44e1e920c921caeb93e09eef11b26c9e47d106",
+    "native/Sources/ClipShelfCore/RepresentationStorage.swift": "115cead82f4f9914f9db509a6be30a4f8886ad8949a80043b1b4b6c2c88587bb",
+    "native/Sources/ClipShelfCore/SharedBoardModels.swift": "9bd989e5b7f387b26aa24b5d91b554d900f6b295282aac617aaa80d36853b53e",
+    "native/Sources/ClipShelfCore/SyncModels.swift": "34e97dedf5ef3b8259f1fba40484fde15b0a6cabae8dfc04d090cf2555f8e165"
+  },
+  "afterSources": {
+    "native/Benchmarks/HistoryBenchmark/main.swift": "f810a72b4a42590f9bc0e155305daa9ac3bf632f837f4a6072904f6673581020",
+    "native/Package.swift": "4bda4f00e88abff858c95557ebfa1f70eff5fd8a6e3b7319c24345d055af1aad",
+    "native/Sources/ClipShelfCore/ClipboardRecord.swift": "cdc6d337bb4e9d0dc236adef681d234b8717032abc87645dbfc3a1f73e62bfe6",
+    "native/Sources/ClipShelfCore/HistoryModels.swift": "e9b4a768a209c8e61fd071d5f0cd98782f3a0851bcc70ff40d8ea83855757580",
+    "native/Sources/ClipShelfCore/HistoryStore+MetadataCache.swift": "afe07e9abf088e6fadd436701c0326c3a00e3be7ce6a1f962ba5fbfa4959a9cc",
+    "native/Sources/ClipShelfCore/HistoryStore+Ordering.swift": "624f83c377478608017fd8d6d171ea4983588f5c39944e02b6953f65018251c5",
+    "native/Sources/ClipShelfCore/HistoryStore+Origin.swift": "e03606737bfe59157a44650ba4a4b1b4ed1fb8f64b35dc5dbf578ee41b6eed91",
+    "native/Sources/ClipShelfCore/HistoryStore+Paging.swift": "cadb3fcdc1b797888941e75df4e03c869990e4d4bdae2fbfc793046ccd9a2e69",
+    "native/Sources/ClipShelfCore/HistoryStore+Search.swift": "2acf63d74b82a89987524a611d19ef09f08dd385f826b84d920615043aaab667",
+    "native/Sources/ClipShelfCore/HistoryStore+Sharing.swift": "d2ca38910cb6b516e264511307437a40ef839e2058abcc655ce2df4e7f0a9ff1",
+    "native/Sources/ClipShelfCore/HistoryStore+Sync.swift": "d4523c9a126ceaf7b46205fed644ca3797ad3e05861efc66af352d880c72873c",
+    "native/Sources/ClipShelfCore/HistoryStore.swift": "27aa208ba99edbd8b71e46a1117859fb7159460c8ff3e9b3f907f4416eac567a",
+    "native/Sources/ClipShelfCore/RepresentationStorage.swift": "115cead82f4f9914f9db509a6be30a4f8886ad8949a80043b1b4b6c2c88587bb",
+    "native/Sources/ClipShelfCore/SharedBoardModels.swift": "9bd989e5b7f387b26aa24b5d91b554d900f6b295282aac617aaa80d36853b53e",
+    "native/Sources/ClipShelfCore/SyncModels.swift": "34e97dedf5ef3b8259f1fba40484fde15b0a6cabae8dfc04d090cf2555f8e165"
+  },
+  "reports": {
+    "f03-after-10000.json": "189c978017251d46a7379819b8035aa35dba7d21c496ad80a3ba66752fbd3d89",
+    "f03-after-100000.json": "59706f39810ff5b5eb8069a8e39672036884ab2a556d101d5b70e7f729dc642f",
+    "f03-before-10000.json": "7988c1fca194652a893ffeff8d151ecb01307c82622ba9353af1ef17fc0f5f7b",
+    "f03-before-100000.json": "33af4d035cacb9ff915584634e6684f67289314eb83412496f877fcf0c402f98"
+  }
+}

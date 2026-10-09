@@ -1,4 +1,45 @@
 import Foundation
+import ClipShelfCore
+
+struct PanelPageAnchor: Sendable, Equatable {
+    let recordID: UUID
+    /// Zero reveals this record; -1/+1 moves to its immediate neighbour.
+    let displacement: Int
+}
+
+struct PanelPageRequest: Sendable {
+    let id: UUID
+    let query: HistoryQuery
+    let offset: Int
+    let anchor: PanelPageAnchor?
+}
+
+struct PanelHistoryPage: Sendable {
+    let records: [ClipboardRecordMetadata]
+    let offset: Int
+    let hasMore: Bool
+    let focusID: UUID?
+}
+
+/// A bounded window, independent of how far the target is from the beginning.
+struct PanelPageWindow: Equatable {
+    static let size = 300
+    private(set) var offset = 0
+    private(set) var count = 0
+    private(set) var hasMore = false
+    var hasPrevious: Bool { offset > 0 }
+    var previousOffset: Int { max(0, offset - Self.size) }
+    var nextOffset: Int { offset + count }
+    var rangeDescription: String { count == 0 ? "0 条" : "第 \(offset + 1)–\(offset + count) 条" }
+
+    mutating func update(offset: Int, count: Int, hasMore: Bool) {
+        self.offset = max(0, offset)
+        self.count = min(max(0, count), Self.size)
+        self.hasMore = hasMore
+    }
+
+    static func centeredOffset(for targetIndex: Int) -> Int { max(0, targetIndex - Self.size / 2) }
+}
 
 /// An explicit board filter survives text edits; navigation remains a global-search shortcut.
 struct PanelBoardScope: Equatable {
@@ -22,11 +63,12 @@ struct PanelReorderPlan: Equatable {
     enum PlanningError: Error, Equatable { case staleSelection, unloadedBoundary, noMovement }
 
     /// Only an insertion anchor is sent to storage. Unloaded records never become a replacement list.
-    static func insertion(movingIDs: Set<UUID>, visibleIDs: [UUID], at index: Int, hasMore: Bool) throws -> Self {
+    static func insertion(movingIDs: Set<UUID>, visibleIDs: [UUID], at index: Int, hasMore: Bool, hasPrevious: Bool = false) throws -> Self {
         guard !movingIDs.isEmpty, movingIDs.isSubset(of: Set(visibleIDs)), (0...visibleIDs.count).contains(index) else {
             throw PlanningError.staleSelection
         }
         let moving = visibleIDs.filter { movingIDs.contains($0) }
+        if index == 0, hasPrevious { throw PlanningError.unloadedBoundary }
         let before = visibleIDs.dropFirst(index).first { !movingIDs.contains($0) }
         if before == nil, hasMore { throw PlanningError.unloadedBoundary }
         let remaining = visibleIDs.filter { !movingIDs.contains($0) }
@@ -37,7 +79,7 @@ struct PanelReorderPlan: Equatable {
         return Self(movingIDs: moving, beforeID: before)
     }
 
-    static func step(movingIDs: Set<UUID>, visibleIDs: [UUID], forward: Bool, hasMore: Bool) throws -> Self {
+    static func step(movingIDs: Set<UUID>, visibleIDs: [UUID], forward: Bool, hasMore: Bool, hasPrevious: Bool = false) throws -> Self {
         let selected = visibleIDs.indices.filter { movingIDs.contains(visibleIDs[$0]) }
         guard let first = selected.first, let last = selected.last else { throw PlanningError.staleSelection }
         let target: Int
@@ -48,10 +90,10 @@ struct PanelReorderPlan: Equatable {
             target = next + 1
         } else {
             guard let previous = visibleIDs.indices.prefix(first).last(where: { !movingIDs.contains(visibleIDs[$0]) }) else {
-                throw PlanningError.noMovement
+                throw hasPrevious ? PlanningError.unloadedBoundary : PlanningError.noMovement
             }
             target = previous
         }
-        return try insertion(movingIDs: movingIDs, visibleIDs: visibleIDs, at: target, hasMore: hasMore)
+        return try insertion(movingIDs: movingIDs, visibleIDs: visibleIDs, at: target, hasMore: hasMore, hasPrevious: hasPrevious)
     }
 }

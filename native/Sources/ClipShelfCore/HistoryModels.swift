@@ -28,6 +28,9 @@ public struct ClipboardRecordMetadata: Identifiable, Equatable, Codable, Sendabl
     public let revision: Int
     public let kind: ClipboardContentKind
     public let representationTypes: [[String]]
+    public let originDeviceID: UUID?
+    public let originDeviceName: String?
+    public let originDeviceConflict: Bool
 
     public var title: String {
         if let renamedTitle, !renamedTitle.isEmpty { return renamedTitle }
@@ -36,6 +39,21 @@ public struct ClipboardRecordMetadata: Identifiable, Equatable, Codable, Sendabl
         return String(first.prefix(120))
     }
     public var preview: String { String(text.prefix(1_000)) }
+}
+
+public struct ClipboardOriginDevice: Identifiable, Equatable, Codable, Sendable {
+    public let id: UUID
+    public let name: String
+    public init(id: UUID, name: String = "Mac") { self.id = id; self.name = name }
+}
+
+public enum HistoryDeviceFilter: Equatable, Sendable { case all, device(UUID), unknown }
+
+public struct HistoryMetadataPage: Sendable {
+    public let records: [ClipboardRecordMetadata]
+    public let offset: Int
+    public let hasMore: Bool
+    public let focusID: UUID?
 }
 
 public enum HistorySortOrder: String, Codable, Sendable { case recent, pinboard }
@@ -50,9 +68,11 @@ public struct HistoryQuery: Sendable {
     public var includePinned: Bool
     public var limit: Int
     public var sortOrder: HistorySortOrder
+    public var deviceFilter: HistoryDeviceFilter
     public init(text: String = "", kind: ClipboardContentKind? = nil, sourceBundleID: String? = nil,
                 copiedAfter: Date? = nil, copiedBefore: Date? = nil, pinboardIDs: Set<UUID> = [],
-                includePinned: Bool = true, limit: Int = 500, sortOrder: HistorySortOrder = .recent) {
+                includePinned: Bool = true, limit: Int = 500, sortOrder: HistorySortOrder = .recent,
+                deviceFilter: HistoryDeviceFilter = .all) {
         self.text = text
         self.kind = kind
         self.sourceBundleID = sourceBundleID
@@ -62,6 +82,7 @@ public struct HistoryQuery: Sendable {
         self.includePinned = includePinned
         self.limit = limit
         self.sortOrder = sortOrder
+        self.deviceFilter = deviceFilter
     }
 }
 

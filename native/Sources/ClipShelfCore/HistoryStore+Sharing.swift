@@ -198,7 +198,7 @@ extension HistoryStore {
         let drafts = try failedSharedDrafts(boardID: boardID, accountID: accountID)
         guard var record = drafts.first(where: { $0.id == operationID })?.operation.record else { throw HistoryStoreError.recordNotFound }
         record.id = UUID(); record.pinboardID = nil; record.pinboardOrder = nil; record.isInHistory = true; record.revision = 1
-        return try create(record)
+        return try create(record, preserveOrigin: true)
     }
 
     @discardableResult

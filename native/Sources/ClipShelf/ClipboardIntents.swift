@@ -36,7 +36,7 @@ final class ClipboardIntentRuntime {
             let root = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                   appropriateFor: nil, create: true)
                 .appendingPathComponent("ClipShelf Development", isDirectory: true)
-            store = try HistoryStore(databaseURL: root.appendingPathComponent("history.sqlite"))
+            store = try HistoryStore(databaseURL: root.appendingPathComponent("history.sqlite"), recordsLocalOrigin: true)
         }
         guard let store else { throw ClipboardIntentError.unavailable }
         return store

@@ -124,15 +124,20 @@ extension HistoryStore {
 
     public func metadataSources() throws -> [String: String] {
         try synchronized {
+            let stamp = try metadataCacheStamp()
+            if let stamp, let cached = sourceMetadataCache, cached.stamp == stamp { return cached.value }
             let statement = try prepare("SELECT source_bundle_id, max(coalesce(source_app, source_bundle_id)) FROM clipboard_records WHERE source_bundle_id IS NOT NULL AND (is_in_history = 1 OR pinboard_id IS NOT NULL) GROUP BY source_bundle_id")
             defer { sqlite3_finalize(statement) }
             var sources: [String: String] = [:]
             while true {
                 let status = sqlite3_step(statement)
-                if status == SQLITE_DONE { return sources }
+                if status == SQLITE_DONE { break }
                 try check(status, allowingRow: true)
                 if let id = textColumn(statement, 0), let name = textColumn(statement, 1) { sources[id] = name }
             }
+            // A concurrent writer may have committed during aggregation. Cache only a stable snapshot.
+            if let stamp, try metadataCacheStamp() == stamp { sourceMetadataCache = MetadataCacheEntry(stamp: stamp, value: sources) }
+            return sources
         }
     }
 
@@ -341,6 +346,7 @@ extension HistoryStore {
         if let parent = operation.baseOperationID {
             guard try syncScalar("SELECT revision FROM sync_log WHERE operation_id = ? AND account_id = ? AND entity_kind = ? AND entity_id = ?", [parent.uuidString, account, kind.rawValue, id.uuidString]) == String(operation.baseRevision) else { throw SyncError.invalidOperation }
         }
+        if let record = operation.record { try reconcileRemoteOrigin(record) }
         if operation.orderingOnly == true {
             try applyOrderingOperation(operation)
             try advanceSyncHead(operation)
@@ -398,6 +404,7 @@ extension HistoryStore {
                 record.isInHistory = true
             }
             if let current = try itemWithoutLock(id: record.id) {
+                record = resolvingOrigin(record, existing: current)
                 if record.pinboardID == current.pinboardID {
                     // Full snapshots carry their author's last-known position. Position-only operations
                     // arbitrate it independently, so a concurrent text edit cannot undo a drag.
@@ -487,6 +494,7 @@ extension HistoryStore {
     func preserveRemoteConflict(_ operation: SyncOperation) throws {
         let id = conflictID(operation.operationID)
         if var record = operation.record {
+            record = resolvingOrigin(record, existing: try itemWithoutLock(id: record.id))
             record.id = id
             record.renamedTitle = record.title + " (Conflict)"
             record.isInHistory = true

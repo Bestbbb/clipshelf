@@ -32,14 +32,25 @@ requires Accessibility authorization and a valid target. It is not the same as
 the demo, which never writes to the system clipboard. Use a blank temporary
 target document and quit the existing instance before switching modes.
 
+For deep-page and device-filter acceptance, add `--validation-search` alongside
+`--validation`. This creates 908 synthetic records, including a 450-item board,
+known local/remote installation IDs and unknown legacy sources. Search for
+`TARGET-DEEP-HISTORY` or `TARGET-DEEP-BOARD` and use Cmd-G to locate the record.
+The extra flag alone never populates a normal database.
+
 Multi-Pinboard checkbox filtering, combined type/source/date conditions, manual
 item-order controls, and the OCR preview/cache are implemented in the current
-source. Schema-v7 migration and ordering synchronization pass automated tests,
+source. Schema-v8 adds a literal-substring candidate index and installation-origin
+metadata; migration and ordering synchronization pass automated tests,
 including simulated concurrent edits; real-device synchronization still needs acceptance. Normal/compact
 layouts and single-item keyboard/mouse reordering have been checked with synthetic data.
 Multi-item dragging, browser targets, and Accessibility-based direct paste still need
-live validation. Deep-page Cmd-G location currently requires loading
-more results; device filtering and FTS indexing remain open work.
+live validation. Deep-page Cmd-G now requests a bounded window around the exact
+item. Device filtering, previous/next pages and 300-item windows are implemented;
+the new layout and full search-to-render latency still need live acceptance.
+Legacy records remain unknown rather than being assigned to this Mac. The
+installation ID is not the device that originally created a file or text, and
+Universal Clipboard does not provide enough evidence to label an iPhone source.
 
 In one Pinboard's manual-order view, drag a card to reorder it. Hold Option while
 dragging to export its original content to another app. Ordinary history view

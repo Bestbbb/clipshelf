@@ -27,4 +27,13 @@ final class RuntimeProfileTests: XCTestCase {
         defer { profile.discardValidationPreferences() }
         XCTAssertEqual(profile.mode, .validation)
     }
+
+    func testSearchFixturesRequireIsolatedValidationMode() {
+        XCTAssertFalse(RuntimeProfile(arguments: ["ClipShelf", "--validation-search"]).includesSearchFixtures)
+        XCTAssertFalse(RuntimeProfile(arguments: ["ClipShelf", "--demo", "--validation-search"]).includesSearchFixtures)
+        let profile = RuntimeProfile(arguments: ["ClipShelf", "--validation", "--validation-search"])
+        defer { profile.discardValidationPreferences() }
+        XCTAssertTrue(profile.includesSearchFixtures)
+        XCTAssertFalse(profile.allowsBackgroundIntegrations)
+    }
 }

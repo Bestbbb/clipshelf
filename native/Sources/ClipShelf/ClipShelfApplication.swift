@@ -39,7 +39,6 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     private var suggestionTask: Task<Void, Never>?
     private var suggestionGeneration: UInt64 = 0
     private var suggestionTargetPID: pid_t?
-    private var currentQuery = HistoryQuery(includePinned: false, limit: 300)
     private var queryGeneration: UInt64 = 0
     private var queryTask: Task<Void, Never>?
     private var ocrCleanupTask: Task<Void, Never>?
@@ -80,7 +79,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         }
         do {
             let directory = try profile.dataDirectory()
-            store = try HistoryStore(databaseURL: directory.appendingPathComponent("history.sqlite"))
+            store = try HistoryStore(databaseURL: directory.appendingPathComponent("history.sqlite"), recordsLocalOrigin: true)
             panel.ocrSourceStore = store
             if profile.allowsBackgroundIntegrations {
                 configureShareInbox(store: store!, directory: directory)
@@ -102,6 +101,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
                     if [1, 6].contains(index) { record.pinboardID = referenceBoard.id }
                     _ = try store.create(record)
                 }
+                if profile.includesSearchFixtures { try SearchValidationFixtures.populate(store) }
             }
             applyRetention()
             reload()
@@ -321,7 +321,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         }
         panel.onNewText = { [weak self] in self?.newText() }
         if !demo {
-            panel.onQueryChange = { [weak self] query in self?.currentQuery = query; self?.reload() }
+            panel.onPageRequest = { [weak self] request, completion in
+                self?.loadPage(request, completion: completion)
+            }
         }
         panel.onCreatePinboard = { [weak self] name, color in
             guard let self, !self.demo else { return }
@@ -508,21 +510,38 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     private func reload() {
         guard let store else { refresh(); return }
         requestOCRCleanup(store: store)
+        panel.refreshPage(status: statusText)
+        refresh()
+    }
+
+    private func loadPage(_ request: PanelPageRequest,
+                          completion: @escaping (Result<PanelHistoryPage, Error>) -> Void) {
+        guard let store else { completion(.failure(HistoryStoreError.recordNotFound)); return }
         queryTask?.cancel()
         queryGeneration &+= 1
         let generation = queryGeneration
-        let query = currentQuery
         queryTask = Task { @MainActor [weak self] in
             do {
                 let result = try await Task.detached(priority: .userInitiated) {
-                    (try store.searchMetadata(query), try store.pinboards(), try store.metadataSources())
+                    var query = request.query
+                    query.limit = PanelPageWindow.size
+                    let page = try store.metadataPage(query, offset: request.offset,
+                        anchorID: request.anchor?.recordID, displacement: request.anchor?.displacement ?? 0)
+                    return (page, try store.pinboards(), try store.metadataSources(),
+                            try store.metadataDevices(), try store.localDeviceIdentity())
                 }.value
                 guard let self, !Task.isCancelled, generation == self.queryGeneration else { return }
-                self.metadata = result.0
+                self.metadata = result.0.records
                 self.panel.setPinboards(result.1)
                 self.panel.setSources(result.2)
+                self.panel.setDevices(result.3, localDeviceID: result.4.id)
+                completion(.success(PanelHistoryPage(records: result.0.records, offset: result.0.offset,
+                    hasMore: result.0.hasMore, focusID: result.0.focusID)))
                 self.refresh()
-            } catch { self?.setStatus("无法读取历史，请检查本机数据文件。") }
+            } catch {
+                guard let self, !Task.isCancelled, generation == self.queryGeneration else { return }
+                completion(.failure(error))
+            }
         }
     }
 
@@ -549,7 +568,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         statusItem?.button?.toolTip = "ClipShelf · \(capture.isRunning ? "记录中" : "已暂停")"
         panel.setCapturePaused(!capture.isRunning, recordingAllowed: !validation)
         if demo { panel.update(records: records, status: statusText) }
-        else { panel.update(metadata: metadata, status: statusText) }
+        else { panel.updateStatus(statusText) }
     }
 
     private func setStatus(_ message: String) { statusMessage = message; refresh() }
@@ -573,7 +592,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         let pointer = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(pointer, $0.frame, false) } ?? NSScreen.main
         if demo { panel.show(records: records, on: screen, status: statusText) }
-        else { panel.show(metadata: metadata, on: screen, status: statusText) }
+        else { panel.show(metadata: [], on: screen, status: statusText) }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -863,7 +882,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
                         if let current = try target.store?.item(id: record.id) {
                             record.revision = current.revision
                             _ = try target.store?.update(record: record)
-                        } else { _ = try target.store?.create(record) }
+                        } else { _ = try target.store?.create(record, preserveOrigin: true) }
                     }
                     target.reload()
                 } catch { target.setStatus("撤销未完成：相关分组或内容已发生变化。") }
