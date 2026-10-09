@@ -4,6 +4,43 @@ import XCTest
 
 @MainActor
 final class StackCoordinatorTests: XCTestCase {
+    func testPersistedCaptureOnlyEntersOriginalLiveSession() async {
+        let stack = StackCoordinator()
+        let record = ClipboardRecord(text: "captured")
+        stack.activate()
+        let originalSession = stack.sessionID
+        stack.activate()
+        XCTAssertEqual(stack.sessionID, originalSession)
+        stack.appendCaptured(record, lease: nil, capturedIn: originalSession)
+        XCTAssertEqual(stack.queue, [record])
+        stack.end()
+        stack.appendCaptured(record, lease: nil, capturedIn: originalSession)
+        XCTAssertTrue(stack.queue.isEmpty)
+        stack.activate()
+        XCTAssertNotEqual(stack.sessionID, originalSession)
+        stack.appendCaptured(record, lease: nil, capturedIn: originalSession)
+        stack.appendCaptured(record, lease: nil, capturedIn: nil)
+        XCTAssertTrue(stack.queue.isEmpty)
+        stack.appendCaptured(record, lease: nil, capturedIn: stack.sessionID)
+        XCTAssertEqual(stack.queue, [record])
+    }
+
+    func testClearingEvenAnEmptyStackRejectsEarlierPendingCaptures() async {
+        let stack = StackCoordinator()
+        stack.activate()
+        let beforeClear = stack.sessionID
+        stack.clear()
+        XCTAssertTrue(stack.isActive)
+        stack.appendCaptured(ClipboardRecord(text: "before clear"), lease: nil, capturedIn: beforeClear)
+        XCTAssertTrue(stack.queue.isEmpty)
+        let afterClear = stack.sessionID
+        stack.appendCaptured(ClipboardRecord(text: "after clear"), lease: nil, capturedIn: afterClear)
+        XCTAssertEqual(stack.queue.map(\.text), ["after clear"])
+        stack.clear()
+        stack.appendCaptured(ClipboardRecord(text: "late"), lease: nil, capturedIn: afterClear)
+        XCTAssertTrue(stack.queue.isEmpty)
+    }
+
     func testDuplicateCopiesKeepDistinctOccurrences() async {
         let stack = StackCoordinator()
         let record = ClipboardRecord(text: "repeated")

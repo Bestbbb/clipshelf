@@ -51,7 +51,7 @@
   },
   {
     "file": "native/Sources/ClipShelf/ClipboardCodec.swift",
-    "literal": "\"图片 \\(Int(size.width)) × \\(Int(size.height))\"",
+    "literal": "\"图片 \\(width.intValue) × \\(height.intValue)\"",
     "reason": "Persisted legacy content marker; preserve bytes"
   },
   {

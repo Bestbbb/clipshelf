@@ -48,6 +48,12 @@ previews, OCR, sequential pasting, privacy controls, backups, and MCP access.
 CloudKit sync/sharing, on-device model suggestions, native system services and
 Shortcuts have their own configuration and permission gates.
 
+Clipboard representations are read into a frozen snapshot, then decoded and
+saved in order off the main actor. A failed save pauses recording and retains
+pending items in memory for explicit retry or discard. Pausing or locking cancels
+waiting saves; a write already in progress may still finish. Polling cannot
+recover copies overwritten between observations.
+
 See the [implementation status](docs/IMPLEMENTATION_STATUS.zh-CN.md) for what is
 implemented, tested, and still missing. Individual feature availability does not
 mean the full product has passed acceptance. The earlier Tauri scaffold remains

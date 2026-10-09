@@ -30,6 +30,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     private var shareInboxTimer: Timer?
     private let panel = ClipboardPanelController()
     private let capture = CaptureService()
+    private var captureIngestion: CaptureIngestionCoordinator<CapturePersistenceInput, RetainedClipboardRecords>?
     private let paste = PasteCoordinator()
     private let globalShortcuts = GlobalShortcutCoordinator()
     private var shortcutConfiguration = KeyboardShortcutConfiguration.defaults
@@ -70,6 +71,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     private var cleanupConfirmation: HistoryCleanupConfirmationController?
     private var statusItem: NSStatusItem!
     private var recordingItem: NSMenuItem!
+    private var retryCaptureItem: NSMenuItem!
+    private var discardCaptureItem: NSMenuItem!
     private var stateItem: NSMenuItem!
     private var permissionItem: NSMenuItem!
     private var activationItem: NSMenuItem!
@@ -110,10 +113,12 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         }
     }
     private var isDataMutationInProgress: Bool {
-        selectionMutationInProgress || historyCleanup?.isBusy == true || storageSettings?.isBusy == true || terminationDecisionPending || isTerminating
+        selectionMutationInProgress || captureIngestion?.isProcessing == true || historyCleanup?.isBusy == true || storageSettings?.isBusy == true || terminationDecisionPending || isTerminating
     }
     private var imageOutputOperationID: UUID?
     private var isTerminating = false
+    private var recordingBeforeTermination = false
+    private var discardCapturesOnTermination = false
     @UpdateAvailabilityFlag private var terminationDecisionPending = false
     private let defaultExclusions = ["com.1password.1password", "com.agilebits.onepassword7",
                                      "com.bitwarden.desktop", "com.apple.Passwords"]
@@ -188,23 +193,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             ClipShelfShortcuts.updateAppShortcutParameters()
         }
         capture.excludedBundleIDs = Set(excluded)
-        capture.onCapture = { [weak self] record in
-            guard let self, let store = self.store else { return }
-            do {
-                let retained = try store.recordRetainingCapturedOwnedFiles(record, purpose: .stack)
-                guard let stored = retained.records.first else { throw HistoryStoreError.recordNotFound }
-                self.stack.append(stored, lease: retained.lease)
-                self.statusMessage = nil
-                self.reload()
-                self.scheduleOCR(for: stored)
-            } catch {
-                self.capture.stop()
-                self.statusMessage = L10n.text("保存失败，已暂停记录；现有历史仍可使用。\n\(error.localizedDescription)")
-                self.refresh()
-            }
-        }
+        configureCaptureIngestion()
         capture.onStatus = { [weak self] message in self?.setStatus(message) }
-        paste.onClipboardWrite = { [weak self] in self?.capture.noteSelfWrite() }
         paste.onResult = { [weak self] message in self?.setStatus(message) }
         globalShortcuts.onPressed = { [weak self] action, chord in
             guard let self, self.interactionLifecycle.isAllowed else { return }
@@ -235,6 +225,73 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         }
     }
 
+    private func configureCaptureIngestion() {
+        guard let store else { return }
+        let ingestion = CaptureIngestionCoordinator<CapturePersistenceInput, RetainedClipboardRecords> { input in
+            try await CapturePersistence.save(input, to: store)
+        }
+        captureIngestion = ingestion
+        capture.onSnapshot = { [weak self] snapshot in
+            guard let self, self.interactionLifecycle.isAllowed else { return }
+            let input = CapturePersistenceInput(snapshot: snapshot, stackSessionID: self.stack.isActive ? self.stack.sessionID : nil)
+            if self.captureIngestion?.enqueue(input, byteCount: snapshot.byteCount) != true {
+                self.capture.stop()
+                self.preferences.set(false, forKey: "recordingEnabled")
+                self.setStatus(L10n.text("保存队列已满，已暂停记录；本次复制未加入队列。请等待现有内容保存后继续，或丢弃待保存内容。"))
+            }
+        }
+        ingestion.onSaved = { [weak self] input, retained in
+            guard let self, !self.isTerminating, let stored = retained.records.first else { return }
+            // An earlier capture must never enter a newly started Stack session.
+            self.stack.appendCaptured(stored, lease: retained.lease, capturedIn: input.stackSessionID)
+            if self.capture.isRunning { self.statusMessage = nil }
+            self.scheduleOCR(for: stored)
+        }
+        ingestion.onFailure = { [weak self] _, error in
+            guard let self, !self.isTerminating else { return }
+            self.capture.stop()
+            self.preferences.set(false, forKey: "recordingEnabled")
+            var message = L10n.text("保存失败，已暂停记录；\(self.captureIngestion?.pendingCount ?? 0) 项内容暂存在内存。可在菜单中重试保存或丢弃。\n\(error.localizedDescription)")
+            if self.captureBlocksOwnedReclamation {
+                message += "\n" + L10n.text("待保存内容含文件引用，请先重试或丢弃这些内容，再回收托管文件。")
+            }
+            self.setStatus(message)
+        }
+        ingestion.onSettled = { [weak self] in
+            guard let self, !self.isTerminating else { return }
+            // A canceled operation may already have committed. Refresh the view,
+            // without allowing its stale receipt to update Stack or status text.
+            self.reload()
+        }
+        ingestion.onStateChanged = { [weak self] in
+            guard let self else { return }
+            self.refresh()
+            if !self.isCaptureWriteBusy {
+                self.historyCleanup?.resumeDeferred()
+                self.storageSettings?.resumeDeferred()
+            }
+        }
+    }
+
+    private var isCaptureWriteBusy: Bool {
+        guard let ingestion = captureIngestion else { return false }
+        return ingestion.isProcessing || (ingestion.pendingCount > 0 && !ingestion.hasFailure)
+    }
+
+    private var captureBlocksOwnedReclamation: Bool {
+        captureIngestion?.containsPending(where: { $0.blocksOwnedReclamation }) == true
+    }
+
+    @discardableResult
+    private func discardPendingCapturesForPrivacy() -> Bool {
+        let hadPending = (captureIngestion?.pendingCount ?? 0) > 0
+        captureIngestion?.discardPending()
+        if hadPending {
+            statusMessage = L10n.text("已取消等待保存的内容；如需保留，请恢复记录后重新复制。已开始的写入可能仍会完成。")
+        }
+        return hadPending
+    }
+
     private func configureMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "clipboard", accessibilityDescription: L10n.text("ClipShelf 剪贴板"))
@@ -249,6 +306,10 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         menu.addItem(activationItem)
         recordingItem = item(L10n.text("开始记录"), #selector(toggleRecording))
         menu.addItem(recordingItem)
+        retryCaptureItem = item(L10n.text("重试保存并继续记录"), #selector(retryCapturedContents))
+        menu.addItem(retryCaptureItem)
+        discardCaptureItem = item(L10n.text("丢弃未保存的内容…"), #selector(discardCapturedContents))
+        menu.addItem(discardCaptureItem)
         permissionItem = item(L10n.text("开启直接粘贴…"), #selector(enableDirectPaste))
         menu.addItem(permissionItem)
         menu.addItem(item(L10n.text("排除应用…"), #selector(editExclusions)))
@@ -525,7 +586,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             historyCleanup?.cancelPending()
             storageSettings?.suspend()
             languageSettings?.suspend()
-            interactionLifecycle.invalidateContext(); capture.stop(); stackKeys.stop()
+            interactionLifecycle.invalidateContext(); capture.stop(); discardPendingCapturesForPrivacy(); stackKeys.stop()
             if let shareInbox { Task { try? await shareInbox.publishDestinations(allowImports: false) } }
         } else {
             if !validation, preferences.bool(forKey: "recordingEnabled"), pausedUntil == nil, store != nil { capture.start() }
@@ -779,6 +840,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         stateItem?.title = demo ? L10n.text("演示模式 · 记录关闭") : (capture.isRunning ? L10n.text("正在记录") : L10n.text("记录已暂停"))
         recordingItem?.title = capture.isRunning ? L10n.text("暂停记录") : L10n.text("开始记录")
         recordingItem?.isEnabled = !demo && !validation && store != nil
+        let pendingCaptures = captureIngestion?.pendingCount ?? 0
+        retryCaptureItem?.isHidden = captureIngestion?.hasFailure != true
+        retryCaptureItem?.isEnabled = !demo && !validation && interactionLifecycle.isAllowed && captureIngestion?.isProcessing != true
+        discardCaptureItem?.isHidden = pendingCaptures == 0
+        discardCaptureItem?.isEnabled = interactionLifecycle.isAllowed
         permissionItem?.isEnabled = !demo
         permissionItem?.title = paste.hasPermission ? L10n.text("检查直接粘贴权限…") : L10n.text("开启直接粘贴…")
         statusItem?.button?.toolTip = "ClipShelf · \(capture.isRunning ? L10n.text("记录中") : L10n.text("已暂停"))"
@@ -830,15 +896,51 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     }
 
     @objc private func toggleRecording() {
-        guard !demo, !validation, store != nil else { return }
+        guard !demo, !validation, store != nil, interactionLifecycle.isAllowed else { return }
         if !preferences.bool(forKey: "hasSeenWelcome") { showWelcome(); return }
         cancelSuggestions()
-        if capture.isRunning { capture.stop() } else { capture.start() }
+        statusMessage = nil
+        if capture.isRunning {
+            capture.stop(); discardPendingCapturesForPrivacy()
+        } else {
+            captureIngestion?.retry(); capture.start()
+        }
         pauseTimer?.invalidate(); pausedUntil = nil
         preferences.removeObject(forKey: "pauseUntil")
         preferences.set(capture.isRunning, forKey: "recordingEnabled")
-        statusMessage = nil
         refresh()
+    }
+
+    @objc private func retryCapturedContents() {
+        guard !demo, !validation, store != nil, interactionLifecycle.isAllowed,
+              captureIngestion?.hasFailure == true, captureIngestion?.isProcessing != true else { return }
+        captureIngestion?.retry()
+        capture.start()
+        pauseTimer?.invalidate(); pausedUntil = nil
+        preferences.removeObject(forKey: "pauseUntil")
+        preferences.set(true, forKey: "recordingEnabled")
+        setStatus(L10n.text("正在重试保存并继续记录。"))
+    }
+
+    @objc private func discardCapturedContents() {
+        guard interactionLifecycle.isAllowed, let ingestion = captureIngestion, ingestion.pendingCount > 0 else { return }
+        let wasRecording = capture.isRunning
+        capture.stop() // Freeze the confirmation scope; no later copy joins this batch.
+        let alert = NSAlert()
+        alert.messageText = L10n.text("丢弃未保存的内容？")
+        alert.informativeText = L10n.text("这 \(ingestion.pendingCount) 项尚未确认保存，仅保留在内存中。丢弃后需要重新复制；已经开始的写入可能仍会完成。")
+        alert.addButton(withTitle: L10n.text("取消"))
+        alert.addButton(withTitle: L10n.text("丢弃"))
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertSecondButtonReturn, interactionLifecycle.isAllowed else {
+            if wasRecording, interactionLifecycle.isAllowed, !ingestion.hasFailure,
+               preferences.bool(forKey: "recordingEnabled") { capture.start() }
+            refresh()
+            return
+        }
+        capture.stop(); ingestion.discardPending()
+        preferences.set(false, forKey: "recordingEnabled")
+        setStatus(L10n.text("已丢弃尚未开始的保存请求；已开始的写入可能仍会完成。"))
     }
 
     @objc private func enableDirectPaste() {
@@ -878,8 +980,10 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         if alert.runModal() == .alertFirstButtonReturn {
             let values = field.stringValue.components(separatedBy: CharacterSet(charactersIn: ",\n"))
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            if capture.excludedBundleIDs != Set(values) { discardPendingCapturesForPrivacy() }
             capture.excludedBundleIDs = Set(values)
             preferences.set(values, forKey: "excludedBundleIDs")
+            refresh()
         }
     }
 
@@ -1167,10 +1271,14 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         guard !demo, !validation else { return }
         cancelSuggestions()
         capture.stop(); pauseTimer?.invalidate()
+        let discarded = discardPendingCapturesForPrivacy()
+        let discardNotice = discarded ? statusMessage : nil
         let until = Date().addingTimeInterval(Double(sender.tag) * 60)
         preferences.set(true, forKey: "recordingEnabled")
         scheduleResume(at: until)
-        setStatus(L10n.text("已暂停记录，\(sender.tag) 分钟后恢复。"))
+        var message = L10n.text("已暂停记录，\(sender.tag) 分钟后恢复。")
+        if let discardNotice { message += "\n" + discardNotice }
+        setStatus(message)
     }
 
     private func scheduleResume(at until: Date) {
@@ -1212,7 +1320,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         storageSettings = controller
         controller.isExternalMutationBusy = { [weak self] in
             guard let self else { return true }
-            return self.selectionMutationInProgress || self.historyCleanup?.isBusy == true || self.sessionSuspended || self.isTerminating || self.terminationDecisionPending
+            return self.selectionMutationInProgress || self.isCaptureWriteBusy || self.captureBlocksOwnedReclamation || self.historyCleanup?.isBusy == true || self.sessionSuspended || self.isTerminating || self.terminationDecisionPending
         }
         controller.onBusyChanged = { [weak self] busy in
             self?.appUpdates?.refreshAvailability()
@@ -1237,7 +1345,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         historyCleanup = coordinator
         coordinator.isExternalMutationBusy = { [weak self] in
             guard let self else { return true }
-            return self.selectionMutationInProgress || self.storageSettings?.isBusy == true || self.sessionSuspended || self.isTerminating || self.terminationDecisionPending
+            return self.selectionMutationInProgress || self.isCaptureWriteBusy || self.storageSettings?.isBusy == true || self.sessionSuspended || self.isTerminating || self.terminationDecisionPending
         }
         coordinator.onPrepare = { [weak self] request, completion in
             guard let self, !self.isTerminating, !self.terminationDecisionPending else {
@@ -1486,7 +1594,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         coordinator.isRestartBlocked = { [weak self] in
             guard let self else { return true }
             return self.sessionSuspended || self.isTerminating || self.terminationDecisionPending ||
-                self.selectionMutationInProgress || self.historyCleanup?.isCommitting == true || self.storageSettings?.isCommitting == true
+                self.selectionMutationInProgress || self.isCaptureWriteBusy || self.historyCleanup?.isCommitting == true || self.storageSettings?.isCommitting == true
         }
         coordinator.onChange = { [weak self, weak coordinator] in
             guard let self, let coordinator else { return }
@@ -1501,6 +1609,12 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(checkAppUpdates) { return appUpdates?.canPerformMenuAction == true }
+        if menuItem.action == #selector(retryCapturedContents) {
+            return !demo && !validation && interactionLifecycle.isAllowed && captureIngestion?.hasFailure == true && captureIngestion?.isProcessing != true
+        }
+        if menuItem.action == #selector(discardCapturedContents) {
+            return interactionLifecycle.isAllowed && (captureIngestion?.pendingCount ?? 0) > 0
+        }
         return true
     }
 
@@ -1626,7 +1740,6 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             if mcpSettings == nil {
                 mcpSettings = try MCPSettingsController(store: store)
                 mcpSettings?.onDataChanged = { [weak self] in self?.reload() }
-                mcpSettings?.onCredentialCopied = { [weak self] in self?.capture.noteSelfWrite() }
             }
             mcpSettings?.present()
         } catch { showError(L10n.text("MCP 设置不可用"), detail: L10n.text("无法读取本机钥匙串授权。已有历史不受影响。")) }
@@ -1908,14 +2021,34 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminationDecisionPending else { return .terminateLater }
-        guard !selectionMutationInProgress, historyCleanup?.isCommitting != true, storageSettings?.isCommitting != true else {
+        guard !selectionMutationInProgress, captureIngestion?.isProcessing != true,
+              historyCleanup?.isCommitting != true, storageSettings?.isCommitting != true else {
             setStatus(L10n.text("正在保存、撤销或清理，请完成后再退出。"))
             return .terminateCancel
         }
         terminationDecisionPending = true
+        recordingBeforeTermination = capture.isRunning
+        discardCapturesOnTermination = false
+        capture.stop()
         cancelPendingInteraction(); cancelSuggestions(); stackKeys.stopAfterCurrentPress(); stackPanel.suspend()
         historyCleanup?.cancelPending()
         storageSettings?.cancelPending()
+        if let pending = captureIngestion?.pendingCount, pending > 0 {
+            let alert = NSAlert()
+            alert.messageText = L10n.text("仍有内容尚未保存")
+            alert.informativeText = L10n.text("\(pending) 项内容仅保留在内存中。可以取消退出并重试保存，或丢弃这些内容后退出。")
+            alert.addButton(withTitle: L10n.text("取消"))
+            alert.addButton(withTitle: L10n.text("丢弃并退出"))
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() != .alertSecondButtonReturn {
+                terminationDecisionPending = false
+                if recordingBeforeTermination, !sessionSuspended, captureIngestion?.hasFailure != true { capture.start() }
+                refreshStackPresentation(); refresh()
+                return .terminateCancel
+            }
+            // Preserve the batch if the subsequent editor-draft decision is canceled.
+            discardCapturesOnTermination = true
+        }
         panel.dismissForAction({ [weak self] in
             DispatchQueue.main.async { self?.finishTerminationDecision(true, sender: sender) }
         }, onCancel: { [weak self] in
@@ -1926,8 +2059,10 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
 
     private func finishTerminationDecision(_ accepted: Bool, sender: NSApplication) {
         guard terminationDecisionPending else { return }
-        if accepted, !selectionMutationInProgress, historyCleanup?.isCommitting != true, storageSettings?.isCommitting != true,
+        if accepted, !selectionMutationInProgress, captureIngestion?.isProcessing != true,
+           historyCleanup?.isCommitting != true, storageSettings?.isCommitting != true,
            historyCleanup?.terminate() != false {
+            if discardCapturesOnTermination { captureIngestion?.discardPending() }
             isTerminating = true
             terminationDecisionPending = false
             sender.reply(toApplicationShouldTerminate: true)
@@ -1937,7 +2072,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             sender.reply(toApplicationShouldTerminate: false)
             historyCleanup?.resumeDeferred()
             storageSettings?.resumeDeferred()
+            if recordingBeforeTermination, !sessionSuspended, captureIngestion?.hasFailure != true { capture.start() }
             refreshStackPresentation()
+            refresh()
         }
     }
 
@@ -1949,7 +2086,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         storageSettings?.cancelPending()
         ownedPublications?.stopObserving()
         cleanupConfirmation?.dismiss(); cleanupConfirmation = nil
-        capture.stop(); globalShortcuts.stop(); stackKeys.stop(); stack.end(); paste.cancel()
+        capture.stop(); captureIngestion?.discardPending(); globalShortcuts.stop(); stackKeys.stop(); stack.end(); paste.cancel()
         if let shortcutInputSourceObserver {
             DistributedNotificationCenter.default().removeObserver(shortcutInputSourceObserver)
             self.shortcutInputSourceObserver = nil

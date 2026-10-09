@@ -1,0 +1,182 @@
+import AppKit
+import ClipShelfCore
+import ImageIO
+import XCTest
+@testable import ClipShelf
+
+private final class SnapshotItem: NSPasteboardItem {
+    let declared: [NSPasteboard.PasteboardType]
+    var payloads: [NSPasteboard.PasteboardType: Data]
+    var declarationReads = 0
+    var payloadReads: [NSPasteboard.PasteboardType: Int] = [:]
+
+    init(_ types: [NSPasteboard.PasteboardType], payloads: [NSPasteboard.PasteboardType: Data]) {
+        declared = types; self.payloads = payloads
+        super.init()
+    }
+    required init?(pasteboardPropertyList propertyList: Any, ofType type: NSPasteboard.PasteboardType) { return nil }
+    override var types: [NSPasteboard.PasteboardType] { declarationReads += 1; return declared }
+    override func data(forType type: NSPasteboard.PasteboardType) -> Data? {
+        payloadReads[type, default: 0] += 1
+        return payloads[type]
+    }
+    override func string(forType type: NSPasteboard.PasteboardType) -> String? {
+        XCTFail("Summaries must use frozen bytes, not a second pasteboard read")
+        return nil
+    }
+}
+
+private final class SnapshotProvider: NSObject, NSPasteboardItemDataProvider {
+    var calls: [NSPasteboard.PasteboardType: Int] = [:]
+    func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem, provideDataForType type: NSPasteboard.PasteboardType) {
+        calls[type, default: 0] += 1
+        item.setData(Data((type == .string ? "lazy 🧪" : "{\\rtf1 lazy}").utf8), forType: type)
+    }
+}
+
+@MainActor final class ClipboardSnapshotTests: XCTestCase {
+    private let opaque = NSPasteboard.PasteboardType("test.clipshelf.opaque")
+    private func bytes(_ text: String) -> Data { Data(text.utf8) }
+    private func snapshot(_ items: [NSPasteboardItem]) throws -> ClipboardCaptureSnapshot {
+        guard let value = try ClipboardCodec.snapshot(from: items, sourceApp: "Fixture", sourceBundleID: "test.fixture") else {
+            throw ClipboardCodecError.noContent
+        }
+        return value
+    }
+    nonisolated private static func decodeWithThread(_ snapshot: ClipboardCaptureSnapshot) throws -> (ClipboardRecord, Bool) {
+        (try ClipboardCodec.record(from: snapshot), Thread.isMainThread)
+    }
+
+    func testDeclarationsAndRepresentationsAreReadOnceIncludingSummaryAndRichFields() throws {
+        let text = "中文\n code 🧪", rtf = bytes("{\\rtf1 test}"), html = bytes("<b>test</b>")
+        let item = SnapshotItem([.string, .rtf, .html, opaque, .string],
+                                payloads: [.string: bytes(text), .rtf: rtf, .html: html, opaque: Data([0, 255, 2])])
+        let frozen = try snapshot([item])
+        let record = try ClipboardCodec.record(from: frozen)
+        XCTAssertEqual(item.declarationReads, 1)
+        XCTAssertEqual(item.payloadReads, [.string: 1, .rtf: 1, .html: 1, opaque: 1])
+        XCTAssertEqual(record.text, text); XCTAssertEqual(record.rtf, rtf); XCTAssertEqual(record.html, html)
+        XCTAssertEqual(record.parts, frozen.parts); XCTAssertEqual(record.parts[0].representations.count, 4)
+        XCTAssertEqual(record.sourceApp, "Fixture"); XCTAssertEqual(record.sourceBundleID, "test.fixture")
+        XCTAssertEqual(record.copiedAt, frozen.copiedAt)
+        XCTAssertEqual(frozen.byteCount, bytes(text).count + rtf.count + html.count + 3)
+    }
+
+    func testLazyProviderIsMaterializedOnceAndValueCanBeDecodedOffMainActor() async throws {
+        let provider = SnapshotProvider(), item = NSPasteboardItem()
+        XCTAssertTrue(item.setDataProvider(provider, forTypes: [.string, .rtf]))
+        let frozen = try snapshot([item])
+        let (record, wasMainThread) = try await Task.detached {
+            try Self.decodeWithThread(frozen)
+        }.value
+        XCTAssertFalse(wasMainThread)
+        XCTAssertEqual(provider.calls, [.string: 1, .rtf: 1])
+        XCTAssertEqual(record.text, "lazy 🧪"); XCTAssertNotNil(record.rtf)
+    }
+
+    func testMissingAdvertisedRepresentationRejectsTheWholeBatchAndCanRetry() throws {
+        let first = SnapshotItem([.string], payloads: [.string: bytes("first")])
+        let second = SnapshotItem([.string, opaque], payloads: [.string: bytes("second")])
+        XCTAssertThrowsError(try snapshot([first, second])) {
+            guard case ClipboardCodecError.temporarilyUnavailable = $0 else { return XCTFail("Unexpected error: \($0)") }
+        }
+        second.payloads[opaque] = Data([9, 8, 7])
+        let record = try ClipboardCodec.record(from: snapshot([first, second]))
+        XCTAssertEqual(record.text, "first\nsecond"); XCTAssertEqual(record.parts.count, 2)
+        XCTAssertEqual(record.parts[1].representations.last?.data, Data([9, 8, 7]))
+        XCTAssertNil(record.rtf); XCTAssertNil(record.html)
+    }
+
+    func testPrivacyAndInternalMarkersOnLaterItemsPreventEveryPayloadRead() throws {
+        for marker in ["org.nspasteboard.ConcealedType", "org.nspasteboard.TransientType",
+                       "org.nspasteboard.ConfidentialType", "org.nspasteboard.AutoGeneratedType",
+                       "com.agilebits.onepassword", "com.1password.1password", CaptureService.internalType.rawValue] {
+            let first = SnapshotItem([.string], payloads: [.string: bytes("private")])
+            let second = SnapshotItem([.string, .init(marker)], payloads: [.string: bytes("private")])
+            XCTAssertNil(try ClipboardCodec.snapshot(from: [first, second], sourceApp: nil, sourceBundleID: nil))
+            XCTAssertEqual(first.declarationReads, 1); XCTAssertEqual(second.declarationReads, 1)
+            XCTAssertTrue(first.payloadReads.isEmpty); XCTAssertTrue(second.payloadReads.isEmpty)
+        }
+    }
+
+    func testExplicitImportAcceptsOwnOutputWhilePassiveCaptureIgnoresIt() throws {
+        let original = ClipboardRecord(text: "user intentionally imports this", rtf: bytes("{\\rtf1 original}"))
+        let items = try ClipboardCodec.items(for: [original], plainText: false)
+        XCTAssertNil(try ClipboardCodec.snapshot(from: items, sourceApp: nil, sourceBundleID: nil))
+        let parsed = try XCTUnwrap(ClipboardCodec.record(from: items, sourceApp: nil, sourceBundleID: nil))
+        XCTAssertEqual(parsed.text, original.text); XCTAssertEqual(parsed.rtf, original.rtf)
+        XCTAssertFalse(parsed.parts.flatMap(\.representations).contains { $0.typeIdentifier == CaptureService.internalType.rawValue })
+        let board = NSPasteboard(name: .init("ClipShelf.explicit-import.tests.\(UUID())"))
+        defer { board.releaseGlobally() }
+        XCTAssertTrue(board.writeObjects(items))
+        XCTAssertNil(try ClipboardCodec.snapshot(from: board, sourceApp: nil, sourceBundleID: nil))
+        XCTAssertEqual(try ClipboardCodec.record(from: board, sourceApp: nil, sourceBundleID: nil)?.text, original.text)
+    }
+
+    func testExplicitImportStillRejectsConfidentialItemsBeforeReadingBytes() throws {
+        let item = SnapshotItem([.string, CaptureService.internalType, .init("org.nspasteboard.ConcealedType")],
+                                payloads: [.string: bytes("must not import")])
+        XCTAssertNil(try ClipboardCodec.record(from: [item], sourceApp: nil, sourceBundleID: nil))
+        XCTAssertTrue(item.payloadReads.isEmpty)
+    }
+
+    func testFrozenValueSurvivesPasteboardReplacementAndSourceCanBeCleared() async throws {
+        let board = NSPasteboard(name: .init("ClipShelf.snapshot.tests.\(UUID())"))
+        defer { board.releaseGlobally() }
+        let item = NSPasteboardItem(); item.setString("original", forType: .string)
+        item.setData(Data([1, 2, 3]), forType: opaque)
+        XCTAssertTrue(board.writeObjects([item]))
+        var frozen = try XCTUnwrap(ClipboardCodec.snapshot(from: board, sourceApp: "Before", sourceBundleID: "test.before"))
+        board.clearContents(); board.setString("replacement", forType: .string)
+        frozen.sourceApp = nil; frozen.sourceBundleID = nil
+        let immutable = frozen
+        let record = try await Task.detached { try ClipboardCodec.record(from: immutable) }.value
+        XCTAssertEqual(record.text, "original"); XCTAssertNil(record.sourceApp); XCTAssertNil(record.sourceBundleID)
+        XCTAssertEqual(record.parts[0].representations.last?.data, Data([1, 2, 3]))
+    }
+
+    func testFileURLLinkPDFAndMultipleObjectSummariesUseFrozenData() throws {
+        let file = SnapshotItem([.fileURL], payloads: [.fileURL: bytes("file:///synthetic/hello%20world.txt")])
+        let link = SnapshotItem([.URL], payloads: [.URL: bytes("https://example.invalid/path")])
+        let pdf = SnapshotItem([.pdf], payloads: [.pdf: bytes("%PDF-synthetic")])
+        let record = try ClipboardCodec.record(from: snapshot([file, link, pdf]))
+        XCTAssertEqual(record.text, "hello world.txt\nhttps://example.invalid/path\n扫描文稿（PDF）")
+        XCTAssertEqual(record.parts.count, 3)
+        XCTAssertEqual(file.payloadReads, [.fileURL: 1]); XCTAssertEqual(link.payloadReads, [.URL: 1])
+        XCTAssertEqual(pdf.payloadReads, [.pdf: 1])
+    }
+
+    func testImageMetadataIsDecodedWithoutRereadingOrChangingImageBytes() async throws {
+        let pixelBytes = Data(repeating: 128, count: 3 * 5 * 4)
+        let provider = try XCTUnwrap(CGDataProvider(data: pixelBytes as CFData))
+        let image = try XCTUnwrap(CGImage(width: 3, height: 5, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: 12, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        let destinationData = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(destinationData, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil); XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let png = destinationData as Data
+        let item = SnapshotItem([.png], payloads: [.png: png])
+        let frozen = try snapshot([item])
+        let record = try await Task.detached { try ClipboardCodec.record(from: frozen) }.value
+        XCTAssertEqual(record.text, "图片 3 × 5")
+        XCTAssertEqual(record.parts[0].representations[0].data, png)
+        XCTAssertEqual(item.payloadReads, [.png: 1])
+    }
+
+    func testCaptureBudgetAcceptsExactLimitAndRejectsAggregateOverflow() throws {
+        let limit = ClipboardCodec.maximumCaptureBytes
+        let large = SnapshotItem([opaque], payloads: [opaque: Data(repeating: 0, count: limit)])
+        let accepted = try snapshot([large])
+        XCTAssertEqual(accepted.byteCount, limit)
+        XCTAssertEqual(try ClipboardCodec.record(from: accepted).parts[0].representations[0].data.count, limit)
+        let extra = SnapshotItem([.string], payloads: [.string: Data([65])])
+        XCTAssertThrowsError(try snapshot([large, extra])) {
+            guard case ClipboardCodecError.tooLarge = $0 else { return XCTFail("Unexpected error: \($0)") }
+        }
+        let forged = ClipboardCaptureSnapshot(parts: accepted.parts + [.init(representations: [.init(typeIdentifier: "public.utf8-plain-text", data: Data([65]))])], byteCount: 0)
+        XCTAssertThrowsError(try ClipboardCodec.record(from: forged)) {
+            guard case ClipboardCodecError.tooLarge = $0 else { return XCTFail("Unexpected error: \($0)") }
+        }
+    }
+}

@@ -12,6 +12,7 @@ final class StackCoordinator {
 
     private(set) var queue: [ClipboardRecord] = []
     private(set) var isActive = false
+    private(set) var sessionID = UUID()
     var direction: Direction = .forward {
         didSet {
             if oldValue != direction { onChange?() }
@@ -70,6 +71,7 @@ final class StackCoordinator {
 
     func activate() {
         guard !isActive else { return }
+        sessionID = UUID()
         queue.removeAll()
         occurrenceIDs.removeAll()
         leases.removeAll()
@@ -105,6 +107,12 @@ final class StackCoordinator {
         onChange?()
     }
 
+    /// Persistence may finish after Stack ended or a different session began.
+    func appendCaptured(_ record: ClipboardRecord, lease: OwnedAssetLease?, capturedIn session: UUID?) {
+        guard isActive, session == sessionID else { return }
+        append(record, lease: lease)
+    }
+
     /// Indexes refer to capture order, including when consumption is reversed.
     @discardableResult
     func remove(at index: Int) -> ClipboardRecord? {
@@ -119,7 +127,9 @@ final class StackCoordinator {
 
     /// Clear the queue while leaving Stack enabled for subsequent copies.
     func clear() {
-        guard !queue.isEmpty || lastConsumed != nil else { return }
+        guard isActive else { return }
+        // Even an empty visible queue can have captures awaiting persistence.
+        sessionID = UUID()
         cancelPendingPastes()
         queue.removeAll()
         occurrenceIDs.removeAll()

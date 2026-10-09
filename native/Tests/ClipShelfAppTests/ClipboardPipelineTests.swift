@@ -14,7 +14,10 @@ final class ClipboardPipelineTests: XCTestCase {
             pb.setString("before start", forType: .string)
             let capture = CaptureService(pasteboard: pb, sourceProvider: { ("Fixture", "test.fixture") })
             var result: [ClipboardRecord] = []
-            capture.onCapture = { result.append($0) }
+            capture.onSnapshot = { snapshot in
+                do { result.append(try ClipboardCodec.record(from: snapshot)) }
+                catch { XCTFail("Complete snapshot must decode: \(error)") }
+            }
             capture.start(); defer { capture.stop() }
             capture.poll()
             XCTAssertTrue(result.isEmpty)
@@ -33,7 +36,7 @@ final class ClipboardPipelineTests: XCTestCase {
             let pb = board(); defer { pb.releaseGlobally() }
             let capture = CaptureService(pasteboard: pb, sourceProvider: { ("Secret Fixture", "test.secret") })
             var count = 0
-            capture.onCapture = { _ in count += 1 }
+            capture.onSnapshot = { _ in count += 1 }
             capture.start(); defer { capture.stop() }
             let secret = NSPasteboardItem()
             secret.setString("synthetic secret", forType: .string)
@@ -52,9 +55,12 @@ final class ClipboardPipelineTests: XCTestCase {
     func testPauseResumeDoesNotBackfillPausedContent() async throws {
         await MainActor.run {
             let pb = board(); defer { pb.releaseGlobally() }
-            let capture = CaptureService(pasteboard: pb)
+            let capture = CaptureService(pasteboard: pb, sourceProvider: { ("Fixture", "test.fixture") })
             var result: [ClipboardRecord] = []
-            capture.onCapture = { result.append($0) }
+            capture.onSnapshot = { snapshot in
+                do { result.append(try ClipboardCodec.record(from: snapshot)) }
+                catch { XCTFail("Complete snapshot must decode: \(error)") }
+            }
             capture.start(); capture.stop()
             pb.clearContents(); pb.setString("during pause", forType: .string); capture.poll()
             capture.start(); defer { capture.stop() }; capture.poll()
@@ -70,7 +76,10 @@ final class ClipboardPipelineTests: XCTestCase {
         let capture = CaptureService(pasteboard: pb, sourceProvider: { (source, source) })
         capture.excludedBundleIDs = ["test.excluded"]
         var results: [ClipboardRecord] = []
-        capture.onCapture = { results.append($0) }
+        capture.onSnapshot = { snapshot in
+            do { results.append(try ClipboardCodec.record(from: snapshot)) }
+            catch { XCTFail("Complete snapshot must decode: \(error)") }
+        }
         capture.start(); defer { capture.stop() }
         pb.clearContents(); pb.setString("excluded synthetic fixture", forType: .string)
         source = "test.allowed"
@@ -90,11 +99,10 @@ final class ClipboardPipelineTests: XCTestCase {
     func testSelfWriteDoesNotBecomeNewHistory() async throws {
         await MainActor.run {
             let pb = board(); defer { pb.releaseGlobally() }
-            let capture = CaptureService(pasteboard: pb)
+            let capture = CaptureService(pasteboard: pb, sourceProvider: { ("Fixture", "test.fixture") })
             let paste = PasteCoordinator(pasteboard: pb)
             var count = 0
-            capture.onCapture = { _ in count += 1 }
-            paste.onClipboardWrite = { capture.noteSelfWrite() }
+            capture.onSnapshot = { _ in count += 1 }
             capture.start(); defer { capture.stop() }
             XCTAssertTrue(paste.copy(ClipboardRecord(text: "sample")))
             capture.poll()
