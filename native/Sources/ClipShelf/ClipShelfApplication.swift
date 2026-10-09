@@ -554,7 +554,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
                     var query = request.query
                     query.limit = PanelPageWindow.size
                     let page = try store.metadataPage(query, offset: request.offset,
-                        anchorID: request.anchor?.recordID, displacement: request.anchor?.displacement ?? 0)
+                        anchorID: request.anchor?.recordID, displacement: request.anchor?.displacement ?? 0,
+                        boundary: request.boundary)
                     return (page, try store.pinboards(), try store.metadataSources(),
                             try store.metadataDevices(), try store.localDeviceIdentity())
                 }.value

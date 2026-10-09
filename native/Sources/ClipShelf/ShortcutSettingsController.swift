@@ -174,7 +174,7 @@ final class ShortcutSettingsController: NSWindowController, NSWindowDelegate {
 
         let fixedHeading = NSTextField(labelWithString: "固定快捷键")
         fixedHeading.font = .systemFont(ofSize: 12, weight: .semibold)
-        let fixed = NSTextField(wrappingLabelWithString: "Return 粘贴 · Space 预览 · ←/→ 选择 · Shift-←/→ 扩选 · ⌘A 全选结果\n⌘C 复制 · Delete 删除 · ⌘Z 撤销 · ⌘E 编辑 · ⌘R 重命名 · ⌘O 打开\n⌘F 搜索 · ⌘G 定位 · ⌘N 新建文本 · ⇧⌘N 新建分组 · ⌘, 设置\n⌥⌘←/→ 调整分组内顺序 · ⌘↑/↓ 当前页首尾 · ⌘T 暂停 / 继续记录")
+        let fixed = NSTextField(wrappingLabelWithString: "Return 粘贴 · Space 预览 · ←/→ 选择 · Shift-←/→ 扩选 · ⌘A 全选结果\n⌘C 复制 · Delete 删除 · ⌘Z 撤销 · ⌘E 编辑 · ⌘R 重命名 · ⌘O 打开\n⌘F 搜索 / 全部筛选 · ⌘G 定位 · ⌘N 新建文本 · ⇧⌘N 新建分组 · ⌘, 设置\n⌥⌘←/→ 调整分组内顺序 · ⌘↑/↓ 全部结果首尾 · ⌘T 暂停 / 继续记录")
         fixed.font = .systemFont(ofSize: 11); fixed.textColor = .secondaryLabelColor
         fixed.setAccessibilityLabel("固定应用内快捷键说明")
         stack.addArrangedSubview(fixedHeading); stack.addArrangedSubview(fixed)

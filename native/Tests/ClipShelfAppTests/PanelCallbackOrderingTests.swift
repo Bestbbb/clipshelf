@@ -53,6 +53,7 @@ import XCTest
             try completeLastPage()
         }
         XCTAssertEqual(requests.last?.0.offset, 600)
+        panel.window?.makeFirstResponder(try view(label: "剪贴板搜索结果") as NSCollectionView)
         key(124) // Explicitly select the first card in this new window.
     }
 
@@ -68,7 +69,8 @@ import XCTest
         let (request, reply) = try XCTUnwrap(requests.last)
         do {
             let page = try store.metadataPage(request.query, offset: request.offset,
-                                              anchorID: request.anchor?.recordID, displacement: request.anchor?.displacement ?? 0)
+                                              anchorID: request.anchor?.recordID, displacement: request.anchor?.displacement ?? 0,
+                                              boundary: request.boundary)
             reply(.success(PanelHistoryPage(records: page.records, offset: page.offset, hasMore: page.hasMore, focusID: page.focusID)))
         } catch { reply(.failure(error)) }
     }
@@ -90,8 +92,8 @@ import XCTest
         panel.perform(NSSelectorFromString("clearFilters"))
         try completeLastPage()
         let page = try store.metadataPage(try XCTUnwrap(requests.last?.0.query))
-        key(36, characters: "\r") // Search Return focuses results.
-        key(125, flags: .command) // Select the last item of this page.
+        panel.window?.makeFirstResponder(try view(label: "剪贴板搜索结果") as NSCollectionView)
+        for _ in 1..<page.records.count { key(124) } // Fixture selects item 299 without a global boundary jump.
         return try XCTUnwrap(page.records.last?.id)
     }
 

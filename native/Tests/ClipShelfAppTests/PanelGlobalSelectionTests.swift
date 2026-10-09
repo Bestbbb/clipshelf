@@ -189,7 +189,7 @@ final class PanelGlobalSelectionTests: XCTestCase {
         XCTAssertEqual(copied.map(\.revision), Array(after[anchorIndex...anchorIndex + 2]).map(\.revision))
     }
 
-    @MainActor func testExplicitRangeOutsideFrozenUniverseValidatesExistingSelectionFirst() throws {
+    @MainActor func testBoundaryExtensionValidatesFrozenSelectionAndExcludesNewCapture() throws {
         let h = try PanelCallbackHarness(); defer { h.close() }
         let all = try selectAll(h)
         let added = try h.store.create(ClipboardRecord(text: "explicit new capture", copiedAt: Date().addingTimeInterval(500)))
@@ -198,18 +198,19 @@ final class PanelGlobalSelectionTests: XCTestCase {
         let firstQuery = try XCTUnwrap(h.requests.last?.0.query)
         let fresh = try h.store.selectionSnapshot(firstQuery)
         XCTAssertEqual(fresh.references.first?.id, added.id)
-        // Expanding to a new capture validates all existing members before rebuilding the universe.
+        // Endpoint extension uses the original frozen universe, then validates the staged range.
         var validates = 0
         h.panel.onValidateSelection = { refs, reply in validates += 1; reply(Result { try h.store.validateSelection(refs) }) }
         h.panel.onSelectionSnapshot = { _, reply in reply(.success(fresh)) }
-        // Shift to the first visible item is a range action on a new item outside the frozen set.
+        // The complete-query shortcut must not treat the new visible first item as its frozen endpoint.
         h.panel.perform(NSSelectorFromString("loadPreviousPage")); try h.completeLastPage()
         h.key(126, flags: [.command, .shift])
+        try h.completeLastPage()
         XCTAssertGreaterThanOrEqual(validates, 1)
         var selected: [ClipboardSelectionReference] = []
         h.panel.resolveSelection = { refs, _ in selected = refs }
         h.key(8, characters: "c", flags: .command)
-        XCTAssertTrue(selected.contains { $0.id == added.id })
+        XCTAssertFalse(selected.contains { $0.id == added.id })
         XCTAssertTrue(selected.contains { $0.id == all[299].id })
     }
 

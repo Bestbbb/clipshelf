@@ -12,6 +12,7 @@ struct PanelPageRequest: Sendable {
     let query: HistoryQuery
     let offset: Int
     let anchor: PanelPageAnchor?
+    var boundary: HistoryPageBoundary? = nil
 }
 
 struct PanelHistoryPage: Sendable {

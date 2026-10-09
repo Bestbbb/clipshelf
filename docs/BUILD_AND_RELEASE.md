@@ -86,7 +86,7 @@ and Node bridge syntax check passed. Its [CI run 37956500803](https://github.com
 also passed, including the independent app and Share Extension build. Those
 results precede the shortcut changes described below. The saved [search benchmark](../native/Benchmarks/README.md)
 measured commit is `e78ef3f` (schema v8), against `45edfd6` (schema v7); it was not
-rerun for the selection or shortcut changes and does not measure selection, payload output,
+rerun for the selection, shortcut or boundary/filter changes and does not measure selection, payload output,
 facet aggregation or input-to-render latency.
 
 In one Pinboard's manual-order view, drag a card to reorder it. Hold Option while
@@ -147,18 +147,52 @@ Model tests, a fake registration backend and unshown controller tests cover this
 logic. A read-only check also uses installed Dvorak–Qwerty Command layout data
 without selecting that input source. These tests do not establish real Carbon
 key delivery, Secure Input behavior,
-IME compatibility, or live non-US layout changes. Cmd-Up/Down still need full-query
-first/last navigation; repeat Cmd-F still needs the all-filters entry point.
-The current-page behavior is not the intended completion criterion.
+IME compatibility, or live non-US layout changes. Full-query first/last navigation
+and the repeat-Cmd-F all-filters entry point are being integrated in the next
+iteration described below; they are not covered by this shortcut commit's results.
 
-**On 2026-10-10 at 00:31:24 (Asia/Taipei), this shortcut iteration's unified suite
+**For commit `6a73011`, on 2026-10-10 at 00:31:24 (Asia/Taipei), the unified suite
 ran 331 tests with zero failures and one skip for unavailable Apple Intelligence.
 At 00:31:54 the native release build, App Intents metadata extraction and local
 ad-hoc signature verification passed; the development ZIP passed its integrity
-check.** See [GitHub Actions](https://github.com/Bestbbb/clipshelf/actions/workflows/macos.yml)
-for the corresponding commit's CI result. The Mac was still
+check.** Its CI evidence is [run 37959910860](https://github.com/Bestbbb/clipshelf/actions/runs/37959910860).
+The Mac was still
 locked on the latest desktop observation; live keyboard and cross-app acceptance
 remain open.
+
+## Full-query boundaries and all filters
+
+The current iteration adds explicit first/last boundary navigation. Ordinary
+Cmd-Up/Down finds the complete query's endpoint and returns at most 300 metadata
+rows from one SQLite read snapshot; the last-page count and window cannot observe
+different commits. It does not load all selection references or attachments.
+An empty result has no focused item. Existing strict anchor navigation is retained.
+
+Shift-Cmd-Up/Down targets the endpoints of the frozen selection universe. New
+captures do not join an existing universe. The extended selection is staged;
+its target window and all selected revisions must validate before the UI commits
+both the window and selection. Stale targets or changed items fail explicitly.
+New queries, sessions, focus changes and subsequent actions invalidate late replies.
+
+Pressing Cmd-F with search already focused, or choosing All Filters, opens a
+query draft for type, source app, device, date bounds, Pinboards and sort order.
+Editing, cancellation and dismissal do not submit a query. Apply validates the
+whole draft and submits it once. Keywords are preserved; Clear Filters also
+preserves sorting, so manual order still requires exactly one existing board.
+Unavailable source/device conditions remain visible and selected; unavailable
+boards must be explicitly deselected before Apply. Invalid or reversed dates
+are rejected without broadening the query.
+
+**On 2026-10-10 at 00:49:30 (Asia/Taipei), this iteration ran 366 native tests with
+zero failures and one skip for unavailable Apple Intelligence. At 00:50:09 the
+native release build, App Intents metadata and local ad-hoc signature verification
+passed; the development ZIP passed its integrity check.** See
+[GitHub Actions](https://github.com/Bestbbb/clipshelf/actions/workflows/macos.yml)
+for the corresponding commit's CI result. Regressions cover pending-navigation
+output protection, stale callbacks, retained background refresh, native search
+editing and filter checkbox focus after option refresh. Core and unshown-controller
+tests remain separate from live desktop acceptance; the Mac is still locked and
+real keyboard, IME, cross-app and filter-popover acceptance remain open.
 
 ## Optional signed CloudKit build
 

@@ -49,6 +49,9 @@ public struct ClipboardOriginDevice: Identifiable, Equatable, Codable, Sendable 
 
 public enum HistoryDeviceFilter: Equatable, Sendable { case all, device(UUID), unknown }
 
+/// Explicit navigation within the complete filtered query, independent of its current page.
+public enum HistoryPageBoundary: Equatable, Sendable { case first, last }
+
 public struct HistoryMetadataPage: Sendable {
     public let records: [ClipboardRecordMetadata]
     public let offset: Int

@@ -15,6 +15,7 @@ public enum HistoryStoreError: Error, LocalizedError {
     case invalidPinboardItemOrder
     case staleRevision
     case invalidSelection
+    case invalidPageRequest
     case selectionPayloadTooLarge
     case invalidBackup
     case backupExists
@@ -35,6 +36,7 @@ public enum HistoryStoreError: Error, LocalizedError {
         case .invalidPinboardOrder: return "The new order must contain every current pinboard exactly once. Reload the pinboards and try again."
         case .invalidPinboardItemOrder: return "分组内容或排序位置已改变。请重新加载；分页重排应使用移动条目操作，不能以部分列表覆盖整个分组。"
         case .invalidSelection: return "选择列表无效，或已撤销的操作不属于当前资料库。请重新选择。"
+        case .invalidPageRequest: return "首尾定位不能同时指定分页偏移或条目锚点，请重新加载列表。"
         case .selectionPayloadTooLarge: return "选中内容超过本次读取的容量限制，未执行任何输出。请减少选中内容后重试。"
         case .staleRevision: return "This item changed while it was being edited. Reload it before saving."
         case .invalidBackup: return "This backup is damaged, too large, or uses an unsupported format."

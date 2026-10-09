@@ -24,6 +24,12 @@ private struct PanelRetainedSelection {
     let generation: UUID
 }
 
+private struct PanelBoundaryNavigation {
+    let id: UUID
+    let generation: UUID
+    let selection: PanelSelectionState?
+}
+
 private final class ResultsFocusView: NSCollectionView {
     override var acceptsFirstResponder: Bool { true }
     var onDropItems: (([NSPasteboardItem], Any?, NSPoint) -> Bool)?
@@ -84,7 +90,7 @@ private final class ClipboardCollectionItem: NSCollectionViewItem {
 
 /// Presents history without activating ClipShelf or performing clipboard side effects.
 @MainActor
-final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate, NSWindowDelegate, NSCollectionViewDataSource, NSMenuItemValidation, @preconcurrency QLPreviewPanelDataSource {
+final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate, NSWindowDelegate, NSPopoverDelegate, NSCollectionViewDataSource, NSMenuItemValidation, @preconcurrency QLPreviewPanelDataSource {
     var onPaste: ((ClipboardRecord, Bool) -> Void)?
     var onPasteRecords: (([ClipboardRecord], Bool) -> Void)?
     var onCopy: ((ClipboardRecord) -> Void)?
@@ -183,9 +189,13 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private let boardPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let multiBoardButton = NSButton(title: "多板筛选…", target: nil, action: nil)
     private let clearFiltersButton = NSButton(title: "清除条件", target: nil, action: nil)
+    private let allFiltersButton = NSButton(title: "全部筛选…", target: nil, action: nil)
     private let orderPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let orderingActions = NSPopUpButton(frame: .zero, pullsDown: true)
     private var filterPopover: NSPopover?
+    private(set) var allFiltersController: HistoryFilterController?
+    private var allFiltersSession: UUID?
+    var presentFilterPopover: ((NSPopover, NSView) -> Void)?
     private var boardScope = PanelBoardScope()
     private var manualOrder = false
     private var orderingRequestID: UUID?
@@ -230,6 +240,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private var scopeGeneration = UUID()
     private var selectionRequestID: UUID?
     private var validationRequestID: UUID?
+    private var boundaryNavigationID: UUID?
+    private var boundaryPageRequestID: UUID?
     private var eventMonitor: Any?
     private var detailWindow: NSPanel?
     private var linkPreview: LinkPreviewController?
@@ -285,6 +297,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func present(_ contents: [ClipboardCardContent], on screen: NSScreen?, status: String?) {
+        cancelBoundaryNavigation()
+        closeAllFilters(restoreFocus: false)
         viewGeneration = UUID()
         heldShortcutModifiers = []
         pageWindow = PanelPageWindow()
@@ -349,7 +363,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     func refreshPage(status: String? = nil) {
         if let status { updateStatus(status) }
         guard isVisible, onPageRequest != nil else { return }
-        if queryPending || !pageMatchesQuery { refreshAfterPageLoad = true; return }
+        if queryPending || boundaryNavigationID != nil || !pageMatchesQuery { refreshAfterPageLoad = true; return }
         let retained = PanelRetainedSelection(generation: selection.generation)
         var anchor: PanelPageAnchor?
         if let selectedID, let primary = filteredRecords.firstIndex(where: { $0.id == selectedID }) {
@@ -400,6 +414,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     func setPinboards(_ pinboards: [Pinboard]) {
         self.pinboards = pinboards
+        allFiltersController?.updateOptions(filterOptions)
         boardPopup.removeAllItems()
         boardPopup.addItem(withTitle: "全部内容")
         for board in self.pinboards {
@@ -418,11 +433,16 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     func setSources(_ sources: [String: String]) {
         self.sources.merge(sources) { _, newer in newer }
+        allFiltersController?.updateOptions(filterOptions)
         sourcePopup.removeAllItems()
         sourcePopup.addItem(withTitle: "所有来源 App")
         for (id, name) in self.sources.sorted(by: { $0.value.localizedStandardCompare($1.value) == .orderedAscending }) {
             sourcePopup.addItem(withTitle: name)
             sourcePopup.lastItem?.representedObject = id
+        }
+        if let selectedSourceID, self.sources[selectedSourceID] == nil {
+            sourcePopup.addItem(withTitle: "不可用来源 · \(selectedSourceID)")
+            sourcePopup.lastItem?.representedObject = selectedSourceID
         }
         if let selectedSourceID, let item = sourcePopup.itemArray.first(where: { $0.representedObject as? String == selectedSourceID }) { sourcePopup.select(item) }
     }
@@ -431,6 +451,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         self.devices = devices.reduce(into: [:]) { $0[$1.id] = $1.name }
         self.localDeviceID = localDeviceID
         rebuildDeviceOptions()
+        allFiltersController?.updateOptions(filterOptions)
     }
 
     private var selectedDeviceKey: String {
@@ -462,6 +483,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     func dismiss() {
         guard isVisible else { return }
+        cancelBoundaryNavigation()
+        closeAllFilters(restoreFocus: false)
         cardViews.forEach { $0.cancelPendingDrag() }
         heldShortcutModifiers = []
         cardViews.forEach(updateShortcutLabel)
@@ -517,7 +540,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         searchField.sendsSearchStringImmediately = true
         searchField.delegate = self
         searchField.setAccessibilityLabel("搜索剪贴板历史")
-        searchField.setAccessibilityHelp("输入文字过滤历史，按回车进入结果，再按回车粘贴。")
+        searchField.setAccessibilityHelp("输入文字过滤历史，按回车进入结果，再按回车粘贴。搜索中按 Command-F 打开全部筛选。")
         pauseButton.target = self
         pauseButton.action = #selector(togglePause)
         pauseButton.bezelStyle = .rounded
@@ -590,6 +613,10 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         clearFiltersButton.target = self
         clearFiltersButton.action = #selector(clearFilters)
         clearFiltersButton.bezelStyle = .inline
+        allFiltersButton.target = self
+        allFiltersButton.action = #selector(showAllFilters)
+        allFiltersButton.bezelStyle = .rounded
+        allFiltersButton.setAccessibilityLabel("全部筛选")
         orderPopup.addItems(withTitles: ["最近复制", "分组内手动顺序"])
         orderPopup.target = self
         orderPopup.action = #selector(orderChanged)
@@ -603,7 +630,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         }
         orderingActions.toolTip = "拖动卡片在分组内排序；⌥ 拖动原始内容到其他 App；⌥⌘← / ⌥⌘→ 移动选中条目"
         let boardRow = NSStackView(views: [boardPopup, multiBoardButton, boardActions, devicePopup, spacer, clearFiltersButton])
-        let filterRow = NSStackView(views: [typePopup, sourcePopup, datePopup, orderPopup, orderingActions, NSView(), previousPageButton, loadMoreButton])
+        let filterRow = NSStackView(views: [typePopup, sourcePopup, datePopup, orderPopup, orderingActions, allFiltersButton, NSView(), previousPageButton, loadMoreButton])
         for row in [boardRow, filterRow] { row.orientation = .horizontal; row.alignment = .centerY; row.spacing = 10 }
         let filters = NSStackView(views: [boardRow, filterRow])
         filters.orientation = .vertical
@@ -612,7 +639,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         boardRow.widthAnchor.constraint(equalTo: filters.widthAnchor).isActive = true
         filterRow.widthAnchor.constraint(equalTo: filters.widthAnchor).isActive = true
         [boardPopup, typePopup, sourcePopup, devicePopup, datePopup, boardActions, orderPopup, orderingActions].forEach { $0.controlSize = .small; $0.font = .systemFont(ofSize: 11) }
-        [multiBoardButton, clearFiltersButton].forEach { $0.controlSize = .small; $0.font = .systemFont(ofSize: 11) }
+        [multiBoardButton, clearFiltersButton, allFiltersButton].forEach { $0.controlSize = .small; $0.font = .systemFont(ofSize: 11) }
 
         scrollView.drawsBackground = false
         scrollView.hasHorizontalScroller = true
@@ -663,6 +690,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         statusLabel.lineBreakMode = .byTruncatingTail
         countLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
         countLabel.textColor = .secondaryLabelColor
+        countLabel.setAccessibilityLabel("结果数量与选中项")
         let hints = shortcutHints
         updateShortcutPresentation()
         hints.font = .systemFont(ofSize: 10)
@@ -773,7 +801,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         card.isSelected = selectedIDs.contains(record.id)
         updateShortcutLabel(card)
         card.onSelect = { [weak self] in
-            guard let self, !self.queryPending else { return }
+            guard let self else { return }
+            self.cancelBoundaryNavigation()
+            guard !self.queryPending else { return }
             let modifiers = NSApp.currentEvent?.modifierFlags ?? []
             if self.selectedIDs.count > 1, self.selectedIDs.contains(record.id), !modifiers.contains(.shift), !modifiers.contains(.command) {
                 self.window?.makeFirstResponder(self.resultsView)
@@ -868,6 +898,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func select(_ id: UUID, focusResults: Bool, extending: Bool = false, toggling: Bool = false) {
+        cancelBoundaryNavigation()
         guard !queryPending, pageMatchesQuery,
               let ref = filteredRecords.first(where: { $0.id == id }).map(reference) ?? selection.reference(id) else { return }
         reorderStatus = nil
@@ -889,6 +920,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func selectionFailed(_ error: Error) {
+        cancelBoundaryNavigation()
         selectionRequestID = nil
         selection.invalidate()
         selectionStatus = "选中内容已变化或无法读取，操作未执行；请重新选择。\(error.localizedDescription)"
@@ -990,6 +1022,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func moveSelection(_ offset: Int, extending: Bool = false) {
+        cancelBoundaryNavigation()
         guard !filteredRecords.isEmpty, !queryPending else { return }
         if extending {
             ensureSelectionUniverse { [weak self] in
@@ -1013,6 +1046,86 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         }
         let index = max(0, min(filteredRecords.count - 1, old + offset))
         select(filteredRecords[index].id, focusResults: true)
+    }
+
+    private func cancelBoundaryNavigation() {
+        guard boundaryNavigationID != nil else { return }
+        boundaryNavigationID = nil
+        selectionRequestID = nil
+        validationRequestID = nil
+        selection.beginChange()
+        if let pending = boundaryPageRequestID, pageRequestID == pending {
+            pageRequestID = nil
+            queryGeneration = UUID()
+            queryPending = false
+        }
+        boundaryPageRequestID = nil
+        let needsRefresh = refreshAfterPageLoad
+        refreshAfterPageLoad = false
+        updatePageControls()
+        if needsRefresh {
+            let session = viewGeneration, scope = scopeGeneration
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isVisible, self.viewGeneration == session, self.scopeGeneration == scope else { return }
+                self.refreshPage()
+            }
+        }
+    }
+
+    private func isCurrentBoundary(_ intent: PanelBoundaryNavigation) -> Bool {
+        isVisible && boundaryNavigationID == intent.id && selection.generation == intent.generation
+            && !isEditingSearch && allFiltersController == nil && filterPopover?.isShown != true
+    }
+
+    private func moveToBoundary(_ boundary: HistoryPageBoundary, extending: Bool) {
+        cancelBoundaryNavigation()
+        guard isVisible, !queryPending, pageMatchesQuery else { return }
+        if extending && selection.isInvalid { return }
+        let id = UUID()
+        boundaryNavigationID = id
+        selection.beginChange()
+        pendingActionID = nil
+        validationRequestID = nil
+        selectionRequestID = nil
+        if !extending || selection.anchorID == nil {
+            let intent = PanelBoundaryNavigation(id: id, generation: selection.generation, selection: nil)
+            if onPageRequest != nil {
+                issueQuery(resetLimit: false, offset: 0, boundary: boundary,
+                           replaceSelectionOnFocus: true, boundaryNavigation: intent)
+            } else if !usesRemoteQuery {
+                let target = boundary == .first ? filteredRecords.first : filteredRecords.last
+                if let target { selection.selectSingle(reference(target)) } else { selection.clear() }
+                boundaryNavigationID = nil
+                updateSelectionAppearance(focusResults: true, revealID: target?.id)
+            } else { cancelBoundaryNavigation() }
+            return
+        }
+        ensureSelectionUniverse { [weak self] in
+            guard let self, self.boundaryNavigationID == id,
+                  let refs = self.selection.universe,
+                  let target = boundary == .first ? refs.first : refs.last else { return }
+            do {
+                var candidate = self.selection
+                try candidate.select(ref: target, toggle: false, extend: true)
+                let intent = PanelBoundaryNavigation(id: id, generation: self.selection.generation, selection: candidate)
+                guard self.isCurrentBoundary(intent) else { self.cancelBoundaryNavigation(); return }
+                if self.onPageRequest != nil {
+                    self.issueQuery(resetLimit: false, anchor: PanelPageAnchor(recordID: target.id, displacement: 0),
+                                    boundaryNavigation: intent)
+                } else {
+                    self.validateReferences(candidate.references) { [weak self] result in
+                        guard let self, self.isCurrentBoundary(intent) else { return }
+                        self.boundaryNavigationID = nil
+                        switch result {
+                        case .success:
+                            self.selection = candidate
+                            self.updateSelectionAppearance(focusResults: true, revealID: target.id)
+                        case .failure(let error): self.selectionFailed(error)
+                        }
+                    }
+                }
+            } catch { self.cancelBoundaryNavigation(); self.selectionFailed(error) }
+        }
     }
 
     private func updateSelectionCount() {
@@ -1043,7 +1156,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
     private var hasPreviousResults: Bool { onPageRequest != nil && pageWindow.hasPrevious }
     private var hasMoreResults: Bool { onPageRequest != nil ? pageWindow.hasMore : onQueryChange != nil && records.count >= resultLimit }
-    private var canReorderItems: Bool { manualOrder && boardScope.singleBoardID != nil && (onReorderSelection != nil || onReorderRecords != nil) && orderingRequestID == nil && !queryPending && pageMatchesQuery && !selection.isInvalid && selectionRequestID == nil }
+    private var canReorderItems: Bool { manualOrder && boardScope.singleBoardID != nil && (onReorderSelection != nil || onReorderRecords != nil) && orderingRequestID == nil && !queryPending && boundaryNavigationID == nil && pageMatchesQuery && !selection.isInvalid && selectionRequestID == nil }
 
     private func updatePageControls() {
         previousPageButton.isHidden = onPageRequest == nil || !hasPreviousResults
@@ -1068,6 +1181,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     @objc private func showBoardFilters() {
+        cancelBoundaryNavigation()
+        closeAllFilters(restoreFocus: false)
         let controller = PinboardFilterController(boards: pinboards, selected: boardScope.queryIDs)
         let popover = NSPopover()
         popover.behavior = .transient
@@ -1087,6 +1202,70 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         popover.show(relativeTo: multiBoardButton.bounds, of: multiBoardButton, preferredEdge: .maxY)
     }
 
+    private var filterOptions: HistoryFilterOptions {
+        HistoryFilterOptions(pinboards: pinboards, sources: sources, devices: devices, localDeviceID: localDeviceID)
+    }
+
+    @objc func showAllFilters() {
+        guard isVisible, !isComposing else { return }
+        cancelBoundaryNavigation()
+        if let allFiltersController { allFiltersController.focusInitialControl(); return }
+        filterPopover?.close()
+        let controller = HistoryFilterController(query: currentQuery, options: filterOptions)
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.delegate = self
+        popover.contentViewController = controller
+        popover.contentSize = controller.preferredContentSize
+        let token = UUID(), session = viewGeneration, scope = scopeGeneration
+        allFiltersSession = token
+        allFiltersController = controller
+        filterPopover = popover
+        controller.onCancel = { [weak self] in
+            guard let self, self.allFiltersSession == token else { return }
+            self.closeAllFilters(restoreFocus: true)
+        }
+        controller.onApply = { [weak self] query in
+            guard let self, self.isVisible, self.allFiltersSession == token,
+                  self.viewGeneration == session, self.scopeGeneration == scope else { return }
+            do { try HistoryFilterDraft(query: query).validate(availablePinboardIDs: Set(self.pinboards.map(\.id))) }
+            catch { self.statusLabel.stringValue = error.localizedDescription; return }
+            self.closeAllFilters(restoreFocus: true)
+            self.boardScope.filter(query.pinboardIDs)
+            self.boardPopup.selectItem(at: 0)
+            self.selectedKind = query.kind
+            self.selectedSourceID = query.sourceBundleID
+            self.selectedDeviceFilter = query.deviceFilter
+            self.copiedAfter = query.copiedAfter; self.copiedBefore = query.copiedBefore
+            self.manualOrder = query.sortOrder == .pinboard
+            if let item = self.typePopup.itemArray.first(where: { ($0.representedObject as? String) == query.kind?.rawValue }) { self.typePopup.select(item) }
+            self.setSources([:])
+            self.rebuildDeviceOptions()
+            self.lastDateIndex = query.copiedAfter == nil && query.copiedBefore == nil ? 0 : 4
+            self.datePopup.selectItem(at: self.lastDateIndex)
+            self.issueQuery(resetLimit: true)
+        }
+        if let presentFilterPopover { presentFilterPopover(popover, searchField) }
+        else { popover.show(relativeTo: searchField.bounds, of: searchField, preferredEdge: .maxY) }
+        controller.focusInitialControl()
+    }
+
+    private func closeAllFilters(restoreFocus: Bool) {
+        guard allFiltersController != nil else { return }
+        allFiltersSession = nil
+        allFiltersController = nil
+        let popover = filterPopover
+        filterPopover = nil
+        popover?.delegate = nil
+        popover?.close()
+        if restoreFocus, isVisible { window?.makeFirstResponder(searchField); cardViews.forEach(updateShortcutLabel) }
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        guard let popover = notification.object as? NSPopover, popover === filterPopover else { return }
+        closeAllFilters(restoreFocus: true)
+    }
+
     @objc private func clearFilters() {
         searchField.stringValue = ""
         boardScope.navigate(to: nil)
@@ -1103,7 +1282,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     @objc private func reorderEarlierFromMenu(_ item: NSMenuItem) { if selectContextItemIfNeeded(item) { stepSelectedItems(forward: false) } }
     @objc private func reorderLaterFromMenu(_ item: NSMenuItem) { if selectContextItemIfNeeded(item) { stepSelectedItems(forward: true) } }
     private func selectContextItemIfNeeded(_ item: NSMenuItem) -> Bool {
-        guard let id = item.representedObject as? UUID, !queryPending, pageMatchesQuery else { return false }
+        guard let id = item.representedObject as? UUID, !queryPending, boundaryNavigationID == nil, pageMatchesQuery else { return false }
         if selectedIDs.contains(id) { return !selection.isInvalid }
         guard filteredRecords.contains(where: { $0.id == id }) else {
             statusLabel.stringValue = "菜单对应的条目已变化，请重新选择。"
@@ -1164,7 +1343,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                                           clearAfterSuccess: Bool = false,
                                           operation: (@escaping (Result<[ClipboardSelectionReference], Error>) -> Void) -> Void) {
         guard !refs.isEmpty, refs == selection.references, !selection.isInvalid, selectionRequestID == nil,
-              isVisible, !queryPending, pageMatchesQuery, orderingRequestID == nil else { return }
+              isVisible, !queryPending, boundaryNavigationID == nil, pageMatchesQuery, orderingRequestID == nil else { return }
         let requestID = UUID(), session = viewGeneration, scope = scopeGeneration
         let generation = selection.generation, page = queryGeneration, pageRequest = pageRequestID
         orderingRequestID = requestID
@@ -1288,7 +1467,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     /// The whole captured set is validated before exposing any payload to an output callback.
     private func resolveReferences(_ references: [ClipboardSelectionReference], action: @escaping ([ClipboardRecord]) -> Void) {
-        guard !references.isEmpty, isVisible, !queryPending, pageMatchesQuery,
+        guard !references.isEmpty, isVisible, !queryPending, boundaryNavigationID == nil, pageMatchesQuery,
               !selection.isInvalid, selectionRequestID == nil else { return }
         let actionID = UUID(), session = viewGeneration, scope = scopeGeneration
         let generation = selection.generation, page = queryGeneration
@@ -1410,9 +1589,23 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     func handleKey(_ event: NSEvent) -> Bool {
-        guard event.type == .keyDown, !isComposing, !(window?.firstResponder is ShortcutRecorderView) else { return false }
+        guard event.type == .keyDown else { return false }
+        // Mouse/Tab focus changes can enter an editor without passing through Cmd-F.
+        if isEditingSearch || window?.firstResponder is NSTextView { cancelBoundaryNavigation() }
+        guard !isComposing, !(window?.firstResponder is ShortcutRecorderView) else { return false }
         if window?.firstResponder is NSTextView, !isEditingSearch { return false }
         let flags = ShortcutChord.normalizedModifiers(event.modifierFlags)
+        if boundaryNavigationID != nil {
+            let command = KeyboardShortcutConfiguration.fixedCommand(for: event)
+            let selectionCommands: [FixedShortcutCommand] = [.open, .reveal, .copy, .undo, .edit, .rename]
+            let quick = shortcutConfiguration.quickPaste.eventFlags
+            let quickOutput = [UInt16(18), 19, 20, 21, 23, 22, 26, 28, 25].contains(event.keyCode)
+                && (flags == quick || flags == quick.union(shortcutConfiguration.plainText.eventFlags))
+            let selectionKey = [UInt16(36), 76, 49, 51, 117].contains(event.keyCode)
+            let reorderKey = [UInt16(123), 124].contains(event.keyCode) && flags == [.command, .option]
+            if command.map({ selectionCommands.contains($0) }) == true || quickOutput || selectionKey || reorderKey { return true }
+            if !event.isARepeat { cancelBoundaryNavigation() }
+        }
         handleModifierFlags(flags)
         let editingSearch = isEditingSearch
         let plainFlags = shortcutConfiguration.plainText.eventFlags
@@ -1424,7 +1617,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             if command == .cut || command == .paste || command == .quit { return false }
             guard !event.isARepeat else { return true }
             switch command {
-            case .search: window?.makeFirstResponder(searchField); cardViews.forEach(updateShortcutLabel)
+            case .search:
+                if editingSearch { showAllFilters() }
+                else { window?.makeFirstResponder(searchField); cardViews.forEach(updateShortcutLabel) }
             case .settings: onSettings?()
             case .pause: onPauseToggle?()
             case .newText: onNewText?()
@@ -1485,10 +1680,10 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         case 124 where !editingSearch && flags == [.command, .option]:
             if !event.isARepeat { stepSelectedItems(forward: true) }; return true
         case 126 where !editingSearch && (flags == .command || flags == [.command, .shift]):
-            if let first = filteredRecords.first { select(first.id, focusResults: true, extending: flags.contains(.shift)) }
+            if !event.isARepeat { moveToBoundary(.first, extending: flags.contains(.shift)) }
             return true
         case 125 where !editingSearch && (flags == .command || flags == [.command, .shift]):
-            if let last = filteredRecords.last { select(last.id, focusResults: true, extending: flags.contains(.shift)) }
+            if !event.isARepeat { moveToBoundary(.last, extending: flags.contains(.shift)) }
             return true
         case 123 where !editingSearch && (flags.isEmpty || flags == .shift): moveSelection(-1, extending: flags == .shift); return true
         case 124 where !editingSearch && (flags.isEmpty || flags == .shift): moveSelection(1, extending: flags == .shift); return true
@@ -1518,9 +1713,12 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func issueQuery(resetLimit: Bool, preserveReveal: Bool = false, preserveStatus: Bool = false,
                             anchor: PanelPageAnchor? = nil, offset: Int? = nil, focusLast: Bool = false,
+                            boundary: HistoryPageBoundary? = nil,
                             retainedSelection: PanelRetainedSelection? = nil, allowMissingAnchorFallback: Bool = false,
-                            replaceSelectionOnFocus: Bool = false) {
+                            replaceSelectionOnFocus: Bool = false, boundaryNavigation: PanelBoundaryNavigation? = nil) {
+        if boundaryNavigation == nil { cancelBoundaryNavigation() }
         if resetLimit {
+            closeAllFilters(restoreFocus: false)
             scopeGeneration = UUID()
             selectionRequestID = nil
             validationRequestID = nil
@@ -1539,46 +1737,97 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         let query = currentQuery
         if let onPageRequest {
             let requestedAnchor = anchor ?? (preserveReveal ? pendingRevealID.map { PanelPageAnchor(recordID: $0, displacement: 0) } : nil)
-            let request = PanelPageRequest(id: queryGeneration, query: query, offset: max(0, offset ?? (resetLimit ? 0 : pageWindow.offset)), anchor: requestedAnchor)
+            let request = PanelPageRequest(id: queryGeneration, query: query,
+                                          offset: boundary == nil ? max(0, offset ?? (resetLimit ? 0 : pageWindow.offset)) : 0,
+                                          anchor: requestedAnchor, boundary: boundary)
             pageRequestID = request.id
+            if boundaryNavigation != nil { boundaryPageRequestID = request.id }
             let session = viewGeneration
+            let focusResults = !isEditingSearch && allFiltersController == nil
             onPageRequest(request) { [weak self] result in
-                guard let self, self.isVisible, self.viewGeneration == session,
-                      self.queryGeneration == request.id, self.pageRequestID == request.id else { return }
-                self.pageRequestID = nil
-                self.queryPending = false
+                guard let self else { return }
+                @MainActor func current() -> Bool {
+                    guard self.isVisible, self.viewGeneration == session,
+                          self.queryGeneration == request.id, self.pageRequestID == request.id else { return false }
+                    if let intent = boundaryNavigation, !self.isCurrentBoundary(intent) {
+                        if self.boundaryNavigationID == intent.id { self.cancelBoundaryNavigation() }
+                        return false
+                    }
+                    return true
+                }
+                guard current() else { return }
+                @MainActor func finish() {
+                    self.pageRequestID = nil
+                    self.queryPending = false
+                    if boundaryNavigation != nil { self.boundaryNavigationID = nil; self.boundaryPageRequestID = nil }
+                    self.updateFilterControls()
+                    if self.refreshAfterPageLoad {
+                        self.refreshAfterPageLoad = false
+                        self.refreshPage()
+                    }
+                }
                 switch result {
                 case .success(let page):
                     let ids = Set(page.records.map(\.id))
-                    let validFocus = page.focusID.map { ids.contains($0) } ?? (request.anchor == nil)
+                    let validFocus = page.focusID.map { ids.contains($0) } ?? (request.anchor == nil && (boundary == nil || page.records.isEmpty))
                     let exactAnchor = request.anchor?.displacement != 0 || page.focusID == request.anchor?.recordID
+                    let exactBoundary = boundary == nil || (boundary == .first
+                        ? page.offset == 0 && page.focusID == page.records.first?.id
+                        : !page.hasMore && page.focusID == page.records.last?.id)
                     guard page.records.count <= PanelPageWindow.size, ids.count == page.records.count,
-                          page.offset >= 0, validFocus, exactAnchor else {
-                        self.pageLoadFailed()
-                        return
+                          page.offset >= 0, validFocus, exactAnchor, exactBoundary else {
+                        self.pageLoadFailed(); finish(); return
                     }
-                    let changedWindow = page.offset != self.pageWindow.offset || resetLimit
-                    self.pageWindow.update(offset: page.offset, count: page.records.count, hasMore: page.hasMore)
-                    self.pageMatchesQuery = true
-                    self.pageStatus = nil
-                    self.inlineRecords.removeAll()
-                    self.recordOriginDevices = Dictionary(uniqueKeysWithValues: page.records.compactMap { record in record.originDeviceConflict ? nil : record.originDeviceID.map { (record.id, $0) } })
-                    self.records = page.records.map(ClipboardCardContent.init)
-                    var focus = page.focusID ?? (focusLast ? page.records.last?.id : page.records.first?.id)
-                    if let retainedSelection {
-                        // Membership is a global frozen set. A page is never allowed to intersect it.
-                        focus = retainedSelection.generation == self.selection.generation ? self.selectedID : nil
-                    } else if (resetLimit || replaceSelectionOnFocus), let focus,
-                              let content = self.records.first(where: { $0.id == focus }) {
-                        self.selection.selectSingle(self.reference(content))
+                    @MainActor func accept() {
+                        guard current() else { return }
+                        let changedWindow = page.offset != self.pageWindow.offset || resetLimit
+                        self.pageWindow.update(offset: page.offset, count: page.records.count, hasMore: page.hasMore)
+                        self.pageMatchesQuery = true
+                        self.pageStatus = nil
+                        self.inlineRecords.removeAll()
+                        self.recordOriginDevices = Dictionary(uniqueKeysWithValues: page.records.compactMap { record in
+                            record.originDeviceConflict ? nil : record.originDeviceID.map { (record.id, $0) }
+                        })
+                        self.records = page.records.map(ClipboardCardContent.init)
+                        var focus = page.focusID ?? (focusLast ? page.records.last?.id : page.records.first?.id)
+                        if let candidate = boundaryNavigation?.selection {
+                            self.selection = candidate
+                            self.selectionStatus = nil
+                            focus = candidate.focusID
+                        } else if let retainedSelection {
+                            focus = retainedSelection.generation == self.selection.generation ? self.selectedID : nil
+                        } else if resetLimit || replaceSelectionOnFocus {
+                            if let focus, let content = self.records.first(where: { $0.id == focus }) {
+                                self.selection.selectSingle(self.reference(content))
+                            } else { self.selection.clear() }
+                            self.selectionStatus = nil
+                        }
+                        self.pendingRevealID = nil
+                        self.reloadResults(resetScroll: changedWindow, allowAutomaticSelection: resetLimit)
+                        if retainedSelection != nil { self.validateCurrentSelection() }
+                        if let focus, let index = self.filteredRecords.firstIndex(where: { $0.id == focus }) {
+                            self.revealItem(at: index)
+                            if focusResults, !self.isEditingSearch, self.allFiltersController == nil, retainedSelection == nil {
+                                self.window?.makeFirstResponder(self.resultsView)
+                            }
+                        }
+                        finish()
                     }
-                    self.pendingRevealID = nil
-                    self.reloadResults(resetScroll: changedWindow, allowAutomaticSelection: resetLimit)
-                    if retainedSelection != nil { self.validateCurrentSelection() }
-                    if let focus, let index = self.filteredRecords.firstIndex(where: { $0.id == focus }) {
-                        self.revealItem(at: index)
-                        if retainedSelection == nil { self.window?.makeFirstResponder(self.resultsView) }
-                    }
+                    if let candidate = boundaryNavigation?.selection {
+                        let expected = Dictionary(uniqueKeysWithValues: candidate.references.map { ($0.id, $0.revision) })
+                        guard let target = candidate.focusID, let targetVersion = expected[target],
+                              page.records.contains(where: { $0.id == target && $0.revision == targetVersion }),
+                              page.records.allSatisfy({ record in expected[record.id].map { $0 == record.revision } ?? true }) else {
+                            self.selectionFailed(PanelSelectionState.SelectionError.staleSelection); finish(); return
+                        }
+                        self.validateReferences(candidate.references) { [weak self] validation in
+                            guard let self, current() else { return }
+                            switch validation {
+                            case .success: accept()
+                            case .failure(let error): self.selectionFailed(error); finish()
+                            }
+                        }
+                    } else { accept() }
                 case .failure(let error):
                     if allowMissingAnchorFallback, requestedAnchor != nil,
                        let storeError = error as? HistoryStoreError, case .recordNotFound = storeError {
@@ -1586,12 +1835,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                                         retainedSelection: retainedSelection)
                         return
                     }
-                    self.pageLoadFailed()
-                }
-                self.updateFilterControls()
-                if self.refreshAfterPageLoad {
-                    self.refreshAfterPageLoad = false
-                    self.refreshPage()
+                    self.pageLoadFailed(); finish()
                 }
             }
             return
@@ -1622,11 +1866,13 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         issueQuery(resetLimit: true)
     }
     @objc private func loadMore() {
+        cancelBoundaryNavigation()
         guard !queryPending else { return }
         if onPageRequest != nil { issueQuery(resetLimit: false, offset: pageWindow.nextOffset) }
         else { resultLimit += 300; issueQuery(resetLimit: false, preserveReveal: true) }
     }
     @objc private func loadPreviousPage() {
+        cancelBoundaryNavigation()
         guard onPageRequest != nil, hasPreviousResults, !queryPending else { return }
         issueQuery(resetLimit: false, offset: pageWindow.previousOffset, focusLast: true)
     }
@@ -1645,6 +1891,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func promptDateRange() {
+        cancelBoundaryNavigation()
         guard let window else { return }
         let alert = NSAlert()
         alert.messageText = "按复制时间筛选"
@@ -1699,6 +1946,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func promptBoard(_ board: Pinboard?) {
+        cancelBoundaryNavigation()
         guard let window else { return }
         let alert = NSAlert()
         alert.messageText = board == nil ? "新建分组" : "编辑分组"
