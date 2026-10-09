@@ -30,7 +30,7 @@ test -d "$BIN_DIR/$LOCALIZATION_BUNDLE"
 # The CLI SwiftPM build leaves package resources next to its executable. The
 # delivered app resolves this bundle from its own Resources directory.
 ditto "$BIN_DIR/$LOCALIZATION_BUNDLE" "$APP_DIR/Contents/Resources/$LOCALIZATION_BUNDLE"
-for LANGUAGE in en zh-Hans zh-Hant; do
+for LANGUAGE in en zh-Hans zh-Hant cs da nl fr de he it ja ko pl pt ru es; do
     ditto "$PROJECT_ROOT/native/Sources/ClipShelf/Resources/$LANGUAGE.lproj" \
         "$APP_DIR/Contents/Resources/$LANGUAGE.lproj"
 done

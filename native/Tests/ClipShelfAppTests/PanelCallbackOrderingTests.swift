@@ -13,14 +13,15 @@ import XCTest
 }
 
 @MainActor final class PanelCallbackHarness {
-    let panel = ClipboardPanelController()
+    let panel: ClipboardPanelController
     let directory: URL
     let store: HistoryStore
     let board: Pinboard
     var requests: [(PanelPageRequest, (Result<PanelHistoryPage, Error>) -> Void)] = []
     var reorderReplies: [(Result<Void, Error>) -> Void] = []
 
-    init() throws {
+    init(layoutDirection: NSUserInterfaceLayoutDirection? = nil) throws {
+        panel = ClipboardPanelController(layoutDirection: layoutDirection)
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("clipshelf-panel-callback-\(UUID().uuidString)")
         store = try HistoryStore(databaseURL: directory.appendingPathComponent("history.sqlite3"))
         board = try store.createPinboard(name: "Synthetic callbacks")
@@ -54,7 +55,7 @@ import XCTest
         }
         XCTAssertEqual(requests.last?.0.offset, 600)
         panel.window?.makeFirstResponder(try view(label: "剪贴板搜索结果") as NSCollectionView)
-        key(124) // Explicitly select the first card in this new window.
+        key(layoutDirection == .rightToLeft ? 123 : 124) // Select the first logical card in the new window.
     }
 
     func view<T: NSView>(label: String) throws -> T {

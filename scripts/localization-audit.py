@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U0003134f]")
-LANGUAGES = ("en", "zh-Hans", "zh-Hant")
+LANGUAGES = ('en', 'zh-Hans', 'zh-Hant', 'cs', 'da', 'nl', 'fr', 'de', 'he', 'it', 'ja', 'ko', 'pl', 'pt', 'ru', 'es')
 CATALOG_DIRECTORY = Path("native/Sources/ClipShelfLocalization/Resources")
 EXCEPTION_FILE = Path("scripts/localization-exceptions.json")
 

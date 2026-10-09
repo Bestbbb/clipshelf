@@ -111,6 +111,7 @@ final class HistoryCleanupConfirmationController: NSWindowController, NSWindowDe
         guard let window else { return }
         let root = NSView()
         window.contentView = root
+        defer { InterfaceLayout.apply(to: root) }
         let scroll = NSScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.hasVerticalScroller = true

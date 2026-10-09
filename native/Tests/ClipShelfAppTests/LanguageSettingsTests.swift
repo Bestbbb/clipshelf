@@ -30,7 +30,7 @@ private final class LanguagePreferenceFixture {
         unrelated.preferences.set(["fr"], forKey: LanguagePreferences.appleLanguagesKey)
         let untouched = unrelated.domain, active = L10n.language
         let preferences = LanguagePreferences(preferences: app.preferences, allowsChanges: true, sharedPreferences: group.preferences)
-        for language in [InterfaceLanguage.en, .zhHans, .zhHant] {
+        for language in InterfaceLanguage.supported {
             try preferences.save(language)
             XCTAssertEqual(preferences.selectedLanguage, language)
             for fixture in [app, group] {
@@ -79,7 +79,7 @@ private final class LanguagePreferenceFixture {
         let controller = LanguageSettingsController(preferences: .init(preferences: fixture.preferences, allowsChanges: true),
                                                     presentWindow: { _ in presentations += 1 })
         let picker: NSPopUpButton = try view(controller, identifier: "language.selection")
-        XCTAssertEqual(picker.itemArray.compactMap { $0.representedObject as? String }, ["system", "en", "zh-Hans", "zh-Hant"])
+        XCTAssertEqual(picker.itemArray.compactMap { $0.representedObject as? String }, InterfaceLanguage.allCases.map(\.rawValue))
         picker.selectItem(at: 1)
         XCTAssertEqual(fixture.domain.count, 0)
         let active = L10n.language

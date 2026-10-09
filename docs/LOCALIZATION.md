@@ -1,16 +1,18 @@
 # Interface localization
 
-ClipShelf currently provides English, Simplified Chinese and Traditional Chinese,
-plus a Follow System choice. This covers the existing application controls,
+ClipShelf provides 16 interface languages plus a Follow System choice: English,
+Simplified Chinese, Traditional Chinese, Czech, Danish, Dutch, French, German,
+Hebrew, Italian, Japanese, Korean, Polish, Portuguese, Russian and Spanish. This covers the existing application controls,
 accessibility labels and application-owned status/error messages, with separate
-native tables for Services, App Intents and the Share Extension. It does not imply
-complete Paste language parity or completed visual acceptance.
+native tables for Services, App Intents and the Share Extension. Catalog coverage does not imply completed native-speaker or visual acceptance.
 
 The [Paste Mac App Store listing](https://apps.apple.com/us/app/paste-limitless-clipboard/id967805235?platform=mac)
-declares 16 languages (checked 2026-10-10). Czech, Danish, Dutch, French, German,
-Hebrew, Italian, Japanese, Korean, Polish, Portuguese, Russian and Spanish remain
-in the full macOS scope. Hebrew also requires right-to-left layout and interaction
-acceptance; the current implementation has no RTL layout support.
+declares these 16 languages (checked 2026-10-10). Regional preferences resolve to
+the supported base language; explicit Chinese scripts take precedence over region,
+and the legacy Hebrew identifier `iw` resolves to `he`. Unsupported preferences
+continue through the system list before falling back to English. Portuguese uses
+Brazilian terminology in one shared `pt` catalog; separate regional variants are
+not provided.
 
 ## User flow and data boundaries
 
@@ -35,8 +37,8 @@ language. The feature does not promise every visible byte is translated.
 
 ## Runtime contract
 
-`ClipShelfLocalization` is a Foundation-only Swift package target shared by the
-main app, core and Share Inbox code. Configure `L10n` before creating app controls.
+`ClipShelfLocalization` shares a Foundation-based text runtime between the main
+app, core and Share Inbox code, plus an AppKit layout helper for owned views. Configure `L10n` before creating app controls.
 Each process takes one immutable language snapshot. Background App Intents
 configure on authorized-store access; the Share Extension supplies its own bundle.
 
@@ -92,9 +94,29 @@ NSApplication, reading profile preferences or starting capture/background servic
 The formal release pipeline runs this gate before notarization. It is a packaging
 test, not evidence of a real Share Extension launch or a complete translated UI.
 
-English layout regressions cover Stack actions, date filters and the full upload
-consent description using unshown native controls. Real first-launch flows,
-screen-reader navigation, all windows at minimum size, cross-app focus behavior,
-system language selection and signed extension/Shortcuts behavior remain manual
-acceptance tasks. Traditional Chinese has automated script conversion plus
-terminology/meaning review; full native-speaker and rendered-screen review remains.
+Native-control regressions use all delivered language catalogs for Stack actions,
+date controls, filter actions, language settings and upload-consent wrapping in
+unshown windows. Real first-launch flows, screen-reader navigation, every window
+at minimum size, cross-app focus behavior, system language selection and signed
+extension/Shortcuts behavior remain manual acceptance tasks. Translations require
+native-speaker review, including terminology, contextual meaning and script usage.
+
+## Hebrew layout and navigation
+
+`InterfaceLayout` applies direction explicitly to each owned view, including
+new collection cells, rebuilt filter rows, settings, popovers, alert content and
+the Share Extension. This does not depend on the host process inheriting the
+same language. It does not rewrite user text or its paragraph writing direction.
+System-owned file pickers, menus and third-party views follow their own localization
+and host behavior and need separate live acceptance.
+
+AppKit's actual collection flow layout mirrors the horizontal card order in RTL.
+Initial display starts at the logical first card, and edge insertion markers stay
+inside the content bounds. Physical Left/Right and Shift navigation follow that geometry; Cmd-Option ordering
+commands and their displayed shortcuts reverse together. Drag insertion compares
+actual card frames in the active direction. The underlying query, persisted board
+order, selection/output order, Quick Paste numbering and logical first/last
+commands retain their existing meaning. Switching language is not a data migration.
+Tests exercise real unshown collection frames, callbacks, insertion geometry and
+mixed Hebrew/Latin user-text preservation. They do not prove VoiceOver order,
+all system menus, or real Hebrew cross-app paste acceptance.

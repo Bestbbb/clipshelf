@@ -29,7 +29,7 @@ final class LocalizationResourceTests: XCTestCase {
         let directory = try XCTUnwrap(catalog.resourceURL)
         let messages: [InterfaceLanguage: String] = [.en: "Save {0}", .zhHans: "保存 {0}", .zhHant: "儲存 {0}"]
         for language in InterfaceLanguage.supported {
-            let data = corrupt ? Data("[1,2,3]".utf8) : try JSONSerialization.data(withJSONObject: ["保存 {0}": messages[language]!])
+            let data = corrupt ? Data("[1,2,3]".utf8) : try JSONSerialization.data(withJSONObject: ["保存 {0}": (messages[language] ?? "Save {0}")])
             try data.write(to: directory.appendingPathComponent("catalog-\(language.rawValue).json"))
         }
         return catalog
@@ -42,7 +42,7 @@ final class LocalizationResourceTests: XCTestCase {
             let files = LocalizationResources.load(hostBundle: host, packageBundle: { XCTFail("Packaged host must not evaluate SwiftPM fallback"); return nil })
             XCTAssertEqual(files.source, .hostBundle)
             XCTAssertEqual(files.directory, nested.resourceURL)
-            XCTAssertEqual(files.contents.count, 3)
+            XCTAssertEqual(files.contents.count, InterfaceLanguage.supported.count)
             XCTAssertEqual(files.issues, [])
             let runtime = LocalizationRuntime { _ in files }
             runtime.configure(language: .zhHant, preferredLanguages: [], hostBundle: host)
@@ -79,7 +79,7 @@ final class LocalizationResourceTests: XCTestCase {
         let files = LocalizationResources.load(hostBundle: host, packageBundle: { package })
         XCTAssertEqual(files.source, .swiftPackage)
         XCTAssertEqual(files.directory, package.resourceURL)
-        XCTAssertEqual(files.contents.count, 3)
+        XCTAssertEqual(files.contents.count, InterfaceLanguage.supported.count)
     }
 
     func testHostBundleTakesPrecedenceForCommandLineToo() throws {

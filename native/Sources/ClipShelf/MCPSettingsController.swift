@@ -45,6 +45,7 @@ final class MCPSettingsController: NSWindowController {
         body.edgeInsets = NSEdgeInsets(top: 22, left: 22, bottom: 22, right: 22)
         body.translatesAutoresizingMaskIntoConstraints = false
         window.contentView = body
+        defer { InterfaceLayout.apply(to: body) }
         NSLayoutConstraint.activate([
             body.widthAnchor.constraint(greaterThanOrEqualToConstant: 600), body.heightAnchor.constraint(greaterThanOrEqualToConstant: 420),
             endpoint.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -44),
@@ -121,7 +122,7 @@ final class MCPSettingsController: NSWindowController {
         scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.documentView = body
         alert.accessoryView = scroll
         alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("创建授权"))
-        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        guard alert.runLocalizedModal() == .alertSecondButtonReturn else { return }
         var grants = Set<MCPAuthorizationStore.Permission>()
         if read.state == .on { grants.insert(.read) }
         if write.state == .on { grants.insert(.write) }
@@ -141,7 +142,7 @@ final class MCPSettingsController: NSWindowController {
         let token = NSSecureTextField(string: issued.token); token.frame = NSRect(x: 0, y: 0, width: 450, height: 24)
         alert.accessoryView = token
         alert.addButton(withTitle: L10n.text("完成")); alert.addButton(withTitle: L10n.text("复制令牌"))
-        if alert.runModal() == .alertSecondButtonReturn {
+        if alert.runLocalizedModal() == .alertSecondButtonReturn {
             let item = NSPasteboardItem()
             item.setString(issued.token, forType: .string)
             item.setString("", forType: .init("org.nspasteboard.ConcealedType"))
@@ -161,7 +162,7 @@ final class MCPSettingsController: NSWindowController {
 
     private func presentError(_ title: String, detail: String) {
         let alert = NSAlert(); alert.messageText = title; alert.informativeText = detail; alert.alertStyle = .warning
-        alert.runModal()
+        alert.runLocalizedModal()
     }
 
     private func approveOAuth(_ request: MCPOAuthAuthorizationRequest) async -> MCPOAuthApproval? {
@@ -190,7 +191,7 @@ final class MCPSettingsController: NSWindowController {
         alert.addButton(withTitle: L10n.text("拒绝")); alert.addButton(withTitle: L10n.text("允许所选范围"))
         let response: NSApplication.ModalResponse = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                alert.beginSheetModal(for: window) { continuation.resume(returning: $0) }
+                alert.beginLocalizedSheetModal(for: window) { continuation.resume(returning: $0) }
             }
         } onCancel: {
             Task { @MainActor in

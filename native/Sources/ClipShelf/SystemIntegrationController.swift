@@ -77,6 +77,7 @@ final class SystemIntegrationController: NSObject {
         let window = NSWindow(contentRect: view.frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = L10n.text("从 iPhone 或 iPad 导入")
         window.isReleasedWhenClosed = false; window.contentView = view
+        InterfaceLayout.apply(to: view)
         cameraWindow = window
         window.center(); window.makeKeyAndOrderFront(nil); window.makeFirstResponder(view)
         NSApp.activate(ignoringOtherApps: true)

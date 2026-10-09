@@ -1,0 +1,15 @@
+// Keep lookup keys aligned with the static App Intents and Info.plist definitions.
+"保存文本到 ClipShelf" = "Tekst opslaan in ClipShelf";
+"把文本或链接保存到历史或指定分组。不会改写系统剪贴板。" = "Sla tekst of een link op in de geschiedenis of op een geselecteerd prikbord. Het systeemklembord blijft ongewijzigd.";
+"文本" = "Tekst";
+"分组名称" = "Prikbordnaam";
+"保存 ${text} 到 ClipShelf" = "Sla ${text} op in ClipShelf";
+"查找 ClipShelf 最近文本" = "Recente tekst zoeken in ClipShelf";
+"查找本地内容、当前同步账号及仍可读取的共享板，排除过往账号缓存与撤销的共享。需单独允许快捷指令访问。" = "Doorzoek lokale inhoud, het huidige synchronisatieaccount en toegankelijke gedeelde prikborden. Caches van eerdere accounts en ingetrokken gedeelde inhoud worden uitgesloten. Toegang voor Opdrachten vereist afzonderlijke toestemming.";
+"搜索" = "Zoeken";
+"从 ClipShelf 查找 ${query}" = "Zoek ${query} in ClipShelf";
+"获取 ClipShelf 第几条文本" = "Tekst op positie ophalen in ClipShelf";
+"从当前授权范围内的列表取得指定序号文本，从 1 开始。仅包含本地内容、当前账号及仍可读取的共享板。" = "Haal tekst op een positie in de momenteel toegestane lijst op, beginnend bij 1. Bevat alleen lokale inhoud, het huidige account en toegankelijke gedeelde prikborden.";
+"序号" = "Positie";
+"获取 ClipShelf 第 ${index} 条文本" = "Haal tekst op positie ${index} op in ClipShelf";
+"查找最近文本" = "Recente tekst zoeken";

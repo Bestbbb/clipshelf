@@ -158,6 +158,7 @@ final class ImagePreviewController: NSWindowController, NSWindowDelegate {
     private func buildInterface() {
         guard let window else { return }
         let root = NSView(); window.contentView = root
+        defer { InterfaceLayout.apply(to: root) }
         title.stringValue = currentRecord.title
         title.setAccessibilityLabel(L10n.text("图片标题"))
         title.font = .systemFont(ofSize: 13, weight: .semibold); title.lineBreakMode = .byTruncatingTail

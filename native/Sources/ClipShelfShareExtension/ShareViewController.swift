@@ -54,6 +54,7 @@ import Security
             status.widthAnchor.constraint(equalTo: stack.widthAnchor),
             explanation.widthAnchor.constraint(equalTo: stack.widthAnchor)
         ])
+        InterfaceLayout.apply(to: view)
         preferredContentSize = NSSize(width: 480, height: 270)
     }
 

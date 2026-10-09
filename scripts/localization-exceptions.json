@@ -145,12 +145,12 @@
     "reason": "Persisted legacy content marker; preserve bytes"
   },
   {
-    "file": "native/Sources/ClipShelf/LanguageSettingsController.swift",
+    "file": "native/Sources/ClipShelfLocalization/InterfaceLanguage.swift",
     "literal": "\"简体中文\"",
     "reason": "Native language self-name"
   },
   {
-    "file": "native/Sources/ClipShelf/LanguageSettingsController.swift",
+    "file": "native/Sources/ClipShelfLocalization/InterfaceLanguage.swift",
     "literal": "\"繁體中文\"",
     "reason": "Native language self-name"
   },
@@ -190,8 +190,13 @@
     "reason": "Synthetic acceptance content"
   },
   {
-    "file": "native/Sources/ClipShelf/LanguageSettingsController.swift",
+    "file": "native/Sources/ClipShelfLocalization/InterfaceLanguage.swift",
     "literal": "\"English\"",
     "reason": "Native language self-name; the picker must remain identifiable in every interface language"
+  },
+  {
+    "file": "native/Sources/ClipShelfLocalization/InterfaceLanguage.swift",
+    "literal": "\"日本語\"",
+    "reason": "Native language self-name"
   }
 ]

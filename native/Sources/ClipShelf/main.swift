@@ -6,7 +6,7 @@ import ClipShelfLocalization
 if let index = CommandLine.arguments.firstIndex(of: "--localization-diagnostics") {
     guard CommandLine.arguments.indices.contains(index + 1),
           let language = InterfaceLanguage(rawValue: CommandLine.arguments[index + 1]), language != .system else {
-        FileHandle.standardError.write(Data("Expected en, zh-Hans or zh-Hant.\n".utf8))
+        FileHandle.standardError.write(Data("Expected a supported interface language identifier.\n".utf8))
         exit(2)
     }
     L10n.configure(language: language, preferredLanguages: [], hostBundle: .main)

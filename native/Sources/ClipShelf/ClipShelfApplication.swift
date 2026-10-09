@@ -664,7 +664,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         let alert = NSAlert(); alert.messageText = L10n.text("系统分享收件箱")
         alert.informativeText = L10n.text("通过其他应用的分享菜单保存的内容会自动导入。如果上次导入因退出而中断，可以重试未确认项；请先检查历史，避免重复保存已手动恢复的内容。")
         alert.addButton(withTitle: L10n.text("检查收件箱")); alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("重试中断项"))
-        let choice = alert.runModal()
+        let choice = alert.runLocalizedModal()
         guard choice != .alertSecondButtonReturn else { return }
         processShareInbox(retryUncertain: choice == .alertThirdButtonReturn, userInitiated: true)
     }
@@ -932,7 +932,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         alert.addButton(withTitle: L10n.text("取消"))
         alert.addButton(withTitle: L10n.text("丢弃"))
         NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertSecondButtonReturn, interactionLifecycle.isAllowed else {
+        guard alert.runLocalizedModal() == .alertSecondButtonReturn, interactionLifecycle.isAllowed else {
             if wasRecording, interactionLifecycle.isAllowed, !ingestion.hasFailure,
                preferences.bool(forKey: "recordingEnabled") { capture.start() }
             refresh()
@@ -977,7 +977,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         alert.addButton(withTitle: L10n.text("保存"))
         alert.addButton(withTitle: L10n.text("取消"))
         NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn {
+        if alert.runLocalizedModal() == .alertFirstButtonReturn {
             let values = field.stringValue.components(separatedBy: CharacterSet(charactersIn: ",\n"))
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
             if capture.excludedBundleIDs != Set(values) { discardPendingCapturesForPrivacy() }
@@ -1007,7 +1007,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         alert.accessoryView = scroll
         alert.addButton(withTitle: L10n.text("保存")); alert.addButton(withTitle: L10n.text("取消"))
         NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn, !text.string.isEmpty, mutationIsAvailable() {
+        if alert.runLocalizedModal() == .alertFirstButtonReturn, !text.string.isEmpty, mutationIsAvailable() {
             do {
                 _ = try store?.create(ClipboardRecord(text: text.string, sourceApp: "ClipShelf",
                                                       sourceBundleID: Bundle.main.bundleIdentifier))
@@ -1043,7 +1043,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         alert.addButton(withTitle: L10n.text("开始记录")); alert.addButton(withTitle: L10n.text("稍后"))
         alert.addButton(withTitle: L10n.text("语言 / Language…"))
         NSApp.activate(ignoringOtherApps: true)
-        let choice = alert.runModal()
+        let choice = alert.runLocalizedModal()
         if choice == .alertThirdButtonReturn {
             showLanguageSettings()
             return false
@@ -1133,7 +1133,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         alert.informativeText = L10n.text("可以仅移除分组并把内容保留在历史中，也可以删除分组及其全部内容。后者不可撤销。")
         alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("仅移除分组，保留内容"))
         alert.addButton(withTitle: L10n.text("删除分组及全部内容"))
-        let choice = alert.runModal()
+        let choice = alert.runLocalizedModal()
         guard choice != .alertFirstButtonReturn, mutationIsAvailable() else { return }
         do {
             try store?.deletePinboard(id: board.id, deleteItems: choice == .alertThirdButtonReturn); reload()
@@ -1872,7 +1872,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         allow.state = preferences.bool(forKey: "shortcutsEnabled") ? .on : .off
         allow.frame = NSRect(x: 0, y: 0, width: 420, height: 32); alert.accessoryView = allow
         alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("保存"))
-        if alert.runModal() == .alertSecondButtonReturn {
+        if alert.runLocalizedModal() == .alertSecondButtonReturn {
             preferences.set(allow.state == .on, forKey: "shortcutsEnabled")
             ClipboardIntentRuntime.shared.enabled = allow.state == .on
         }
@@ -1896,7 +1896,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         password.widthAnchor.constraint(equalToConstant: 420).isActive = true
         repeatPassword.widthAnchor.constraint(equalToConstant: 420).isActive = true
         options.accessoryView = fields; options.addButton(withTitle: L10n.text("取消")); options.addButton(withTitle: L10n.text("继续"))
-        guard options.runModal() == .alertSecondButtonReturn else { return }
+        guard options.runLocalizedModal() == .alertSecondButtonReturn else { return }
         let secret: String? = encrypt.state == .on ? password.stringValue : nil
         if let secret, secret.count < 8 || secret.utf8.count > 1024 || secret != repeatPassword.stringValue {
             showError(L10n.text("密码未通过检查"), detail: L10n.text("请使用至少 8 个字符、最多 1024 字节的密码，并确保两次输入一致。"))
@@ -1946,13 +1946,13 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             let prompt = NSAlert(); prompt.messageText = L10n.text("输入备份密码")
             let password = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 26))
             prompt.accessoryView = password; prompt.addButton(withTitle: L10n.text("取消")); prompt.addButton(withTitle: L10n.text("继续"))
-            guard prompt.runModal() == .alertSecondButtonReturn else { return }
+            guard prompt.runLocalizedModal() == .alertSecondButtonReturn else { return }
             secret = password.stringValue; password.stringValue = ""
         }
         let alert = NSAlert(); alert.messageText = L10n.text("如何恢复备份？")
         alert.informativeText = L10n.text("合并会保留现有内容，并将备份导入为独立本地内容；不会自动上传或传播云端删除。有关联同步数据的档案只允许合并。纯本地档案可替换；执行前会在本机数据目录保存未加密恢复副本。")
         alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("合并")); alert.addButton(withTitle: L10n.text("替换"))
-        let choice = alert.runModal(); guard choice != .alertFirstButtonReturn, mutationIsAvailable() else { return }
+        let choice = alert.runLocalizedModal(); guard choice != .alertFirstButtonReturn, mutationIsAvailable() else { return }
         let mode: BackupRestoreMode = choice == .alertSecondButtonReturn ? .merge : .replace
         let password = secret
         selectionMutationInProgress = true
@@ -2014,7 +2014,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         let alert = NSAlert()
         alert.messageText = title; alert.informativeText = detail; alert.alertStyle = .warning
         NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        alert.runLocalizedModal()
     }
 
     @objc private func quitApplication() { NSApp.terminate(nil) }
@@ -2040,7 +2040,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             alert.addButton(withTitle: L10n.text("取消"))
             alert.addButton(withTitle: L10n.text("丢弃并退出"))
             NSApp.activate(ignoringOtherApps: true)
-            if alert.runModal() != .alertSecondButtonReturn {
+            if alert.runLocalizedModal() != .alertSecondButtonReturn {
                 terminationDecisionPending = false
                 if recordingBeforeTermination, !sessionSuspended, captureIngestion?.hasFailure != true { capture.start() }
                 refreshStackPresentation(); refresh()

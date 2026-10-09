@@ -67,6 +67,7 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
         body.orientation = .vertical; body.alignment = .leading; body.spacing = 18
         body.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
         window.contentView = body
+        defer { InterfaceLayout.apply(to: body) }
         NSLayoutConstraint.activate([
             status.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -48),
             scroll.widthAnchor.constraint(equalTo: status.widthAnchor), scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 180),
@@ -245,7 +246,7 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
                 alert.accessoryView = scroll
                 alert.addButton(withTitle: L10n.text("继续保留")); alert.addButton(withTitle: L10n.text("确认已不再使用，解除保护"))
                 self.setPhase(.confirming)
-                alert.beginSheetModal(for: window) { [weak self] response in
+                alert.beginLocalizedSheetModal(for: window) { [weak self] response in
                     guard let self, self.accepts(current), self.phase == .confirming else { return }
                     self.cancelConfirmation = nil
                     guard response == .alertSecondButtonReturn else {
@@ -284,7 +285,7 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
         let alert = NSAlert(); alert.messageText = L10n.text("回收不再使用的托管文件？")
         alert.informativeText = L10n.text("已核对 \(plan.candidateCount) 组，文件大小合计 \(Self.bytes(plan.candidateLogicalBytes))。执行前会再次核对同一范围；受保护内容、修改过的副本、外部原文件和备份会保留。文件回收不可撤销，也不等于磁盘空间会立即增加同样大小。")
         alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("确认回收"))
-        alert.beginSheetModal(for: window) { response in completion(response == .alertSecondButtonReturn) }
+        alert.beginLocalizedSheetModal(for: window) { response in completion(response == .alertSecondButtonReturn) }
         return { [weak window, weak alert] in
             if let window, let alert, alert.window.sheetParent === window { window.endSheet(alert.window, returnCode: .abort) }
         }

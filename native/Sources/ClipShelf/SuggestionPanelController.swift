@@ -84,6 +84,7 @@ final class SuggestionPanelController: NSWindowController, NSWindowDelegate, NST
         content.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
         content.translatesAutoresizingMaskIntoConstraints = false
         panel.contentView = content
+        defer { InterfaceLayout.apply(to: content) }
         NSLayoutConstraint.activate([
             content.widthAnchor.constraint(equalToConstant: 480),
             content.heightAnchor.constraint(equalToConstant: 470),
@@ -163,6 +164,7 @@ final class SuggestionPanelController: NSWindowController, NSWindowDelegate, NST
         stack.alignment = .leading
         stack.spacing = 4
         stack.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
+        InterfaceLayout.apply(to: stack)
         return stack
     }
     private func clearResults() {

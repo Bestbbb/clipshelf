@@ -1,0 +1,3 @@
+// Keep lookup keys aligned with the static App Intents and Info.plist definitions.
+"CFBundleName" = "ClipShelf";
+"CFBundleDisplayName" = "ClipShelf";

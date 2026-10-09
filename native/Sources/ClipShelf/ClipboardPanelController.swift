@@ -310,7 +310,12 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private var activeThumbnailJobs = 0
     private var requestedThumbnails: Set<String> = []
 
-    init() {
+    private let layoutDirection: NSUserInterfaceLayoutDirection
+    private var earlierArrow: String { layoutDirection == .rightToLeft ? "\u{F703}" : "\u{F702}" }
+    private var laterArrow: String { layoutDirection == .rightToLeft ? "\u{F702}" : "\u{F703}" }
+
+    init(layoutDirection: NSUserInterfaceLayoutDirection? = nil) {
+        self.layoutDirection = layoutDirection ?? InterfaceLayout.direction
         let panel = ShelfPanel(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 430), styleMask: [.borderless, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isReleasedWhenClosed = false
         panel.level = .floating
@@ -618,6 +623,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         background.registerForDraggedTypes(dragTypes)
         background.onDropItems = { [weak self] items, source in self?.handleDrop(items, source: source) }
         panel.contentView = background
+        defer { InterfaceLayout.apply(to: background, direction: layoutDirection) }
 
         let logo = NSTextField(labelWithString: "ClipShelf")
         logo.font = .systemFont(ofSize: 20, weight: .bold)
@@ -718,7 +724,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         orderPopup.action = #selector(orderChanged)
         orderPopup.setAccessibilityLabel(L10n.text("条目顺序"))
         orderingActions.addItem(withTitle: L10n.text("调整条目顺序"))
-        for (title, action, key) in [(L10n.text("选中条目前移"), #selector(moveItemsEarlier), "\u{F702}"), (L10n.text("选中条目后移"), #selector(moveItemsLater), "\u{F703}")] {
+        for (title, action, key) in [(L10n.text("选中条目前移"), #selector(moveItemsEarlier), earlierArrow), (L10n.text("选中条目后移"), #selector(moveItemsLater), laterArrow)] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
             item.keyEquivalentModifierMask = [.command, .option]
             item.target = self
@@ -862,7 +868,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             && (copiedAfter == nil || $0.copiedAt >= copiedAfter!)
             && (copiedBefore == nil || $0.copiedAt <= copiedBefore!)
         }
-        if selection.references.isEmpty, !selection.isInvalid, allowAutomaticSelection, let first = filteredRecords.first {
+        let selectFirst = selection.references.isEmpty && !selection.isInvalid && allowAutomaticSelection && !filteredRecords.isEmpty
+        if selectFirst, let first = filteredRecords.first {
             selection.selectSingle(reference(first))
         }
         resultsView.reloadData()
@@ -879,7 +886,10 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         updatePageControls()
         resultsView.layoutSubtreeIfNeeded()
         let maximumX = max(0, resultsView.bounds.width - scrollView.contentView.bounds.width)
-        scrollView.contentView.scroll(to: NSPoint(x: min(previousOrigin.x, maximumX), y: 0))
+        let originX = resetScroll || selectFirst
+            ? (layoutDirection == .rightToLeft ? maximumX : 0)
+            : min(previousOrigin.x, maximumX)
+        scrollView.contentView.scroll(to: NSPoint(x: originX, y: 0))
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
@@ -889,11 +899,13 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         let item = collectionView.makeItem(withIdentifier: NSUserInterfaceItemIdentifier("clipboard-card"), for: indexPath) as! ClipboardCollectionItem
         let record = filteredRecords[indexPath.item]
         item.configure(makeCard(record: record, position: indexPath.item))
+        InterfaceLayout.apply(to: item.view, direction: layoutDirection)
         return item
     }
 
     private func makeCard(record: ClipboardCardContent, position: Int) -> ClipboardCardView {
         let card = ClipboardCardView(record: record, position: position, compact: compactMode)
+        InterfaceLayout.apply(to: card, direction: layoutDirection)
         card.publications = publications
         card.isSelected = selectedIDs.contains(record.id)
         updateShortcutLabel(card)
@@ -983,8 +995,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         }
         if canReorderItems {
             menu.addItem(.separator())
-            for (title, action) in [(L10n.text("选中条目前移（⌥⌘←）"), #selector(reorderEarlierFromMenu(_:))), (L10n.text("选中条目后移（⌥⌘→）"), #selector(reorderLaterFromMenu(_:)))] {
-                let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            for (title, action, key) in [(L10n.text("选中条目前移"), #selector(reorderEarlierFromMenu(_:)), earlierArrow), (L10n.text("选中条目后移"), #selector(reorderLaterFromMenu(_:)), laterArrow)] {
+                let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+                item.keyEquivalentModifierMask = [.command, .option]
                 item.target = self; item.representedObject = record.id; menu.addItem(item)
             }
         }
@@ -1318,6 +1331,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         let popover = NSPopover()
         popover.behavior = .transient
         popover.contentViewController = controller
+        InterfaceLayout.apply(to: controller.view, direction: layoutDirection)
         popover.contentSize = NSSize(width: 310, height: 340)
         controller.onCancel = { [weak popover] in popover?.close() }
         controller.onApply = { [weak self, weak popover] ids in
@@ -1348,6 +1362,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         popover.behavior = .transient
         popover.delegate = self
         popover.contentViewController = controller
+        InterfaceLayout.apply(to: controller.view, direction: layoutDirection)
         popover.contentSize = controller.preferredContentSize
         let token = UUID(), session = viewGeneration, scope = scopeGeneration
         allFiltersSession = token
@@ -1539,10 +1554,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
     private func insertionIndex(at point: NSPoint) -> Int {
         guard let layout = resultsView.collectionViewLayout else { return filteredRecords.count }
-        for index in filteredRecords.indices {
-            if let frame = layout.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame, point.x < frame.midX { return index }
-        }
-        return filteredRecords.count
+        let frames = filteredRecords.indices.compactMap { layout.layoutAttributesForItem(at: IndexPath(item: $0, section: 0))?.frame }
+        guard frames.count == filteredRecords.count else { return filteredRecords.count }
+        return PanelLayoutDirection.insertionIndex(at: point.x, frames: frames, direction: layoutDirection)
     }
     private func ownedDraggedCard(_ source: Any?) -> ClipboardCardView? {
         ClipboardDragTrace.log("panel ownedSource isCard=\(source is ClipboardCardView) generationMatches=\((source as? ClipboardCardView)?.dragOriginID == viewGeneration)")
@@ -1560,8 +1574,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
               let layout = resultsView.collectionViewLayout else { return [] }
         let adjacent = index < filteredRecords.count ? index : max(0, index - 1)
         if let frame = layout.layoutAttributesForItem(at: IndexPath(item: adjacent, section: 0))?.frame {
-            let x = index < filteredRecords.count ? frame.minX - 6 : frame.maxX + 4
-            insertionLine.frame = NSRect(x: max(0, x), y: frame.minY, width: 3, height: frame.height)
+            insertionLine.frame = PanelLayoutDirection.insertionLineFrame(frame: frame, before: index < filteredRecords.count,
+                                                                          direction: layoutDirection, contentWidth: resultsView.bounds.width)
             insertionLine.isHidden = false
         }
         return .move
@@ -1860,17 +1874,17 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             if !event.isARepeat { resolveFocused { [weak self] in self?.showDetail($0, editing: false) } }
             return true
         case 123 where !editingSearch && flags == [.command, .option]:
-            if !event.isARepeat { stepSelectedItems(forward: false) }; return true
+            if !event.isARepeat { stepSelectedItems(forward: layoutDirection == .rightToLeft) }; return true
         case 124 where !editingSearch && flags == [.command, .option]:
-            if !event.isARepeat { stepSelectedItems(forward: true) }; return true
+            if !event.isARepeat { stepSelectedItems(forward: layoutDirection == .leftToRight) }; return true
         case 126 where !editingSearch && (flags == .command || flags == [.command, .shift]):
             if !event.isARepeat { moveToBoundary(.first, extending: flags.contains(.shift)) }
             return true
         case 125 where !editingSearch && (flags == .command || flags == [.command, .shift]):
             if !event.isARepeat { moveToBoundary(.last, extending: flags.contains(.shift)) }
             return true
-        case 123 where !editingSearch && (flags.isEmpty || flags == .shift): moveSelection(-1, extending: flags == .shift); return true
-        case 124 where !editingSearch && (flags.isEmpty || flags == .shift): moveSelection(1, extending: flags == .shift); return true
+        case 123 where !editingSearch && (flags.isEmpty || flags == .shift): moveSelection(PanelLayoutDirection.step(towardRight: false, direction: layoutDirection), extending: flags == .shift); return true
+        case 124 where !editingSearch && (flags.isEmpty || flags == .shift): moveSelection(PanelLayoutDirection.step(towardRight: true, direction: layoutDirection), extending: flags == .shift); return true
         case 51 where !editingSearch && flags.isEmpty,
              117 where !editingSearch && flags.isEmpty:
             if !event.isARepeat { deleteSelection() }
@@ -2093,7 +2107,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         fields.spacing = 6
         fields.frame = NSRect(x: 0, y: 0, width: 300, height: 110)
         alert.accessoryView = fields
-        alert.beginSheetModal(for: window) { [weak self] response in
+        alert.beginLocalizedSheetModal(for: window) { [weak self] response in
             guard let self else { return }
             guard response == .alertFirstButtonReturn else { self.datePopup.selectItem(at: self.lastDateIndex); return }
             guard start.dateValue <= end.dateValue else { self.datePopup.selectItem(at: self.lastDateIndex); self.statusLabel.stringValue = L10n.text("开始时间不能晚于结束时间"); return }
@@ -2149,7 +2163,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         fields.spacing = 10
         fields.frame = NSRect(x: 0, y: 0, width: 360, height: 28)
         alert.accessoryView = fields
-        alert.beginSheetModal(for: window) { [weak self] response in
+        alert.beginLocalizedSheetModal(for: window) { [weak self] response in
             guard let self, response == .alertFirstButtonReturn else { return }
             let value = name.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !value.isEmpty else { self.statusLabel.stringValue = L10n.text("分组名称不能为空"); return }
@@ -2285,6 +2299,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         detailPrepareReference = renameReference ?? .init(id: record.id, revision: record.revision)
         detailStructureError = editing && !renaming ? ClipboardEditPlan.editingError(original: record) : nil
         let root = NSView(); detail.contentView = root
+        defer { InterfaceLayout.apply(to: root, direction: layoutDirection) }
         let context = NSTextField(labelWithString: renaming ? L10n.text("正在读取条目…") : "\(record.sourceApp ?? L10n.text("剪贴板")) · \(L10n.date(record.copiedAt))")
         detailContextLabel = context
         context.font = .systemFont(ofSize: 11); context.textColor = .secondaryLabelColor
@@ -2373,6 +2388,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         let note = NSTextField(labelWithString: L10n.text("只读预览 · 保留原始 PDF · 不打开文稿内的外部链接"))
         note.font = .systemFont(ofSize: 10); note.textColor = .secondaryLabelColor
         let root = NSView(); detail.contentView = root
+        defer { InterfaceLayout.apply(to: root, direction: layoutDirection) }
         for view in [controls, pdf, page, note] { view.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(view) }
         NSLayoutConstraint.activate([
             controls.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16), controls.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
@@ -2416,6 +2432,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             detail.setFrameOrigin(NSPoint(x: frame.midX - 360, y: frame.midY - 320))
         }
         window?.addChildWindow(detail, ordered: .above)
+        InterfaceLayout.apply(to: detail.contentView, direction: layoutDirection)
         detail.makeKeyAndOrderFront(nil); detail.makeFirstResponder(pdf)
     }
 
@@ -2556,6 +2573,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func presentDetail(_ detail: NSPanel) {
+        InterfaceLayout.apply(to: detail.contentView, direction: layoutDirection)
         if let presentDetailPanel { presentDetailPanel(detail, window) }
         else {
             if detail.parent == nil { window?.addChildWindow(detail, ordered: .above) }
@@ -2672,7 +2690,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             alert.messageText = L10n.text("保留当前修改继续编辑？")
             alert.informativeText = detailSaveID == nil ? L10n.text("放弃后会关闭此草稿，已保存的剪贴板内容不受影响。") : L10n.text("保存请求已提交；关闭草稿不会撤回可能已经完成的保存。")
             alert.addButton(withTitle: L10n.text("继续编辑")); alert.addButton(withTitle: L10n.text("放弃修改"))
-            alert.beginSheetModal(for: detail) { reply($0 == .alertSecondButtonReturn) }
+            alert.beginLocalizedSheetModal(for: detail) { reply($0 == .alertSecondButtonReturn) }
             cancel = { [weak detail, weak alert] in
                 guard let detail, let alert, alert.window.sheetParent === detail else { return }
                 detail.endSheet(alert.window, returnCode: .cancel)

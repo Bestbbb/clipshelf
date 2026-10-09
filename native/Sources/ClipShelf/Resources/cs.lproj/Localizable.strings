@@ -1,0 +1,14 @@
+"保存文本到 ClipShelf" = "Uložit text do ClipShelf";
+"把文本或链接保存到历史或指定分组。不会改写系统剪贴板。" = "Uložit text nebo odkaz do historie nebo vybrané nástěnky. Systémová schránka zůstává beze změny.";
+"文本" = "Text";
+"分组名称" = "Název nástěnky";
+"保存 ${text} 到 ClipShelf" = "Uložit ${text} do ClipShelf";
+"查找 ClipShelf 最近文本" = "Najít nedávný text v ClipShelf";
+"查找本地内容、当前同步账号及仍可读取的共享板，排除过往账号缓存与撤销的共享。需单独允许快捷指令访问。" = "Hledat místní obsah, aktuální účet synchronizace a přístupné sdílené nástěnky. Mezipaměti předchozích účtů a odvolaná sdílení jsou vyloučena. Přístup Zkratek vyžaduje samostatné povolení.";
+"搜索" = "Hledat";
+"从 ClipShelf 查找 ${query}" = "Najít ${query} v ClipShelf";
+"获取 ClipShelf 第几条文本" = "Získat text na dané pozici v ClipShelf";
+"从当前授权范围内的列表取得指定序号文本，从 1 开始。仅包含本地内容、当前账号及仍可读取的共享板。" = "Získat text na dané pozici aktuálně oprávněného seznamu, počínaje 1. Zahrnuje pouze místní obsah, aktuální účet a přístupné sdílené nástěnky.";
+"序号" = "Pozice";
+"获取 ClipShelf 第 ${index} 条文本" = "Získat text na pozici ${index} v ClipShelf";
+"查找最近文本" = "Najít nedávný text";

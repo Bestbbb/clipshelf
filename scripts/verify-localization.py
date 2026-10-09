@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 
 
-LANGUAGES = ("en", "zh-Hans", "zh-Hant")
+LANGUAGES = ('en', 'zh-Hans', 'zh-Hant', 'cs', 'da', 'nl', 'fr', 'de', 'he', 'it', 'ja', 'ko', 'pl', 'pt', 'ru', 'es')
 RESOURCE_BUNDLE = "ClipShelf_ClipShelfLocalization.bundle"
 INTENTS = {"AddClipboardTextIntent", "FindClipboardTextIntent", "GetClipboardTextAtIndexIntent"}
 
@@ -138,7 +138,9 @@ def verify_relocated_runtime(app):
     with tempfile.TemporaryDirectory(prefix="clipshelf-localization-delivery-") as temporary:
         relocated = Path(temporary) / "ClipShelf.app"
         subprocess.run(["/usr/bin/ditto", str(app), str(relocated)], check=True)
-        for language, expected in (("en", "Cancel"), ("zh-Hans", "取消"), ("zh-Hant", "取消")):
+        _, _, catalogs = verify_bundle_resources(relocated)
+        for language in LANGUAGES:
+            expected = catalogs[language]["取消"]
             result = subprocess.run([str(relocated / "Contents/MacOS/ClipShelf"),
                                      "--localization-diagnostics", language],
                                     check=True, capture_output=True, text=True, timeout=20)
@@ -162,7 +164,7 @@ def main():
     verify_app(args.app, args.share_extension)
     if args.runtime:
         verify_relocated_runtime(args.app)
-    print("Localization resources verified: en, zh-Hans, zh-Hant; 3 App Intents.")
+    print("Localization resources verified: " + ", ".join(LANGUAGES) + "; 3 App Intents.")
 
 
 if __name__ == "__main__":

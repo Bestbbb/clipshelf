@@ -324,8 +324,8 @@ signing process in [Publishing an update](https://sparkle-project.org/documentat
 
 ## Interface languages and delivered-resource verification
 
-The app now supports English, Simplified Chinese and Traditional Chinese, plus
-Follow System. The welcome dialog, status menu and application menu provide a
+The app supports all 16 interface languages listed in [LOCALIZATION.md](LOCALIZATION.md),
+plus Follow System. The welcome dialog, status menu and application menu provide a
 Language entry. Saving applies on the next launch without an automatic restart;
 opening settings preserves an unfinished editor, and saving does not rebuild sync
 or update services. Clipboard content, user titles and pinboard names are unchanged.
@@ -359,8 +359,8 @@ clipboard, preferences, database or background-service initialization. The full
 release pipeline includes this check; it does not launch the normal UI or install
 an update.
 
-F13 remains partial: the other 13 languages listed by Paste and Hebrew/RTL support
-are not implemented. Actual macOS per-app language selection, Services/Shortcuts
+F13 remains partial: 16-language resources and Hebrew RTL geometry/navigation
+are implemented, while native-speaker and complete live layout review are pending. Actual macOS per-app language selection, Services/Shortcuts
 menu presentation and signed Share Extension language behavior still need real-host
 acceptance. Existing host processes and third-party windows may cache their language;
 saving does not promise immediate refresh across processes.

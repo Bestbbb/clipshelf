@@ -1,0 +1,14 @@
+"保存文本到 ClipShelf" = "Gem tekst i ClipShelf";
+"把文本或链接保存到历史或指定分组。不会改写系统剪贴板。" = "Gem tekst eller et link i historikken eller på en valgt opslagstavle. Systemudklipsholderen ændres ikke.";
+"文本" = "Tekst";
+"分组名称" = "Opslagstavlens navn";
+"保存 ${text} 到 ClipShelf" = "Gem ${text} i ClipShelf";
+"查找 ClipShelf 最近文本" = "Find seneste tekst i ClipShelf";
+"查找本地内容、当前同步账号及仍可读取的共享板，排除过往账号缓存与撤销的共享。需单独允许快捷指令访问。" = "Søg i lokalt indhold, den aktuelle synkroniseringskonto og tilgængelige delte opslagstavler. Tidligere kontocacher og tilbagekaldte delinger udelades. Adgang for Genveje kræver særskilt tilladelse.";
+"搜索" = "Søg";
+"从 ClipShelf 查找 ${query}" = "Find ${query} i ClipShelf";
+"获取 ClipShelf 第几条文本" = "Hent tekst på en bestemt plads i ClipShelf";
+"从当前授权范围内的列表取得指定序号文本，从 1 开始。仅包含本地内容、当前账号及仍可读取的共享板。" = "Hent tekst på en bestemt plads i den aktuelt godkendte liste, fra 1. Omfatter kun lokalt indhold, den aktuelle konto og tilgængelige delte opslagstavler.";
+"序号" = "Plads";
+"获取 ClipShelf 第 ${index} 条文本" = "Hent tekst på plads ${index} i ClipShelf";
+"查找最近文本" = "Find seneste tekst";

@@ -197,6 +197,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         ])
         setAccessibilityLabel("\(sourceLabel.stringValue)，\(kind)，\(record.text.prefix(140))")
         setAccessibilityHelp(L10n.text("单击选择，双击粘贴；回车粘贴，Shift 回车以纯文本粘贴。"))
+        InterfaceLayout.apply(to: self)
         updateAppearance()
     }
 

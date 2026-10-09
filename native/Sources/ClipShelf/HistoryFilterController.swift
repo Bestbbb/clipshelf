@@ -66,6 +66,7 @@ final class HistoryFilterController: NSViewController {
 
     override func loadView() {
         view = NSView(frame: NSRect(origin: .zero, size: preferredContentSize))
+        defer { InterfaceLayout.apply(to: view) }
         let title = NSTextField(labelWithString: L10n.text("全部筛选"))
         title.font = .systemFont(ofSize: 17, weight: .semibold)
         let queryNote = NSTextField(wrappingLabelWithString: draft.query.text.isEmpty ? L10n.text("组合条件搜索全部历史和固定内容。") : L10n.text("保留搜索词：\(draft.query.text)"))
@@ -186,6 +187,7 @@ final class HistoryFilterController: NSViewController {
     }
     private func select(_ key: String, in popup: NSPopUpButton) { popup.select(popup.itemArray.first { $0.representedObject as? String == key }) }
     private func refreshChoices() {
+        defer { InterfaceLayout.apply(to: boardRows, direction: view.userInterfaceLayoutDirection) }
         typePopup.removeAllItems(); add(L10n.text("所有类型"), key: "all", to: typePopup)
         for (kind, title) in [(ClipboardContentKind.text, L10n.text("文本")), (.link, L10n.text("链接")), (.image, L10n.text("图片")), (.file, L10n.text("文件")), (.color, L10n.text("颜色"))] { add(title, key: kind.rawValue, to: typePopup) }
         select(draft.query.kind?.rawValue ?? "all", in: typePopup)

@@ -24,9 +24,11 @@ the welcome flow lets you start or postpone capture. Open the panel with **⌘�
 or from the menu bar. Direct paste requires Accessibility
 permission; without it, the app copies the selected content for manual pasting.
 
-The interface supports English, Simplified Chinese and Traditional Chinese.
+The interface supports 16 languages, including English, Simplified/Traditional
+Chinese, Japanese, Korean and Hebrew with right-to-left navigation.
 Choose **Language…** from the menu or welcome dialog; saving takes effect on the
-next launch and preserves current work. Full language parity is still in progress.
+next launch and preserves current work. Native-speaker and live interface review
+remain pending; see [localization details](docs/LOCALIZATION.md).
 
 To inspect the interface using synthetic samples without clipboard recording:
 

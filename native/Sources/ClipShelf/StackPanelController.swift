@@ -42,12 +42,15 @@ final class StackPanelController: NSWindowController {
         rows.translatesAutoresizingMaskIntoConstraints = false
         scroll.documentView = rows
         let content = NSStackView(views: [summary, top, scroll, clear])
-        content.orientation = .vertical; content.alignment = .leading; content.spacing = 12
+        summary.setContentCompressionResistancePriority(.required, for: .vertical)
+        content.orientation = .vertical; content.alignment = .centerX; content.spacing = 12
         content.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
         content.translatesAutoresizingMaskIntoConstraints = false
         panel.contentView = content
+        defer { InterfaceLayout.apply(to: content) }
         NSLayoutConstraint.activate([
-            content.widthAnchor.constraint(equalToConstant: 330), content.heightAnchor.constraint(equalToConstant: 310),
+            content.widthAnchor.constraint(greaterThanOrEqualToConstant: 330), content.heightAnchor.constraint(greaterThanOrEqualToConstant: 310),
+            summary.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -28),
             top.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -28),
             scroll.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -28),
             scroll.heightAnchor.constraint(equalToConstant: 160),
@@ -74,9 +77,12 @@ final class StackPanelController: NSWindowController {
             rows.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
         }
-        if window?.isVisible != true, let visible = NSScreen.main?.visibleFrame {
-            window?.setFrameOrigin(NSPoint(x: visible.maxX - 350, y: visible.maxY - 350))
-            window?.orderFrontRegardless()
+        InterfaceLayout.apply(to: rows)
+        if let window, !window.isVisible, let visible = NSScreen.main?.visibleFrame {
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.setFrameOrigin(NSPoint(x: max(visible.minX, visible.maxX - window.frame.width - 20),
+                                          y: max(visible.minY, visible.maxY - window.frame.height - 20)))
+            window.orderFrontRegardless()
         }
     }
     @objc private func endSession() { onEnd?() }

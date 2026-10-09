@@ -107,6 +107,7 @@ final class LinkPreviewController: NSWindowController, NSWindowDelegate, WKNavig
     private func buildInterface() {
         let root = NSView()
         window?.contentView = root
+        defer { InterfaceLayout.apply(to: root) }
         back.target = self; back.action = #selector(goBack)
         forward.target = self; forward.action = #selector(goForward)
         reload.target = self; reload.action = #selector(reloadPage)

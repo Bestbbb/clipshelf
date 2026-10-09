@@ -18,6 +18,7 @@ final class PinboardFilterController: NSViewController {
 
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 310, height: 340))
+        defer { InterfaceLayout.apply(to: view) }
         let title = NSTextField(labelWithString: L10n.text("选择要搜索的分组"))
         title.font = .systemFont(ofSize: 14, weight: .semibold)
         let note = NSTextField(wrappingLabelWithString: L10n.text("同时勾选多个分组；可继续组合类型、来源和时间。未勾选时搜索全部内容。"))

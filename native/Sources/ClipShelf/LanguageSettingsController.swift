@@ -26,13 +26,7 @@ final class LanguageSettingsController: NSWindowController {
         let explanation = NSTextField(wrappingLabelWithString: L10n.text("保存后在下次启动 ClipShelf 时生效，不会自动重启。当前草稿、同步、更新和其他正在进行的任务会继续保留。"))
         explanation.textColor = .secondaryLabelColor
         for language in InterfaceLanguage.allCases {
-            let title: String
-            switch language {
-            case .system: title = L10n.text("跟随系统")
-            case .en: title = "English"
-            case .zhHans: title = "简体中文"
-            case .zhHant: title = "繁體中文"
-            }
+            let title = language == .system ? L10n.text("跟随系统") : language.nativeName
             picker.addItem(withTitle: title); picker.lastItem?.representedObject = language.rawValue
         }
         picker.setAccessibilityIdentifier("language.selection")
@@ -54,6 +48,7 @@ final class LanguageSettingsController: NSWindowController {
         content.orientation = .vertical; content.alignment = .leading; content.spacing = 16
         content.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 20, right: 24)
         window.contentView = content
+        defer { InterfaceLayout.apply(to: content) }
         NSLayoutConstraint.activate([
             scroll.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -48),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 174),

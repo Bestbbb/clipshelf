@@ -3,14 +3,29 @@ import XCTest
 @testable import ClipShelfLocalization
 
 final class LocalizationRuntimeTests: XCTestCase {
+    func testAllSixteenLanguagesResolveRegionalAndLegacyPreferences() {
+        let supported: Set<String> = ["en", "zh-Hans", "zh-Hant", "cs", "da", "nl", "fr", "de", "he", "it", "ja", "ko", "pl", "pt", "ru", "es"]
+        XCTAssertEqual(Set(InterfaceLanguage.supported.map(\.rawValue)), supported)
+        for language in InterfaceLanguage.supported {
+            XCTAssertFalse(language.nativeName.isEmpty)
+            XCTAssertEqual(InterfaceLanguage.resolve(.system, preferredLanguages: ["xx-ZZ", language.rawValue + "-ZZ"]), language)
+            XCTAssertEqual(InterfaceLanguage.resolve(language, preferredLanguages: ["en"]), language)
+        }
+        XCTAssertEqual(InterfaceLanguage.resolve(.system, preferredLanguages: ["iw_IL"]), .he)
+        XCTAssertEqual(InterfaceLanguage.resolve(.system, preferredLanguages: ["pt-BR"]), .pt)
+        XCTAssertEqual(InterfaceLanguage.resolve(.system, preferredLanguages: ["zz", "sv-SE"]), .en)
+        XCTAssertEqual(InterfaceLanguage.supported.filter(\.isRightToLeft), [.he])
+    }
+
     private func data(_ values: [String: String]) throws -> Data {
         try JSONSerialization.data(withJSONObject: values, options: [.sortedKeys])
     }
     private func runtime(english: [String: String], simplified: [String: String]? = nil,
                          traditional: [String: String]? = nil) throws -> LocalizationRuntime {
-        let contents: [InterfaceLanguage: Data] = [
+        var contents: [InterfaceLanguage: Data] = [
             .en: try data(english), .zhHans: try data(simplified ?? english), .zhHant: try data(traditional ?? english),
         ]
+        for language in InterfaceLanguage.supported where contents[language] == nil { contents[language] = try data(english) }
         return LocalizationRuntime { _ in .init(directory: nil, source: .hostBundle, contents: contents, issues: []) }
     }
 
@@ -49,10 +64,10 @@ final class LocalizationRuntimeTests: XCTestCase {
 
     func testSystemLanguageResolutionUsesFirstSupportedLanguageAndScripts() {
         let examples: [([String], InterfaceLanguage)] = [
-            (["fr-FR", "en-GB", "zh-TW"], .en), (["de", "zh-TW", "en"], .zhHant),
+            (["fr-FR", "en-GB", "zh-TW"], .fr), (["de", "zh-TW", "en"], .de),
             (["zh-HK"], .zhHant), (["zh_MO"], .zhHant), (["ZH-hAnt-cn"], .zhHant),
             (["zh-Hans-HK"], .zhHans), (["zh-CN"], .zhHans), (["zh-SG"], .zhHans), (["zh"], .zhHans),
-            (["en-US"], .en), (["es", "fr"], .en), ([], .en), (["zhx", "english"], .en),
+            (["en-US"], .en), (["es", "fr"], .es), ([], .en), (["zhx", "english"], .en),
         ]
         for (preferences, expected) in examples {
             XCTAssertEqual(InterfaceLanguage.resolve(.system, preferredLanguages: preferences), expected, "\(preferences)")
@@ -129,7 +144,7 @@ final class LocalizationRuntimeTests: XCTestCase {
     func testCatalogKeySetsAreCheckedAcrossEverySupportedLanguage() throws {
         let runtime = try runtime(english: ["保存": "Save"], simplified: ["保存": "保存", "取消": "取消"], traditional: ["保存": "儲存"])
         runtime.configure(language: .en, preferredLanguages: [])
-        XCTAssertEqual(Set(runtime.diagnostics.issues), ["catalog.en.incompleteKeySet", "catalog.zh-Hant.incompleteKeySet"])
+        XCTAssertEqual(Set(runtime.diagnostics.issues), Set(InterfaceLanguage.supported.filter { $0 != .zhHans }.map { "catalog.\($0.rawValue).incompleteKeySet" }))
     }
 
     func testConcurrentReadersSeeCompleteSnapshotsAndNeverReinterpretParameters() throws {
@@ -148,9 +163,9 @@ final class LocalizationRuntimeTests: XCTestCase {
     func testConcurrentConfigurationProducesOneImmutableLanguageSnapshot() throws {
         let runtime = try runtime(english: ["保存": "Save"], simplified: ["保存": "保存"], traditional: ["保存": "儲存"])
         DispatchQueue.concurrentPerform(iterations: 50) { index in
-            runtime.configure(language: InterfaceLanguage.supported[index % 3], preferredLanguages: [])
+            runtime.configure(language: InterfaceLanguage.supported[index % InterfaceLanguage.supported.count], preferredLanguages: [])
         }
-        let expected: [InterfaceLanguage: String] = [.en: "Save", .zhHans: "保存", .zhHant: "儲存"]
+        let expected = Dictionary(uniqueKeysWithValues: InterfaceLanguage.supported.map { ($0, $0 == .zhHans ? "保存" : ($0 == .zhHant ? "儲存" : "Save")) })
         let language = runtime.diagnostics.language
         DispatchQueue.concurrentPerform(iterations: 100) { _ in
             XCTAssertEqual(runtime.diagnostics.language, language)

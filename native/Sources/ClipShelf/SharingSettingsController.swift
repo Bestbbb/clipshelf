@@ -62,6 +62,7 @@ final class SharingSettingsController: NSWindowController {
         let body = NSStackView(views: [status, description, controls, fileTransfers, scroll])
         body.orientation = .vertical; body.alignment = .leading; body.spacing = 18
         body.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24); window.contentView = body
+        defer { InterfaceLayout.apply(to: body) }
         NSLayoutConstraint.activate([
             body.widthAnchor.constraint(greaterThanOrEqualToConstant: 680), body.heightAnchor.constraint(greaterThanOrEqualToConstant: 620),
             status.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -48), description.widthAnchor.constraint(equalTo: status.widthAnchor),
@@ -119,7 +120,7 @@ final class SharingSettingsController: NSWindowController {
         let alert = NSAlert(); alert.messageText = L10n.text("开启这台 Mac 的共享板？")
         alert.informativeText = L10n.text("将连接系统设置中当前的 Apple Account。此时不会分享任何私有历史；创建共享副本和接受邀请分别需要你操作。")
         alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("开启"))
-        if alert.runModal() == .alertSecondButtonReturn { enable(expectedAccount: nil) }
+        if alert.runLocalizedModal() == .alertSecondButtonReturn { enable(expectedAccount: nil) }
     }
 
     private func enable(expectedAccount: String?) {
@@ -148,7 +149,7 @@ final class SharingSettingsController: NSWindowController {
         let body = NSStackView(views: [board, edit]); body.orientation = .vertical; body.alignment = .leading; body.spacing = 12
         body.frame = NSRect(x: 0, y: 0, width: 440, height: 75); alert.accessoryView = body
         alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("创建并上传"))
-        guard alert.runModal() == .alertSecondButtonReturn, boards.indices.contains(board.indexOfSelectedItem) else { return }
+        guard alert.runLocalizedModal() == .alertSecondButtonReturn, boards.indices.contains(board.indexOfSelectedItem) else { return }
         let id = boards[board.indexOfSelectedItem].id, allowEditing = edit.state == .on
         perform {
             _ = try await self.coordinator.createSharedCopy(boardID: id, allowEditing: allowEditing)
@@ -162,7 +163,7 @@ final class SharingSettingsController: NSWindowController {
         alert.informativeText = L10n.text("粘贴 CloudKit 邀请链接。接受后，共享内容会下载到这台 Mac。")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 460, height: 28)); field.placeholderString = "https://www.icloud.com/share/…"
         alert.accessoryView = field; alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("接受"))
-        guard alert.runModal() == .alertSecondButtonReturn,
+        guard alert.runLocalizedModal() == .alertSecondButtonReturn,
               let url = URL(string: field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
         accept(url)
     }
@@ -171,7 +172,7 @@ final class SharingSettingsController: NSWindowController {
         let alert = NSAlert(); alert.messageText = L10n.text("接受收到的共享板邀请？")
         alert.informativeText = L10n.text("将通过当前 Apple Account 接受此邀请并下载共享内容。")
         alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("接受"))
-        if alert.runModal() == .alertSecondButtonReturn { accept(url) }
+        if alert.runLocalizedModal() == .alertSecondButtonReturn { accept(url) }
     }
 
     private func accept(_ url: URL) {
@@ -256,6 +257,7 @@ final class SharingSettingsController: NSWindowController {
     }
 
     private func renderRows() {
+        defer { InterfaceLayout.apply(to: rows) }
         rows.arrangedSubviews.forEach { rows.removeArrangedSubview($0); $0.removeFromSuperview() }
         let boards = (try? store.pinboards()) ?? []
         if states.isEmpty { rows.addArrangedSubview(NSTextField(labelWithString: L10n.text("尚无共享板"))) }
@@ -291,7 +293,7 @@ final class SharingSettingsController: NSWindowController {
             let keep = NSButton(checkboxWithTitle: L10n.text("在本机保留一份独立副本"), target: nil, action: nil); keep.state = .on
             if action != 5 { keep.frame = NSRect(x: 0, y: 0, width: 390, height: 28); alert.accessoryView = keep }
             alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("确认"))
-            guard alert.runModal() == .alertSecondButtonReturn else { return }
+            guard alert.runLocalizedModal() == .alertSecondButtonReturn else { return }
             keepCopy = keep.state == .on
         }
         perform {

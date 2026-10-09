@@ -477,6 +477,7 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
     private func buildInterface() {
         guard let window else { return }
         let root = NSView(); window.contentView = root
+        defer { InterfaceLayout.apply(to: root) }
         let heading = NSTextField(labelWithString: L10n.text("所有文件位置"))
         heading.font = .systemFont(ofSize: 14, weight: .semibold)
         let name = NSTableColumn(identifier: .init("name")); name.title = L10n.text("文件 / 文件夹"); name.width = 480; name.minWidth = 160

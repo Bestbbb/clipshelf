@@ -38,6 +38,7 @@ final class UpdateSettingsController: NSWindowController {
         content.orientation = .vertical; content.alignment = .leading; content.spacing = 16
         content.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
         window.contentView = content
+        defer { InterfaceLayout.apply(to: content) }
         NSLayoutConstraint.activate([
             scroll.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -48),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 170),

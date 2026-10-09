@@ -1,0 +1,15 @@
+// Keep lookup keys aligned with the static App Intents and Info.plist definitions.
+"保存文本到 ClipShelf" = "Enregistrer du texte dans ClipShelf";
+"把文本或链接保存到历史或指定分组。不会改写系统剪贴板。" = "Enregistrez du texte ou un lien dans l’historique ou un tableau choisi. Le presse-papiers système reste inchangé.";
+"文本" = "Texte";
+"分组名称" = "Nom du tableau";
+"保存 ${text} 到 ClipShelf" = "Enregistrer ${text} dans ClipShelf";
+"查找 ClipShelf 最近文本" = "Rechercher du texte récent dans ClipShelf";
+"查找本地内容、当前同步账号及仍可读取的共享板，排除过往账号缓存与撤销的共享。需单独允许快捷指令访问。" = "Recherchez le contenu local, celui du compte de synchronisation actuel et des tableaux partagés accessibles. Les caches d’anciens comptes et les partages révoqués sont exclus. L’accès aux Raccourcis nécessite une autorisation distincte.";
+"搜索" = "Rechercher";
+"从 ClipShelf 查找 ${query}" = "Rechercher ${query} dans ClipShelf";
+"获取 ClipShelf 第几条文本" = "Obtenir le texte à une position dans ClipShelf";
+"从当前授权范围内的列表取得指定序号文本，从 1 开始。仅包含本地内容、当前账号及仍可读取的共享板。" = "Obtenez le texte à une position dans la liste actuellement autorisée, en commençant à 1. Seuls le contenu local, le compte actuel et les tableaux partagés accessibles sont inclus.";
+"序号" = "Position";
+"获取 ClipShelf 第 ${index} 条文本" = "Obtenir le texte à la position ${index} dans ClipShelf";
+"查找最近文本" = "Rechercher du texte récent";

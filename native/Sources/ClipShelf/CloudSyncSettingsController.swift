@@ -40,6 +40,7 @@ final class CloudSyncSettingsController: NSWindowController {
         body.orientation = .vertical; body.alignment = .leading; body.spacing = 20
         body.edgeInsets = NSEdgeInsets(top: 24, left: 24, bottom: 24, right: 24)
         window.contentView = body
+        defer { InterfaceLayout.apply(to: body) }
         for text in [status, explanation, detail] { text.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -48).isActive = true }
         fileTransfers.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -48).isActive = true
         fileTransfers.heightAnchor.constraint(equalToConstant: 180).isActive = true
@@ -104,7 +105,7 @@ final class CloudSyncSettingsController: NSWindowController {
         let include = Self.makeLocalHistoryUploadChoice(title: L10n.text("同时上传此前未归属其他账号的本地历史与分组"))
         alert.accessoryView = include
         alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("开启同步"))
-        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        guard alert.runLocalizedModal() == .alertSecondButtonReturn else { return }
         enable(includeLocalData: include.state == .on)
     }
 

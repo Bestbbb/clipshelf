@@ -133,7 +133,7 @@ The script stops on failure. Its stages are:
 3. Verify app/extension IDs, matching versions and App Group, signed entitlements,
    App Intents metadata, Sparkle 2.10.0 and all required signed helpers. Check
    universal executables, framework runpaths and absence of external build-path
-   linkage or development entitlements. Verify all three localization catalogs and
+   linkage or development entitlements. Verify all 16 localization catalogs and
    static tables, then run the no-UI language diagnostic from a relocated app copy
    to prove resource loading stays inside the delivered bundle.
 4. Submit the archive with `notarytool --wait`; require `Accepted`, staple and
@@ -194,10 +194,10 @@ them.
 - [ ] Run the read-only source audit and delivered-resource checks:
   `python3 scripts/localization-audit.py` and
   `python3 scripts/verify-localization.py --app "$RELEASE_OUTPUT_DIR/export/ClipShelf.app" --share-extension --runtime`.
-  Confirm matching three-language JSON keys/parameters, App Intents and system
+  Confirm matching 16-language JSON keys/parameters, App Intents and system
   `.strings` tables, separate app/extension resource bundles and runtime paths
   inside the relocated copy, without a development-path fallback.
-- [ ] Verify English, Simplified Chinese, Traditional Chinese and Follow System
+- [ ] Verify all 16 supported interface languages and Follow System
   from the welcome/menu Language entry. Saving must apply only on the next launch,
   preserve current drafts and background tasks, and leave history, titles and
   pinboard names unchanged. Confirm isolated modes cannot save and Follow System
@@ -206,9 +206,10 @@ them.
   the independently hosted Share Extension, macOS per-app language selection and
   Services/Shortcuts menu presentation. Record host caching and refresh behavior;
   immediate cross-process language changes are not promised by saving a preference.
-- [ ] Record the remaining F13 language gap: Paste's other 13 listed languages,
-  including Hebrew and RTL layout/navigation, remain unsupported. Three-language
-  resources and Sparkle's own translations do not complete the full feature.
+- [ ] Complete native-speaker and rendered-window review for all 16 languages. Check
+  Hebrew card order, physical arrows/Shift, drag insertion, ordering shortcuts,
+  mixed-direction user text and VoiceOver. Catalog completeness and unshown
+  geometry tests do not complete the full feature.
 
 Do not mark F13, signed distribution, real update/relaunch, or the broader Paste
 compatibility scope complete solely because these scripts and synthetic tests exist.

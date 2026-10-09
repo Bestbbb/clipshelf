@@ -27,6 +27,8 @@ class LocalizationPackagingTests(unittest.TestCase):
             "zh-Hans": {"": "", "取消": "取消", "保存 {0}": "保存 {0}"},
             "zh-Hant": {"": "", "取消": "取消", "保存 {0}": "儲存 {0}"},
         }
+        for language in verify.LANGUAGES:
+            self.catalogs.setdefault(language, dict(self.catalogs["en"]))
         for bundle in (self.app, self.extension):
             resources = bundle / "Contents/Resources"
             resources.mkdir(parents=True)
@@ -93,7 +95,7 @@ class LocalizationPackagingTests(unittest.TestCase):
                         verify.verify_app(self.app, share_extension=True)
             path.write_text(json.dumps(self.catalogs["en"]))
 
-    def test_each_host_requires_equal_keys_in_all_three_languages(self):
+    def test_each_host_requires_equal_keys_in_all_supported_languages(self):
         for bundle in (self.app, self.extension):
             with self.subTest(host=bundle.name):
                 path = bundle / "Contents/Resources" / verify.RESOURCE_BUNDLE / "catalog-zh-Hant.json"
@@ -169,13 +171,16 @@ class LocalizationPackagingTests(unittest.TestCase):
     def test_declared_but_unshipped_language_is_rejected(self):
         info_path = self.app / "Contents/Info.plist"
         info = plistlib.loads(info_path.read_bytes())
-        info["CFBundleLocalizations"].append("de")
+        info["CFBundleLocalizations"].append("xx")
         info_path.write_bytes(plistlib.dumps(info))
         with self.assertRaisesRegex(ValueError, "supported language declaration"):
             verify.verify_app(self.app)
 
     def test_runtime_probe_rejects_development_fallback(self):
+        real_run = subprocess.run
         def fake_run(arguments, **kwargs):
+            if arguments[0] == "/usr/bin/plutil":
+                return real_run(arguments, **kwargs)
             if arguments[0] == "/usr/bin/ditto":
                 shutil.copytree(arguments[1], arguments[2])
                 return subprocess.CompletedProcess(arguments, 0)
@@ -186,6 +191,36 @@ class LocalizationPackagingTests(unittest.TestCase):
         with patch.object(verify.subprocess, "run", side_effect=fake_run):
             with self.assertRaisesRegex(ValueError, "development resource location"):
                 verify.verify_relocated_runtime(self.app)
+
+    def test_runtime_probe_checks_every_delivered_language_in_a_separate_process(self):
+        real_run = subprocess.run
+        observed = []
+        expected = {}
+        for language in verify.LANGUAGES:
+            expected[language] = f"Cancel fixture for {language}"
+            catalog = dict(self.catalogs[language], **{"取消": expected[language]})
+            (self.resources / verify.RESOURCE_BUNDLE / f"catalog-{language}.json").write_text(json.dumps(catalog))
+
+        def fake_run(arguments, **kwargs):
+            if arguments[0] == "/usr/bin/plutil":
+                return real_run(arguments, **kwargs)
+            if arguments[0] == "/usr/bin/ditto":
+                shutil.copytree(arguments[1], arguments[2])
+                return subprocess.CompletedProcess(arguments, 0)
+            language = arguments[-1]
+            observed.append(language)
+            self.assertEqual(arguments[1], "--localization-diagnostics")
+            relocated = Path(arguments[0]).parents[2]
+            self.assertNotEqual(relocated, self.app)
+            return subprocess.CompletedProcess(arguments, 0, stdout=json.dumps({
+                "language": language, "resourceSource": "hostBundle",
+                "resourceDirectory": str(relocated / "Contents/Resources" / verify.RESOURCE_BUNDLE),
+                "issues": [], "sample": expected[language],
+            }))
+
+        with patch.object(verify.subprocess, "run", side_effect=fake_run):
+            verify.verify_relocated_runtime(self.app)
+        self.assertEqual(observed, list(verify.LANGUAGES))
 
 
 if __name__ == "__main__":

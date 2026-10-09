@@ -1,0 +1,15 @@
+// Keep lookup keys aligned with the static App Intents and Info.plist definitions.
+"保存文本到 ClipShelf" = "Text in ClipShelf speichern";
+"把文本或链接保存到历史或指定分组。不会改写系统剪贴板。" = "Speichern Sie Text oder einen Link im Verlauf oder auf einer ausgewählten Pinnwand. Die Systemzwischenablage bleibt unverändert.";
+"文本" = "Text";
+"分组名称" = "Pinnwandname";
+"保存 ${text} 到 ClipShelf" = "${text} in ClipShelf speichern";
+"查找 ClipShelf 最近文本" = "Letzten Text in ClipShelf suchen";
+"查找本地内容、当前同步账号及仍可读取的共享板，排除过往账号缓存与撤销的共享。需单独允许快捷指令访问。" = "Durchsuchen Sie lokale Inhalte, den aktuellen Synchronisierungsaccount und zugängliche geteilte Pinnwände. Zwischengespeicherte Inhalte früherer Accounts und widerrufene Freigaben sind ausgeschlossen. Der Zugriff durch Kurzbefehle muss separat erlaubt werden.";
+"搜索" = "Suchen";
+"从 ClipShelf 查找 ${query}" = "${query} in ClipShelf suchen";
+"获取 ClipShelf 第几条文本" = "Text an einer Position in ClipShelf abrufen";
+"从当前授权范围内的列表取得指定序号文本，从 1 开始。仅包含本地内容、当前账号及仍可读取的共享板。" = "Rufen Sie Text an einer Position in der aktuell freigegebenen Liste ab, beginnend bei 1. Enthält nur lokale Inhalte, den aktuellen Account und zugängliche geteilte Pinnwände.";
+"序号" = "Position";
+"获取 ClipShelf 第 ${index} 条文本" = "Text an Position ${index} in ClipShelf abrufen";
+"查找最近文本" = "Letzten Text suchen";
