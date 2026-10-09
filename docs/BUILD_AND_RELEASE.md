@@ -331,6 +331,32 @@ cannot affect a later editor. Drafts are not persisted across process exit. Nati
 discard sheets, app-switch focus, color wells, and quit cancellation still require
 desktop acceptance in addition to injected controller tests.
 
+Rename and image rotation now use the same store-bound editing snapshot and
+commit/Undo path. Naming changes only the trimmed user title, supports arbitrary
+original parts, and reuses the existing draft lifecycle. Image previews remain
+read-only until rotation is requested. Failed rotation saves retain the original
+preview and retry the same snapshot and converted bytes; dismissed or superseded
+pre-submit work cannot write. A submitted transaction can finish after dismissal,
+but its UI reply cannot reopen or alter a newer preview.
+
+Rotation applies EXIF orientation then turns the first previewed image part left
+90 degrees. Other parts remain byte-for-byte unchanged. Ordinary single-frame output is
+PNG; GIF keeps its container even with one frame, and GIF/APNG/TIFF retain every frame, with animation loop/delay verification and
+exact APNG rational timing. Unsupported multi-frame formats fail explicitly.
+Limits are 1,000 frames, 64 Mi total pixels, and 512 MiB estimated raw working
+bytes/retained-plus-encoded content; these are not a process RSS ceiling.
+High-bit-depth and HDR color fidelity remain separate acceptance gaps.
+
+Changed-image OCR runs before the final edit transaction and joins its single
+revision; OCR failure still permits the image save. Old derived cache cleanup
+happens only after a successful commit and finishes before UI completion. Cache
+failure cannot convert a committed edit into a retryable failure. This prevents a
+second OCR revision from immediately invalidating preview references and Undo.
+Synthetic tests cover transaction failure, account changes during recognition,
+repeated rotation, preserved frames/pixels, late replies, and actual Core Undo.
+Native rename/preview focus, animation playback, and cross-app output still need
+desktop acceptance.
+
 MCP access and refresh credentials are held in the local Keychain. Developer
 signing material and runtime history must never be included in a release archive.
 

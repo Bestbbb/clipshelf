@@ -1,5 +1,17 @@
 import Foundation
 
+/// OCR freshly derived from the first image shown in the clipboard preview.
+/// The store binds it to the submitted image bytes before preserving it across an edit.
+public struct ClipboardImageOCR: Equatable, Sendable {
+    public let text: String
+    public let sourceImageDigest: String
+
+    public init(text: String, sourceImageDigest: String) {
+        self.text = text
+        self.sourceImageDigest = sourceImageDigest
+    }
+}
+
 /// A frozen original and the account generations under which editing was allowed.
 /// Only HistoryStore can bind a snapshot to a live store instance.
 public struct ClipboardEditSnapshot: Equatable, Sendable {

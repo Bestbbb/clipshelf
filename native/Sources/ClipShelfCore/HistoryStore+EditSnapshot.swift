@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 
 extension HistoryStore {
     /// Metadata, access, aggregate size, original bytes and account generations share one read snapshot.
@@ -18,7 +19,8 @@ extension HistoryStore {
 
     /// No stale editor can save under another store, revision, or account-configuration generation.
     /// The original and its Undo capability are captured in the same atomic write as the edit.
-    public func commitEdit(_ edited: ClipboardRecord, snapshot: ClipboardEditSnapshot) throws -> HistorySelectionEditUndo {
+    public func commitEdit(_ edited: ClipboardRecord, snapshot: ClipboardEditSnapshot,
+                           recomputedOCR: ClipboardImageOCR? = nil) throws -> HistorySelectionEditUndo {
         try synchronized {
             try transaction {
                 guard snapshot.storeIdentity == selectionStoreIdentity, edited.id == snapshot.record.id else {
@@ -31,9 +33,19 @@ extension HistoryStore {
                 try preflightSelectionPayload([.init(id: snapshot.record.id, revision: snapshot.record.revision)],
                                               maximumBytes: 512 * 1_024 * 1_024)
                 // Restore/import can replace bytes while retaining an ID and revision.
-                guard try itemWithoutLock(id: snapshot.record.id) == snapshot.record else { throw HistoryStoreError.staleRevision }
+                guard let current = try itemWithoutLock(id: snapshot.record.id), current == snapshot.record else {
+                    throw HistoryStoreError.staleRevision
+                }
                 try validate(edited)
-                return try editSelectionRecordWithoutLock(edited)
+                if let recomputedOCR {
+                    guard edited.ocrText == recomputedOCR.text,
+                          let image = edited.parts.lazy.flatMap(\.representations).first(where: {
+                              UTType($0.typeIdentifier)?.conforms(to: .image) == true
+                          }), RepresentationStorage.digest(image.data) == recomputedOCR.sourceImageDigest else {
+                        throw HistoryStoreError.invalidStoredRecord
+                    }
+                }
+                return try editSelectionRecordWithoutLock(edited, validatedCurrent: current, preserveOCR: recomputedOCR != nil)
             }
         }
     }

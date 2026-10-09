@@ -319,10 +319,6 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             guard let self else { completion(.failure(EditorOperationError.unavailable)); return }
             self.saveEditor(edited, snapshot: snapshot, completion: completion)
         }
-        panel.onRename = { [weak self] record, title in
-            var edited = record; edited.renamedTitle = title
-            self?.updateRecord(edited)
-        }
         panel.onNewText = { [weak self] in self?.newText() }
         if !demo {
             panel.onPageRequest = { [weak self] request, completion in
@@ -388,7 +384,6 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             }
         }
         panel.onExtractText = { [weak self] record in self?.extractText(record) }
-        panel.onRotateImage = { [weak self] record in self?.rotateImage(record) }
         panel.onOpenRecord = { [weak self] record in self?.openRecord(record) }
         panel.onFileSnapshot = { [weak self] reference, completion in
             guard let self else { completion(.failure(HistoryStoreError.recordNotFound)); return }
@@ -899,9 +894,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         selectionMutationInProgress = true
         Task { @MainActor in
             do {
-                let undo = try await Task.detached(priority: .userInitiated) {
-                    try store.commitEdit(edited, snapshot: snapshot)
-                }.value
+                let undo = try await ClipboardEditCommitter.commit(edited, snapshot: snapshot,
+                                                                 store: store, cache: ocrCache)
                 selectionUndoHistory.register(.edit(undo)) { [weak self] in self?.undoSelection($0, store: store) }
                 selectionMutationInProgress = false
                 completion(.success(undo.committedReference))
@@ -936,21 +930,6 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             default: return error
             }
         }
-    }
-
-    private func updateRecord(_ record: ClipboardRecord) {
-        if demo {
-            if let index = records.firstIndex(where: { $0.id == record.id }) { records[index] = record; refresh() }
-            return
-        }
-        guard mutationIsAvailable(), let store else { return }
-        do {
-            let undo = try store.editSelectionRecord(record)
-            selectionUndoHistory.register(.edit(undo)) { [weak self] in self?.undoSelection($0, store: store) }
-            reload()
-        }
-        catch HistoryStoreError.selectionPayloadTooLarge { setStatus("内容过大，无法保留完整撤销；本次编辑未保存。") }
-        catch { setStatus("内容已发生变化或保存失败，请重新打开后编辑。") }
     }
 
     private func deletePinboard(_ board: Pinboard) {
@@ -1057,23 +1036,6 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
                 self.setStatus("已提取文字为新记录，原图保留。")
             } catch { self.setStatus("文字识别未完成：\(error.localizedDescription)") }
         }
-    }
-
-    private func rotateImage(_ record: ClipboardRecord) {
-        guard let data = imageData(record), let image = NSImage(data: data),
-              let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
-        guard let context = CGContext(data: nil, width: cg.height, height: cg.width, bitsPerComponent: 8,
-                                      bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
-        context.translateBy(x: CGFloat(cg.height), y: 0); context.rotate(by: .pi / 2)
-        context.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
-        guard let rotated = context.makeImage(), let png = NSBitmapImageRep(cgImage: rotated).representation(using: .png, properties: [:]) else { return }
-        var edited = record
-        edited.parts = [ClipboardPart(representations: [ClipboardRepresentation(typeIdentifier: "public.png", data: png)])]
-        edited.text = "图片 \(cg.height) × \(cg.width)"; edited.rtf = nil; edited.html = nil; edited.ocrText = nil
-        updateRecord(edited)
-        Task { try? await ocrCache.remove(recordID: record.id) }
-        if !demo, let latest = try? store?.item(id: record.id) { scheduleOCR(for: latest) }
     }
 
     @objc private func pauseFor(_ sender: NSMenuItem) {

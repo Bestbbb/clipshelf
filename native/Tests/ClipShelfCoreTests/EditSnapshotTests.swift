@@ -254,4 +254,116 @@ final class EditSnapshotTests: XCTestCase {
         XCTAssertEqual(try store.pendingSyncOperations(accountID: "A"), before)
         XCTAssertNoThrow(try store.commitEdit(revised(snapshot), snapshot: snapshot))
     }
+
+    func testCommitReadsCurrentPayloadOnceAndStillRejectsSameRevisionReplacement() throws {
+        final class Reads {
+            var count = 0
+            let query = "SELECT \(HistoryStore.columns) FROM clipboard_records WHERE id = ?"
+        }
+        let store = try store(), reads = Reads()
+        let original = try store.create(ClipboardRecord(text: "image", parts: [.init(representations: [
+            .init(typeIdentifier: "public.png", data: Data(repeating: 125, count: 128 * 1_024))])]))
+        let snapshot = try store.prepareEdit(ref(original))
+        sqlite3_trace_v2(store.database, UInt32(SQLITE_TRACE_STMT), { _, context, statement, _ in
+            guard let context, let statement, let sql = sqlite3_sql(OpaquePointer(statement)) else { return 0 }
+            let reads = Unmanaged<Reads>.fromOpaque(context).takeUnretainedValue()
+            if String(cString: sql) == reads.query { reads.count += 1 }
+            return 0
+        }, Unmanaged.passUnretained(reads).toOpaque())
+        defer { sqlite3_trace_v2(store.database, 0, nil, nil) }
+        let undo = try store.commitEdit(revised(snapshot, text: "new title"), snapshot: snapshot)
+        XCTAssertEqual(reads.count, 1, "The checked current bytes are reused for Undo inside the transaction")
+        XCTAssertEqual(undo.original, original)
+        _ = try store.undoSelectionEdit(undo)
+        let current = try XCTUnwrap(store.item(id: original.id))
+        let stale = try store.prepareEdit(ref(current))
+        try store.syncExecute("UPDATE clipboard_records SET text = ? WHERE id = ?", ["same revision replacement", original.id.uuidString])
+        reads.count = 0
+        XCTAssertThrowsError(try store.commitEdit(revised(stale), snapshot: stale)) { error in
+            guard case HistoryStoreError.staleRevision = error else { return XCTFail("Unexpected error: \(error)") }
+        }
+        XCTAssertEqual(reads.count, 1, "Optimization must still reread and compare the actual current content")
+        XCTAssertEqual(try store.item(id: original.id)?.text, "same revision replacement")
+    }
+
+    func testSameRecomputedOCRSurvivesConsecutiveImageEditsAndBothStrictUndos() throws {
+        let store = try store(), text = "stable searchable OCR"
+        let original = try store.create(ClipboardRecord(text: "image summary", parts: [.init(representations: [
+            .init(typeIdentifier: "public.png", data: Data("synthetic first image".utf8))])], ocrText: text))
+        let firstSnapshot = try store.prepareEdit(ref(original))
+        var first = firstSnapshot.record
+        first.parts[0].representations[0].data = Data("synthetic first rotation".utf8)
+        let firstUndo = try store.commitEdit(first, snapshot: firstSnapshot, recomputedOCR: .init(text: text,
+            sourceImageDigest: RepresentationStorage.digest(first.parts[0].representations[0].data)))
+        first.revision = firstUndo.committedReference.revision
+        XCTAssertEqual(try store.item(id: original.id), first)
+        XCTAssertEqual(try store.searchMetadata(.init(text: "searchable OCR")).map(\.id), [original.id])
+        let secondSnapshot = try store.prepareEdit(ref(first))
+        var second = secondSnapshot.record
+        second.parts[0].representations[0].data = Data("synthetic second rotation".utf8)
+        let secondUndo = try store.commitEdit(second, snapshot: secondSnapshot, recomputedOCR: .init(text: text,
+            sourceImageDigest: RepresentationStorage.digest(second.parts[0].representations[0].data)))
+        second.revision = secondUndo.committedReference.revision
+        XCTAssertEqual(try store.item(id: original.id), second)
+        XCTAssertEqual(second.revision, original.revision + 2, "OCR must not create a separate content revision")
+        XCTAssertEqual(try store.searchMetadata(.init(text: "searchable OCR")).map(\.id), [original.id])
+        let receipt = try store.undoSelectionEdit(secondUndo)
+        var expectedFirst = first; expectedFirst.revision = receipt.references[0].revision
+        XCTAssertEqual(try store.item(id: original.id), expectedFirst)
+        XCTAssertEqual(try store.searchMetadata(.init(text: "searchable OCR")).map(\.id), [original.id])
+        let originalReceipt = try store.undoSelectionEdit(store.rebaseSelectionEditUndo(firstUndo, after: receipt))
+        var expectedOriginal = original; expectedOriginal.revision = originalReceipt.references[0].revision
+        XCTAssertEqual(try store.item(id: original.id), expectedOriginal)
+        XCTAssertEqual(try store.searchMetadata(.init(text: "searchable OCR")).map(\.id), [original.id])
+    }
+
+    func testRecomputedOCRMustMatchSubmittedTextAndFirstPreviewImageBytes() throws {
+        let store = try store()
+        let firstBytes = Data("first image".utf8), secondBytes = Data("second image".utf8)
+        let original = try store.create(ClipboardRecord(text: "images", parts: [
+            .init(representations: [.init(typeIdentifier: "public.png", data: firstBytes)]),
+            .init(representations: [.init(typeIdentifier: "public.png", data: secondBytes)])], ocrText: "original OCR"))
+        let snapshot = try store.prepareEdit(ref(original))
+        var edit = snapshot.record; edit.parts[0].representations[0].data = Data("new image".utf8); edit.ocrText = "new OCR"
+        for proof in [ClipboardImageOCR(text: "new OCR", sourceImageDigest: RepresentationStorage.digest(firstBytes)),
+                      .init(text: "new OCR", sourceImageDigest: RepresentationStorage.digest(secondBytes)),
+                      .init(text: "wrong OCR", sourceImageDigest: RepresentationStorage.digest(edit.parts[0].representations[0].data))] {
+            XCTAssertThrowsError(try store.commitEdit(edit, snapshot: snapshot, recomputedOCR: proof)) { error in
+                guard case HistoryStoreError.invalidStoredRecord = error else { return XCTFail("Unexpected error: \(error)") }
+            }
+            XCTAssertEqual(try store.item(id: original.id), original)
+        }
+        var withoutImage = edit; withoutImage.parts = []
+        XCTAssertThrowsError(try store.commitEdit(withoutImage, snapshot: snapshot,
+            recomputedOCR: .init(text: "new OCR", sourceImageDigest: RepresentationStorage.digest(Data()))))
+        var withoutText = edit; withoutText.ocrText = nil
+        XCTAssertThrowsError(try store.commitEdit(withoutText, snapshot: snapshot,
+            recomputedOCR: .init(text: "", sourceImageDigest: RepresentationStorage.digest(edit.parts[0].representations[0].data))))
+        XCTAssertEqual(try store.item(id: original.id), original)
+        XCTAssertNoThrow(try store.commitEdit(edit, snapshot: snapshot, recomputedOCR: .init(text: "new OCR",
+            sourceImageDigest: RepresentationStorage.digest(edit.parts[0].representations[0].data))))
+    }
+
+    func testDefaultImageEditStillClearsUnrecomputedOCRAndProofCannotBypassAccountEpoch() throws {
+        for useSnapshot in [false, true] {
+            let store = try store(useSnapshot ? "snapshot-default" : "update-default")
+            let original = try store.create(ClipboardRecord(text: "image", parts: [.init(representations: [
+                .init(typeIdentifier: "public.png", data: Data([1, 2, 3]))])], ocrText: "stale OCR"))
+            let snapshot = try store.prepareEdit(ref(original))
+            var edit = snapshot.record; edit.parts[0].representations[0].data = Data([3, 2, 1])
+            if useSnapshot { _ = try store.commitEdit(edit, snapshot: snapshot) }
+            else { _ = try store.update(record: edit) }
+            XCTAssertNil(try store.item(id: original.id)?.ocrText)
+        }
+        let store = try store("epoch"), bytes = Data("new image".utf8)
+        try store.configureSync(accountID: "A")
+        let original = try store.create(ClipboardRecord(text: "image", parts: [.init(representations: [
+            .init(typeIdentifier: "public.png", data: Data([1]))])], ocrText: "same OCR"))
+        let snapshot = try store.prepareEdit(ref(original))
+        var edit = snapshot.record; edit.parts[0].representations[0].data = bytes
+        try store.configureSync(accountID: "B"); try store.configureSync(accountID: "A")
+        XCTAssertThrowsError(try store.commitEdit(edit, snapshot: snapshot,
+            recomputedOCR: .init(text: "same OCR", sourceImageDigest: RepresentationStorage.digest(bytes))))
+        XCTAssertEqual(try store.item(id: original.id), original)
+    }
 }

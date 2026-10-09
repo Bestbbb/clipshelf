@@ -78,8 +78,12 @@ actor OCRDerivedCache {
         }
     }
 
-    func remove(recordID: UUID) throws {
+    /// A commit may finish while a newer revision is already being recognized.
+    /// Its cleanup must not remove that newer result (or the same revision).
+    func remove(recordID: UUID, beforeRevision: Int? = nil) throws {
         let file = location(recordID)
+        if let beforeRevision, let entry = try? readEntry(file),
+           entry.recordID == recordID, entry.sourceRevision >= beforeRevision { return }
         if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
     }
     func clear() throws {

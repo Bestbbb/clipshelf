@@ -197,22 +197,46 @@ final class ImageFileInteractionTests: XCTestCase {
         XCTAssertNil(h.panel.window?.attachedSheet)
     }
 
-    @MainActor func testRenameStartsGenericReadAndRetiresConversionBeforeAnyReplyOrAlert() throws {
-        let original = try records(), h = ImageInteractionHarness(original); defer { h.close() }
-        var context: (() -> Bool)?, generic: [ClipboardSelectionReference] = []
-        var unresolved: ((Result<[ClipboardRecord], Error>) -> Void)?
-        h.panel.resolveOutputSelection = { _, reply in reply(.success(original)) }
-        h.panel.resolveSelection = { references, reply in generic = references; unresolved = reply }
-        h.panel.onImageFileOutput = { _, _ in context = h.panel.captureOutputContext() }
-        try h.invoke(h.menu("复制为图片文件"))
-        let isCurrent = try XCTUnwrap(context)
-        XCTAssertTrue(isCurrent())
-        XCTAssertTrue(h.key(15, "r", flags: .command))
-        XCTAssertEqual(generic.count, 1)
-        XCTAssertTrue(generic.allSatisfy { refs(original).contains($0) })
-        XCTAssertNotNil(unresolved)
-        XCTAssertFalse(isCurrent(), "Generic rename resolution invalidates conversion before its deferred completion")
-        XCTAssertNil(h.panel.window?.attachedSheet, "No resolver reply is delivered, so no NSAlert is shown")
+    @MainActor func testRenamePreparesReferenceAndRetiresConversionBeforeAnyReplyOrAlert() throws {
+        for deferredOutputRead in [false, true] {
+            let original = try records(), h = ImageInteractionHarness(original); defer { h.close() }
+            var preparations: [(ClipboardSelectionReference, (Result<ClipboardEditSnapshot, Error>) -> Void)] = []
+            var unresolvedOutput: ((Result<[ClipboardRecord], Error>) -> Void)?
+            var completeConversion: (() -> Void)?, conversionStarts = 0, outputs = 0, genericReads = 0
+            h.panel.presentDetailPanel = { _, _ in } // Keep the real editor unshown.
+            h.panel.resolveSelection = { _, _ in genericReads += 1 }
+            h.panel.onPrepareEdit = { reference, reply in preparations.append((reference, reply)) }
+            h.panel.resolveOutputSelection = { _, reply in unresolvedOutput = reply }
+            h.panel.onImageFileOutput = { _, _ in
+                conversionStarts += 1
+                let isCurrent = h.panel.captureOutputContext()
+                completeConversion = { if isCurrent() { outputs += 1 } }
+            }
+            try h.invoke(h.menu("复制为图片文件"))
+            let outputReply = try XCTUnwrap(unresolvedOutput)
+            if !deferredOutputRead { outputReply(.success(original)) }
+            let isCurrent = h.panel.captureOutputContext()
+            XCTAssertTrue(isCurrent())
+            XCTAssertTrue(h.key(15, "r", flags: .command))
+            XCTAssertEqual(genericReads, 0, "Rename must prepare its reference without hydrating through the generic reader")
+            XCTAssertEqual(preparations.count, 1)
+            let preparation = try XCTUnwrap(preparations.first)
+            XCTAssertTrue(refs(original).contains(preparation.0))
+            XCTAssertFalse(isCurrent(), "Starting rename retires conversion before the deferred preparation completes")
+            XCTAssertNil(h.panel.window?.attachedSheet, "Pending preparation must not show a modal alert")
+
+            if deferredOutputRead { outputReply(.success(original)) }
+            else { try XCTUnwrap(completeConversion)() }
+            XCTAssertEqual(conversionStarts, deferredOutputRead ? 0 : 1, "A late output read cannot start conversion behind the editor")
+            XCTAssertEqual(outputs, 0, "An already-started conversion cannot publish its late result")
+
+            let preparedRecord = try XCTUnwrap(original.first { $0.id == preparation.0.id })
+            preparation.1(.success(.init(record: preparedRecord)))
+            XCTAssertFalse(isCurrent(), "A successful rename preparation must not revive the old output action")
+            completeConversion?()
+            XCTAssertEqual(outputs, 0)
+            XCTAssertNil(h.panel.window?.attachedSheet)
+        }
     }
 
     @MainActor func testImageMenuExplicitlyFocusesResultsBeforeCapturingConversionContext() throws {

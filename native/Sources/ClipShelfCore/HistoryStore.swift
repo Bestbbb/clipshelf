@@ -373,7 +373,7 @@ public final class HistoryStore: @unchecked Sendable {
         }
     }
 
-    func updateWithoutLock(record: ClipboardRecord, current: ClipboardRecord) throws -> ClipboardRecord {
+    func updateWithoutLock(record: ClipboardRecord, current: ClipboardRecord, preserveOCR: Bool = false) throws -> ClipboardRecord {
         guard current.id == record.id, current.revision == record.revision else { throw HistoryStoreError.staleRevision }
         var next = record
         next.revision = current.revision + 1
@@ -386,7 +386,7 @@ public final class HistoryStore: @unchecked Sendable {
             next.pinboardOrder = nil
             next = try assigningNewPinboardOrder(next)
         }
-        if !current.hasSameContents(as: record), current.ocrText == record.ocrText { next.ocrText = nil }
+        if !preserveOCR, !current.hasSameContents(as: record), current.ocrText == record.ocrText { next.ocrText = nil }
         try replaceContents(next)
         return next
     }

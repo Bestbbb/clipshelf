@@ -11,15 +11,18 @@ extension HistoryStore {
     }
 
     /// Caller owns the write transaction and any more specific consent/namespace checks.
-    func editSelectionRecordWithoutLock(_ record: ClipboardRecord) throws -> HistorySelectionEditUndo {
+    /// A caller that already read and compared the complete current record in this same
+    /// write transaction can reuse those bytes for Undo. Never accept a UI snapshot here.
+    func editSelectionRecordWithoutLock(_ record: ClipboardRecord, validatedCurrent: ClipboardRecord? = nil,
+                                        preserveOCR: Bool = false) throws -> HistorySelectionEditUndo {
         let reference = ClipboardSelectionReference(id: record.id, revision: record.revision)
         let items = try selectionItems([reference])
         try requireEditableSelection(items)
         try preflightSelectionPayload([reference], maximumBytes: 512 * 1_024 * 1_024)
-        guard let original = try itemWithoutLock(id: record.id) else { throw HistoryStoreError.recordNotFound }
+        guard let original = try validatedCurrent ?? itemWithoutLock(id: record.id) else { throw HistoryStoreError.recordNotFound }
         let sync = try syncConfigurationWithoutLock(), sharing = try sharingConfigurationWithoutLock()
         let bindings = try ownedFileBindingsWithoutLock(recordID: record.id)
-        let updated = try updateWithoutLock(record: record, current: original)
+        let updated = try updateWithoutLock(record: record, current: original, preserveOCR: preserveOCR)
         return HistorySelectionEditUndo(original: original,
                                         expected: ClipboardSelectionReference(id: updated.id, revision: updated.revision),
                                         storeIdentity: selectionStoreIdentity,
@@ -37,7 +40,9 @@ extension HistoryStore {
                 guard let current = try itemWithoutLock(id: undo.expected.id) else { throw HistoryStoreError.recordNotFound }
                 var original = undo.original
                 original.revision = undo.expected.revision
-                let restored = try updateWithoutLock(record: original, current: current)
+                // This is the exact original authenticated by this store's Undo token,
+                // including OCR that may happen to equal the replacement's OCR text.
+                let restored = try updateWithoutLock(record: original, current: current, preserveOCR: true)
                 try setOwnedFileBindingsWithoutLock(undo.ownedFileBindings, record: restored)
                 let reference = ClipboardSelectionReference(id: restored.id, revision: restored.revision)
                 return HistorySelectionUndoReceipt(references: [reference], storeIdentity: selectionStoreIdentity,
