@@ -196,6 +196,8 @@ extension HistoryStore {
     }
 
     func writePlacement(id: UUID, boardID: UUID?, rank: Int64?, incrementRevision: Bool = true) throws {
+        try reserveMetadataWriteWithoutLock()
+        try reserveExistingRecordRewriteWithoutLock(id: id)
         if syncSchemaReady, !suppressSyncCapture {
             let current = try orderingItem(id: id)
             if current.boardID == boardID, boardID != nil {

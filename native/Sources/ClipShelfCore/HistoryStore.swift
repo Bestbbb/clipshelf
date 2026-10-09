@@ -64,6 +64,8 @@ public final class HistoryStore: @unchecked Sendable {
     var suppressSyncCapture = false
     var sourceMetadataCache: MetadataCacheEntry<[String: String]>?
     var deviceMetadataCache: MetadataCacheEntry<[ClipboardOriginDevice]>?
+    public let spaceCoordinator: StorageSpaceCoordinator
+    var writeBudget: HistoryWriteBudget?
     let representations: RepresentationStorage
     let ownedFileStorage: OwnedFileStorage
     var newOwnedFileDirectories: [UUID]?
@@ -72,19 +74,23 @@ public final class HistoryStore: @unchecked Sendable {
     static let columns = "id, text, source_app, source_bundle_id, copied_at, rtf, html, parts, renamed_title, ocr_text, pinboard_id, is_in_history, revision, content_kind, pinboard_order, origin_device_id, origin_device_name, origin_device_conflict"
     private static let metadataColumns = "id, text, source_app, source_bundle_id, copied_at, NULL, NULL, parts, renamed_title, ocr_text, pinboard_id, is_in_history, revision, content_kind, pinboard_order, origin_device_id, origin_device_name, origin_device_conflict"
 
-    public init(databaseURL: URL, recordsLocalOrigin: Bool = false) throws {
+    public init(databaseURL: URL, recordsLocalOrigin: Bool = false,
+                spaceCoordinator: StorageSpaceCoordinator? = nil) throws {
         guard databaseURL.isFileURL, !databaseURL.path.utf8.contains(0) else {
             throw HistoryStoreError.invalidDatabaseURL
         }
         self.databaseURL = databaseURL
         self.recordsLocalOrigin = recordsLocalOrigin
-        representations = try RepresentationStorage(databaseURL: databaseURL)
         try FileManager.default.createDirectory(
             at: databaseURL.deletingLastPathComponent(),
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
-        ownedFileStorage = try OwnedFileStorage(databaseURL: databaseURL)
+        let coordinator = try spaceCoordinator ?? StorageSpaceCoordinator(
+            directory: databaseURL.deletingLastPathComponent().appendingPathComponent(".storage-reservations", isDirectory: true))
+        self.spaceCoordinator = coordinator
+        representations = try RepresentationStorage(databaseURL: databaseURL, spaceCoordinator: coordinator)
+        ownedFileStorage = try OwnedFileStorage(databaseURL: databaseURL, spaceCoordinator: coordinator)
         var connection: OpaquePointer?
         let status = sqlite3_open_v2(
             databaseURL.path, &connection,
@@ -145,6 +151,7 @@ public final class HistoryStore: @unchecked Sendable {
             stored.copiedAt = candidate.copiedAt
             stored.isInHistory = true
             stored.revision += 1
+            try reserveRecordWriteWithoutLock(stored)
             let statement = try prepare("UPDATE clipboard_records SET copied_at = ?, is_in_history = 1, revision = revision + 1 WHERE id = ?")
             defer { sqlite3_finalize(statement) }
             try check(sqlite3_bind_double(statement, 1, candidate.copiedAt.timeIntervalSinceReferenceDate))
@@ -159,7 +166,7 @@ public final class HistoryStore: @unchecked Sendable {
 
     public func delete(id: UUID) throws {
         try synchronized {
-            try transaction {
+            try transaction(allowReclamation: true) {
                 let statement = try prepare("DELETE FROM clipboard_records WHERE id = ?")
                 defer { sqlite3_finalize(statement) }
                 try bind(id.uuidString, at: 1, to: statement)
@@ -169,7 +176,7 @@ public final class HistoryStore: @unchecked Sendable {
     }
 
     public func clear() throws {
-        try synchronized { try transaction { try execute("DELETE FROM clipboard_records") } }
+        try synchronized { try transaction(allowReclamation: true) { try execute("DELETE FROM clipboard_records") } }
     }
 
     /// Explicit creation never coalesces with a prior capture (used by editing and scoped integrations).
@@ -428,6 +435,7 @@ public final class HistoryStore: @unchecked Sendable {
     func reorderPinboardsWithoutLock(ids: [UUID]) throws {
         let current = Set(try pinboardsWithoutLock().map(\.id))
         guard Set(ids) == current, ids.count == current.count else { throw HistoryStoreError.invalidPinboardOrder }
+        try reserveMetadataWriteWithoutLock(rows: Int64(current.count))
         try execute("DELETE FROM pinboard_local_order")
         let statement = try prepare("INSERT INTO pinboard_local_order(board_id, position) VALUES (?, ?)")
         defer { sqlite3_finalize(statement) }
@@ -465,7 +473,7 @@ public final class HistoryStore: @unchecked Sendable {
     /// The caller must choose whether removing a board also removes its items from history.
     public func deletePinboard(id: UUID, deleteItems: Bool = false) throws {
         try synchronized {
-            try transaction {
+            try transaction(allowReclamation: true) {
                 if deleteItems {
                     let items = try prepare("DELETE FROM clipboard_records WHERE pinboard_id = ?")
                     defer { sqlite3_finalize(items) }
@@ -492,7 +500,7 @@ public final class HistoryStore: @unchecked Sendable {
 
     public func clearHistory() throws {
         try synchronized {
-            _ = try transaction { try cleanupHistoryWithoutLock(before: nil) }
+            _ = try transaction(allowReclamation: true) { try cleanupHistoryWithoutLock(before: nil) }
         }
     }
 
@@ -505,7 +513,7 @@ public final class HistoryStore: @unchecked Sendable {
     public func prune(before cutoff: Date) throws -> Int {
         guard cutoff.timeIntervalSinceReferenceDate.isFinite else { throw HistoryStoreError.invalidTimestamp }
         return try synchronized {
-            try transaction { try cleanupHistoryWithoutLock(before: cutoff).summary.affectedCount }
+            try transaction(allowReclamation: true) { try cleanupHistoryWithoutLock(before: cutoff).summary.affectedCount }
         }
     }
 
@@ -584,6 +592,7 @@ public final class HistoryStore: @unchecked Sendable {
     }
 
     func bindRecord(_ record: ClipboardRecord, to statement: OpaquePointer) throws {
+        try reserveRecordWriteWithoutLock(record)
         try bind(record.id.uuidString, at: 1, to: statement)
         try bind(record.text, at: 2, to: statement)
         try bind(record.sourceApp, at: 3, to: statement)
@@ -591,7 +600,7 @@ public final class HistoryStore: @unchecked Sendable {
         try check(sqlite3_bind_double(statement, 5, record.copiedAt.timeIntervalSinceReferenceDate))
         try bind(record.rtf, at: 6, to: statement)
         try bind(record.html, at: 7, to: statement)
-        try bind(try representations.encode(record.parts), at: 8, to: statement)
+        try bind(try representations.encode(record.parts, budget: writeBudget), at: 8, to: statement)
         try bind(record.renamedTitle, at: 9, to: statement)
         try bind(record.ocrText, at: 10, to: statement)
         try bind(record.pinboardID?.uuidString, at: 11, to: statement)
@@ -606,6 +615,7 @@ public final class HistoryStore: @unchecked Sendable {
     }
 
     func replaceContents(_ record: ClipboardRecord) throws {
+        try reserveExistingRecordRewriteWithoutLock(id: record.id)
         // Numbered parameters match insert, so the two encoding paths cannot drift.
         let statement = try prepare("""
             UPDATE clipboard_records SET text = ?2, source_app = ?3, source_bundle_id = ?4,
@@ -656,6 +666,7 @@ public final class HistoryStore: @unchecked Sendable {
     }
 
     func savePinboard(_ board: Pinboard, replace: Bool) throws {
+        try reserveMetadataWriteWithoutLock(payloadBytes: Int64(board.name.utf8.count + board.color.utf8.count))
         let sql = replace ? "UPDATE pinboards SET name = ?2, color = ?3, sort_order = ?4 WHERE id = ?1" :
             "INSERT INTO pinboards (id, name, color, sort_order) VALUES (?, ?, ?, ?)"
         let statement = try prepare(sql)
@@ -697,6 +708,11 @@ public final class HistoryStore: @unchecked Sendable {
         // snapshots committed SQLite pages and their immutable attachment files.
         try execute("BEGIN IMMEDIATE")
         defer { try? execute("ROLLBACK") }
+        let lease = try spaceCoordinator.reserve([
+            .init(destination: destination, bytes: try physicalRecoveryBackupBytesWithoutLock())
+        ])
+        defer { try? lease.release() }
+        try lease.revalidate()
         var source: OpaquePointer?
         guard sqlite3_open_v2(databaseURL.path, &source, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK,
               let source else { if let source { sqlite3_close_v2(source) }; throw HistoryStoreError.invalidBackup }
@@ -708,10 +724,15 @@ public final class HistoryStore: @unchecked Sendable {
         guard let backup = sqlite3_backup_init(target, "main", source, "main") else { throw HistoryStoreError.invalidBackup }
         let step = sqlite3_backup_step(backup, -1)
         let finish = sqlite3_backup_finish(backup)
-        guard step == SQLITE_DONE, finish == SQLITE_OK else { throw HistoryStoreError.invalidBackup }
+        guard step == SQLITE_DONE, finish == SQLITE_OK else {
+            let error = HistoryStoreError.database(code: step == SQLITE_DONE ? finish : step,
+                                                    message: String(cString: sqlite3_errmsg(target)))
+            throw StorageWriteFailure.classify(error) ?? HistoryStoreError.invalidBackup
+        }
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
         let attachmentDestination = destination.deletingPathExtension().appendingPathExtension("attachments")
         try FileManager.default.copyItem(at: representations.directory, to: attachmentDestination)
+        try lease.validateDestinations()
     }
 
     func migrate() throws {
@@ -903,14 +924,17 @@ public final class HistoryStore: @unchecked Sendable {
 
     func check(_ status: Int32, allowingRow: Bool = false) throws {
         guard status == SQLITE_OK || (allowingRow && status == SQLITE_ROW) else {
-            throw HistoryStoreError.database(code: status, message: String(cString: sqlite3_errmsg(database)))
+            let error = HistoryStoreError.database(code: status, message: String(cString: sqlite3_errmsg(database)))
+            throw StorageWriteFailure.classify(error) ?? error
         }
     }
 
-    func transaction<T>(_ operation: () throws -> T) throws -> T {
+    func transaction<T>(allowReclamation: Bool = false, _ operation: () throws -> T) throws -> T {
         try execute("BEGIN IMMEDIATE")
         var committed = false
         newOwnedFileDirectories = []
+        let budget = HistoryWriteBudget(coordinator: spaceCoordinator, allowReclamation: allowReclamation)
+        writeBudget = budget
         defer {
             if !committed {
                 // Retain the writer lock during cleanup, including failures in outbox flush/COMMIT.
@@ -918,12 +942,19 @@ public final class HistoryStore: @unchecked Sendable {
                 try? execute("ROLLBACK")
             }
             newOwnedFileDirectories = nil
+            writeBudget = nil
+            budget.release()
         }
-        let result = try operation()
-        if syncSchemaReady { try flushSyncDirty() }
-        try execute("COMMIT")
-        committed = true
-        return result
+        do {
+            let result = try operation()
+            if syncSchemaReady { try flushSyncDirty() }
+            try budget.validateDestinations()
+            try execute("COMMIT")
+            committed = true
+            return result
+        } catch {
+            throw StorageWriteFailure.classify(error) ?? error
+        }
     }
 
     func synchronized<T>(_ operation: () throws -> T) rethrows -> T {

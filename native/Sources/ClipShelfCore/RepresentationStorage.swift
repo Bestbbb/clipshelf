@@ -9,15 +9,17 @@ struct StoredRepresentation: Codable {
 
 struct RepresentationStorage {
     let directory: URL
+    let spaceCoordinator: StorageSpaceCoordinator?
     static let maximumRepresentationBytes = 64 * 1_024 * 1_024
 
-    init(databaseURL: URL) throws {
+    init(databaseURL: URL, spaceCoordinator: StorageSpaceCoordinator? = nil) throws {
+        self.spaceCoordinator = spaceCoordinator
         directory = databaseURL.deletingPathExtension().appendingPathExtension("attachments")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
     }
 
-    func encode(_ parts: [ClipboardPart]) throws -> Data {
+    func encode(_ parts: [ClipboardPart], budget: HistoryWriteBudget? = nil) throws -> Data {
         let stored: [[StoredRepresentation]] = try parts.map { part in
             try part.representations.map { representation in
                 guard !representation.typeIdentifier.isEmpty,
@@ -32,8 +34,14 @@ struct RepresentationStorage {
                         throw HistoryStoreError.corruptAttachment
                     }
                 } else {
+                    let lease = try budget?.isPrepaid == true ? nil : spaceCoordinator?.reserve([
+                        .init(destination: file, bytes: Int64(representation.data.count))
+                    ])
+                    defer { try? lease?.release() }
+                    try lease?.revalidate()
                     try representation.data.write(to: file, options: .atomic)
                     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+                    try lease?.validateDestinations()
                 }
                 return StoredRepresentation(typeIdentifier: representation.typeIdentifier,
                                             digest: digest, byteCount: representation.data.count)

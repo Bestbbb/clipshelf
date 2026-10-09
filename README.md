@@ -56,6 +56,13 @@ pending items in memory for explicit retry or discard. Pausing or locking cancel
 waiting saves; a write already in progress may still finish. Polling cannot
 recover copies overwritten between observations.
 
+Storage Management reports library files, shared caches and the share inbox
+separately, including unavailable scopes. Core writes and backups check volume
+capacity before growing data; this is a cooperative estimate, not a physical disk
+reservation. Total storage is unlimited by default, and automatic managed-file
+reclamation is off until enabled. Complete write-path coverage and a configurable
+hard quota remain in progress.
+
 See the [implementation status](docs/IMPLEMENTATION_STATUS.zh-CN.md) for what is
 implemented, tested, and still missing. Individual feature availability does not
 mean the full product has passed acceptance. The earlier Tauri scaffold remains

@@ -10,7 +10,7 @@ extension HistoryStore {
     public func commitHistoryCleanup(_ plan: HistoryCleanupPlan) throws -> HistoryCleanupResult {
         try synchronized {
             guard plan.storeIdentity == selectionStoreIdentity, !plan.capability.consumed else { throw HistoryCleanupError.invalidPlan }
-            let result = try transaction { try commitHistoryCleanupWithoutLock(plan) }
+            let result = try transaction(allowReclamation: true) { try commitHistoryCleanupWithoutLock(plan) }
             plan.capability.consumed = true
             return result
         }

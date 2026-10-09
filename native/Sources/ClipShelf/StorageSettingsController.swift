@@ -13,12 +13,16 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
         var recover: @MainActor () async throws -> OwnedStorageCleanupResult
         var readExternalUses: (@MainActor () async throws -> [OwnedAssetPublication])? = nil
         var releaseExternalUses: (@MainActor (Set<UUID>) async throws -> Void)? = nil
+        var scanLibrary: (@MainActor (HistoryReadCancellation) async throws -> LibraryStorageSnapshot)? = nil
     }
     enum Phase { case idle, scanning, preparing, confirming, committing, recovering }
     private let actions: Actions
     private let preferences: UserDefaults
     private let status = NSTextField(wrappingLabelWithString: L10n.text("刷新后查看当前资料库托管文件的占用。"))
     private let detail = NSTextField(wrappingLabelWithString: L10n.text("尚未读取，不能据此判断为零。"))
+    private let libraryDetail = NSTextField(wrappingLabelWithString: "")
+    private var libraryCancellation: HistoryReadCancellation?
+    private(set) var libraryUsage: LibraryStorageSnapshot?
     private let refreshButton = NSButton(title: L10n.text("刷新占用"), target: nil, action: nil)
     private let cleanupButton = NSButton(title: L10n.text("清理可回收文件…"), target: nil, action: nil)
     private let recoverButton = NSButton(title: L10n.text("继续中断的回收"), target: nil, action: nil)
@@ -34,6 +38,7 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
     var isBusy: Bool { phase != .idle }
     var isCommitting: Bool { phase == .committing || phase == .recovering }
     var isExternalMutationBusy: (() -> Bool)?
+    var allowsLibraryScan: (() -> Bool)?
     var onBusyChanged: ((Bool) -> Void)?
     var onMessage: ((String) -> Void)?
     var confirmation: ((OwnedStorageCleanupPlan, @escaping (Bool) -> Void) -> (() -> Void))?
@@ -60,7 +65,16 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
         automatic.target = self; automatic.action = #selector(changeAutomatic)
         let controls = NSStackView(views: [refreshButton, cleanupButton, recoverButton]); controls.spacing = 12
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false
-        let content = NSStackView(views: [description, detail, scope])
+        let libraryScope = NSTextField(wrappingLabelWithString: L10n.text("共享缓存单独列出，外部 Finder 原文件不计入。统计不等于可回收空间；总容量默认不设上限。"))
+        libraryScope.textColor = .secondaryLabelColor
+        libraryDetail.isHidden = actions.scanLibrary == nil
+        libraryScope.isHidden = actions.scanLibrary == nil
+        if actions.scanLibrary != nil {
+            libraryDetail.stringValue = L10n.text("尚未读取，不能据此判断为零。")
+            status.stringValue = L10n.text("刷新后查看资料库、缓存与备份的占用。")
+            invalidateManagedUsage()
+        }
+        let content = NSStackView(views: [libraryDetail, libraryScope, description, detail, scope])
         content.orientation = .vertical; content.alignment = .leading; content.spacing = 14
         content.translatesAutoresizingMaskIntoConstraints = false; scroll.documentView = content
         let body = NSStackView(views: [status, scroll, automatic, externalUsesButton, controls])
@@ -74,6 +88,8 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
             content.widthAnchor.constraint(equalTo: scroll.widthAnchor, constant: -18),
             description.widthAnchor.constraint(equalTo: content.widthAnchor), detail.widthAnchor.constraint(equalTo: content.widthAnchor),
             scope.widthAnchor.constraint(equalTo: content.widthAnchor),
+            libraryDetail.widthAnchor.constraint(equalTo: content.widthAnchor),
+            libraryScope.widthAnchor.constraint(equalTo: content.widthAnchor),
         ])
         renderControls()
     }
@@ -91,7 +107,8 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
     func cancelPending() -> Bool {
         automaticQueued = false; recoveryQueued = false
         guard !isCommitting else { return false }
-        generation &+= 1; task?.cancel(); task = nil
+        generation &+= 1; libraryCancellation?.cancel(); libraryCancellation = nil
+        task?.cancel(); task = nil
         let dismiss = cancelConfirmation; cancelConfirmation = nil; dismiss?()
         if isBusy { status.stringValue = L10n.text("已取消，未开始回收文件。") }
         setPhase(.idle)
@@ -112,6 +129,13 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
     }
 
     @objc func refresh() {
+        if let scanLibrary = actions.scanLibrary {
+            guard !isBusy else { return }
+            guard allowsLibraryScan?() != false else {
+                status.stringValue = L10n.text("其他修改正在进行，请稍后重试。"); return
+            }
+            refreshLibrary(scanLibrary); return
+        }
         guard canBegin() else { return }
         let current = begin(.scanning, message: L10n.text("正在核对文件占用与保留依赖…"))
         task = Task { @MainActor [weak self] in
@@ -127,6 +151,30 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
                 self.detail.stringValue = L10n.text("无法取得完整统计，未将未知占用显示为零。\n\(error.localizedDescription)")
                 self.status.stringValue = L10n.text("读取未完成，原因见下方。")
             }
+            self.finish(current)
+        }
+    }
+
+    private func refreshLibrary(_ scan: @escaping @MainActor (HistoryReadCancellation) async throws -> LibraryStorageSnapshot) {
+        invalidateManagedUsage()
+        let current = begin(.scanning, message: L10n.text("正在统计资料库、缓存与备份…"))
+        let cancellation = HistoryReadCancellation(); libraryCancellation = cancellation
+        task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let snapshot = try await scan(cancellation)
+                guard self.accepts(current) else { return }
+                self.libraryUsage = snapshot
+                self.libraryDetail.stringValue = LibraryStorageReader.describe(snapshot)
+                self.status.stringValue = snapshot.report.isPartial
+                    ? L10n.text("占用已部分更新，仍有待检查内容") : L10n.text("占用已更新")
+            } catch {
+                guard self.accepts(current) else { return }
+                self.libraryUsage = nil
+                self.libraryDetail.stringValue = L10n.text("无法取得完整统计，未将未知占用显示为零。\n\(error.localizedDescription)")
+                self.status.stringValue = L10n.text("读取未完成，原因见下方。")
+            }
+            self.libraryCancellation = nil
             self.finish(current)
         }
     }
@@ -193,6 +241,7 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
     }
     private func complete(_ result: OwnedStorageCleanupResult, generation current: UInt64) async throws {
         guard accepts(current) else { return }
+        invalidateLibraryUsage()
         let message = L10n.text("已移除 \(result.removedAssetCount) 组、\(result.removedFileCount) 个文件，文件大小合计 \(Self.bytes(result.removedLogicalBytes))。") +
             (result.remainingPendingCount > 0 ? L10n.text("另有 \(result.remainingPendingCount) 组仍待继续处理。") : "")
         do { let report = try await actions.scan(); if accepts(current) { display(report) } }
@@ -207,6 +256,7 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
     }
     private func failedCommit(_ error: Error, generation current: UInt64) {
         guard accepts(current) else { return }
+        invalidateLibraryUsage()
         usage = nil
         detail.stringValue = L10n.text("回收可能已处理部分文件。现有日志会用于恢复，不能把失败当作完全没有改变。\n\(error.localizedDescription)")
         status.stringValue = L10n.text("回收尚未完成，可继续中断的回收；原因见下方。")
@@ -261,6 +311,7 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
                             try await release(Set(publications.map(\.id)))
                             guard self.accepts(current) else { return }
                             self.usage = nil; self.detail.stringValue = L10n.text("所确认的外部使用保护已解除，请刷新查看仍受其他依赖保护的内容。")
+                            if self.actions.scanLibrary != nil { self.invalidateManagedUsage() }
                             self.status.stringValue = L10n.text("保护已解除；这一步没有删除文件。")
                         } catch {
                             guard self.accepts(current) else { return }
@@ -294,6 +345,15 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
         usage = report
         let partial = report.measurementComplete ? "" : L10n.text("部分路径无法计量或扫描达到边界，下面的大小仅是已计量的下界。\n\n")
         detail.stringValue = partial + L10n.text("托管文件：\(report.assetCount) 组\n原件与打开副本大小：\(Self.bytes(report.totalLogicalBytes))\n文件系统分配字节：\(Self.bytes(report.totalAllocatedBytes))\n可回收：\(report.reclaimableAssetCount) 组 · \(Self.bytes(report.reclaimableLogicalBytes))\n有使用依赖：\(report.protectedAssetCount) 组\n待检查并保留：\(report.unverifiedAssetCount) 项\n其中旧版本外部使用保护：\(report.legacyProtectedAssetCount) 组\n中断后待处理：\(report.pendingReclamationCount) 组")
+    }
+    private func invalidateLibraryUsage() {
+        guard actions.scanLibrary != nil else { return }
+        libraryUsage = nil
+        libraryDetail.stringValue = L10n.text("文件已发生变化，请刷新整库占用。")
+    }
+    private func invalidateManagedUsage() {
+        usage = nil
+        detail.stringValue = L10n.text("托管文件的保留依赖尚未核对。点击“清理可回收文件…”可查看本次范围，确认前不会删除文件。")
     }
     private func canBegin() -> Bool {
         guard !isBusy else { return false }

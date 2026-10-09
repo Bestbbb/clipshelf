@@ -168,7 +168,7 @@ extension HistoryStore {
             } catch {
                 publication?.rollback()
                 try? execute("ROLLBACK")
-                throw error
+                throw StorageWriteFailure.classify(error) ?? error
             }
         }
     }

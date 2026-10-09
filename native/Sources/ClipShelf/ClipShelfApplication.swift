@@ -1331,9 +1331,23 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             commit: { plan in try await Task.detached(priority: .utility) { try store.commitOwnedStorageCleanup(plan) }.value },
             recover: { try await Task.detached(priority: .utility) { try store.resumeOwnedStorageCleanup() }.value },
             readExternalUses: { try await Task.detached(priority: .utility) { try store.ownedPublications().filter { $0.purpose != .clipboard } }.value },
-            releaseExternalUses: { ids in try await Task.detached(priority: .utility) { try store.clearConfirmedExternalOwnedPublications(expectedIDs: ids) }.value }
+            releaseExternalUses: { ids in try await Task.detached(priority: .utility) { try store.clearConfirmedExternalOwnedPublications(expectedIDs: ids) }.value },
+            scanLibrary: { [weak self] cancellation in
+                guard let self else { throw CancellationError() }
+                let inboxRoot = await self.shareInbox?.storageRootURL()
+                let roots = LibraryStorageReader.additionalRoots(validationDirectory: self.validation ? store.storageUsageScope().profileDirectory : nil,
+                    cachesDirectory: FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0],
+                    shareInboxRoot: inboxRoot)
+                let worker = Task.detached(priority: .utility) {
+                    try LibraryStorageReader.read(store: store, roots: roots, cancellation: cancellation)
+                }
+                return try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: {
+                    cancellation.cancel(); worker.cancel()
+                })
+            }
         ), preferences: preferences)
         storageSettings = controller
+        controller.allowsLibraryScan = { [weak self] in self?.interactionLifecycle.isAllowed == true }
         controller.isExternalMutationBusy = { [weak self] in
             guard let self else { return true }
             return self.selectionMutationInProgress || self.isCaptureWriteBusy || self.captureBlocksOwnedReclamation || self.historyCleanup?.isBusy == true || self.sessionSuspended || self.isTerminating || self.terminationDecisionPending

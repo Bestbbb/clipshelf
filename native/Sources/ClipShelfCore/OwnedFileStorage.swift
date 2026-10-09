@@ -5,9 +5,11 @@ import Foundation
 /// Only generated UUIDs and validated leaf names participate in paths.
 struct OwnedFileStorage {
     let directory: URL
+    let spaceCoordinator: StorageSpaceCoordinator?
     static let maximumBytes = 64 * 1_024 * 1_024
 
-    init(databaseURL: URL) throws {
+    init(databaseURL: URL, spaceCoordinator: StorageSpaceCoordinator? = nil) throws {
+        self.spaceCoordinator = spaceCoordinator
         // Foundation preserves macOS's /var alias even after resolvingSymlinksInPath.
         // Resolve the caller-selected, existing database parent once with realpath;
         // every component below it (attachments/owned/UUID/files) is still no-follow.
@@ -31,23 +33,30 @@ struct OwnedFileStorage {
         return assetDirectory(asset.id).appendingPathComponent("files", isDirectory: true).appendingPathComponent(asset.filename)
     }
 
-    func create(_ asset: OwnedFileAsset, data: Data, didCreateDirectory: () -> Void) throws {
+    func create(_ asset: OwnedFileAsset, data: Data, budget: HistoryWriteBudget? = nil,
+                didCreateDirectory: () -> Void) throws {
         try Self.validateFilename(asset.filename)
         guard data.count <= Self.maximumBytes, data.count == asset.byteCount,
               RepresentationStorage.digest(data) == asset.sha256 else { throw HistoryStoreError.invalidOwnedFile }
+        let lease = try budget?.isPrepaid == true ? nil : spaceCoordinator?.reserve([
+            .init(destination: directory, bytes: Int64(data.count) * 2)
+        ])
+        defer { try? lease?.release() }
+        try lease?.revalidate()
         let root = try Self.openDirectory(directory, create: false)
         defer { Darwin.close(root) }
-        guard mkdirat(root, asset.id.uuidString, 0o700) == 0 else { throw HistoryStoreError.invalidOwnedFile }
+        guard mkdirat(root, asset.id.uuidString, 0o700) == 0 else { throw Self.writeError(fallback: .invalidOwnedFile) }
         didCreateDirectory()
         let folder = try Self.openDirectory(assetDirectory(asset.id), create: false)
         defer { Darwin.close(folder) }
         try Self.write(data, name: "payload", at: folder)
-        guard mkdirat(folder, "files", 0o700) == 0 else { throw HistoryStoreError.invalidOwnedFile }
+        guard mkdirat(folder, "files", 0o700) == 0 else { throw Self.writeError(fallback: .invalidOwnedFile) }
         let files = openat(folder, "files", O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
         guard files >= 0 else { throw HistoryStoreError.invalidOwnedFile }
         defer { Darwin.close(files) }
         try Self.write(data, name: asset.filename, at: files)
-        guard fsync(files) == 0, fsync(folder) == 0, fsync(root) == 0 else { throw HistoryStoreError.invalidOwnedFile }
+        guard fsync(files) == 0, fsync(folder) == 0, fsync(root) == 0 else { throw Self.writeError(fallback: .invalidOwnedFile) }
+        try lease?.validateDestinations()
     }
 
     func read(_ asset: OwnedFileAsset) throws -> Data {
@@ -93,10 +102,13 @@ struct OwnedFileStorage {
         case .missing: break
         default: throw HistoryStoreError.corruptOwnedFile
         }
+        let lease = try spaceCoordinator?.reserve([.init(destination: directory, bytes: Int64(asset.byteCount))])
+        defer { try? lease?.release() }
+        try lease?.revalidate()
         let data = try read(asset)
         let folder = try Self.openDirectory(assetDirectory(asset.id), create: false)
         defer { Darwin.close(folder) }
-        if mkdirat(folder, "files", 0o700) != 0, errno != EEXIST { throw HistoryStoreError.corruptOwnedFile }
+        if mkdirat(folder, "files", 0o700) != 0, errno != EEXIST { throw Self.writeError(fallback: .corruptOwnedFile) }
         let files = openat(folder, "files", O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
         guard files >= 0 else { throw HistoryStoreError.corruptOwnedFile }
         defer { Darwin.close(files) }
@@ -114,16 +126,18 @@ struct OwnedFileStorage {
             if errno == EEXIST, projectionAvailability(asset) == .available {
                 return OwnedProjectionPublication(result: .alreadyPresent(url))
             }
-            throw HistoryStoreError.corruptOwnedFile
+            throw Self.writeError(fallback: .corruptOwnedFile)
         }
         guard unlinkat(files, temporary, 0) == 0 else {
             publication.rollback()
             throw HistoryStoreError.corruptOwnedFile
         }
         guard fsync(files) == 0, fsync(folder) == 0 else {
+            let error = Self.writeError(fallback: .corruptOwnedFile)
             publication.rollback()
-            throw HistoryStoreError.corruptOwnedFile
+            throw error
         }
+        do { try lease?.validateDestinations() } catch { publication.rollback(); throw error }
         return publication
     }
 
@@ -153,11 +167,17 @@ struct OwnedFileStorage {
 
     private static func write(_ data: Data, name: String, at directory: Int32) throws {
         let descriptor = openat(directory, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
-        guard descriptor >= 0 else { throw HistoryStoreError.invalidOwnedFile }
+        guard descriptor >= 0 else { throw Self.writeError(fallback: .invalidOwnedFile) }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         defer { try? handle.close() }
         try handle.write(contentsOf: data)
         try handle.synchronize()
+    }
+
+    private static func writeError(fallback: HistoryStoreError) -> Error {
+        let code = errno
+        let error = NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+        return StorageWriteFailure.classify(error) ?? fallback
     }
 
     /// Walk every component with O_NOFOLLOW; rejecting a link at the final file alone is insufficient.
@@ -168,7 +188,7 @@ struct OwnedFileStorage {
         do {
             for component in url.pathComponents.dropFirst() {
                 guard component != ".", component != ".." else { throw HistoryStoreError.invalidOwnedFile }
-                if create, mkdirat(descriptor, component, 0o700) != 0, errno != EEXIST { throw HistoryStoreError.invalidOwnedFile }
+                if create, mkdirat(descriptor, component, 0o700) != 0, errno != EEXIST { throw Self.writeError(fallback: .invalidOwnedFile) }
                 let next = openat(descriptor, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
                 guard next >= 0 else { throw HistoryStoreError.corruptOwnedFile }
                 Darwin.close(descriptor); descriptor = next

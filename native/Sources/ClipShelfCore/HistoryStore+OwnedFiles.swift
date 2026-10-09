@@ -103,8 +103,9 @@ extension HistoryStore {
         guard newOwnedFileDirectories != nil else { throw HistoryStoreError.invalidOwnedFile }
         try OwnedFileStorage.validateFilename(filename)
         guard data.count <= OwnedFileStorage.maximumBytes else { throw HistoryStoreError.valueTooLarge }
+        try writeBudget?.reserveDatabase(bytes: 65_536, destination: databaseURL)
         let asset = OwnedFileAsset(id: UUID(), filename: filename, byteCount: data.count, sha256: RepresentationStorage.digest(data))
-        try ownedFileStorage.create(asset, data: data) { newOwnedFileDirectories?.append(asset.id) }
+        try ownedFileStorage.create(asset, data: data, budget: writeBudget) { newOwnedFileDirectories?.append(asset.id) }
         let statement = try prepare("INSERT INTO owned_file_assets(id, metadata, registered_url) VALUES (?, ?, ?)")
         defer { sqlite3_finalize(statement) }
         try bind(asset.id.uuidString, at: 1, to: statement)

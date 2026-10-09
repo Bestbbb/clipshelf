@@ -24,6 +24,12 @@ extension HistoryStore {
         }
     }
 
+    /// Freezes one consistent archive for encrypted export without creating a plaintext file.
+    /// The returned bytes contain clipboard contents and are never written by this method.
+    public func exportBackupData() throws -> Data {
+        try synchronized { try transaction { try encodedBackupWithoutLock() } }
+    }
+
     public func prepareBackupRestore(from source: URL, mode: BackupRestoreMode) throws -> PreparedBackupRestore {
         let backup = try readBackup(source)
         return try synchronized {
@@ -53,7 +59,9 @@ extension HistoryStore {
                 if mode == .replace, boundProfile { throw HistoryStoreError.syncedProfileRequiresLocalMerge }
                 let remapIdentities = boundProfile || backup.containsSyncedContent == true
                 let recovery = try recoveryURL(reason: "restore", extension: "clipshelfbackup")
-                try exportBackupWithoutLock(to: recovery)
+                let recoveryData = try encodedBackupWithoutLock()
+                try reserveBackupRestoreWithoutLock(backup, mode: mode, recoveryData: recoveryData, recoveryURL: recovery)
+                try publishBackupWithoutLock(recoveryData, to: recovery)
                 if mode == .replace {
                     try execute("DELETE FROM clipboard_records")
                     try execute("DELETE FROM pinboards")
@@ -138,6 +146,10 @@ extension HistoryStore {
     func exportBackupWithoutLock(to destination: URL) throws {
         guard destination.isFileURL, !destination.path.utf8.contains(0) else { throw HistoryStoreError.invalidDatabaseURL }
         guard !FileManager.default.fileExists(atPath: destination.path) else { throw HistoryStoreError.backupExists }
+        try publishBackupWithoutLock(encodedBackupWithoutLock(), to: destination)
+    }
+
+    func encodedBackupWithoutLock() throws -> Data {
         let boards = try pinboardsWithoutLock()
         guard boards.count <= 10_000 else { throw HistoryStoreError.valueTooLarge }
         let encoder = JSONEncoder()
@@ -155,6 +167,17 @@ extension HistoryStore {
         let envelope = BackupEnvelope(checksum: RepresentationStorage.digest(payload), payload: payload)
         let data = try encoder.encode(envelope)
         guard data.count <= Self.maximumBackupBytes else { throw HistoryStoreError.valueTooLarge }
+        return data
+    }
+
+    private func publishBackupWithoutLock(_ data: Data, to destination: URL) throws {
+        guard destination.isFileURL, !destination.path.utf8.contains(0) else { throw HistoryStoreError.invalidDatabaseURL }
+        guard !FileManager.default.fileExists(atPath: destination.path) else { throw HistoryStoreError.backupExists }
+        let lease = try writeBudget?.isPrepaid == true ? nil : spaceCoordinator.reserve([
+            .init(destination: destination, bytes: Int64(data.count))
+        ])
+        defer { try? lease?.release() }
+        try lease?.revalidate()
         let stagingDirectory = destination.deletingLastPathComponent().appendingPathComponent(".clipshelf-export-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: false,
                                                 attributes: [.posixPermissions: 0o700])
@@ -162,7 +185,61 @@ extension HistoryStore {
         let staged = stagingDirectory.appendingPathComponent("backup")
         try data.write(to: staged, options: .withoutOverwriting)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: staged.path)
+        try lease?.validateDestinations()
+        try writeBudget?.validateDestinations()
         try FileManager.default.moveItem(at: staged, to: destination)
+    }
+
+    private func reserveBackupRestoreWithoutLock(_ backup: HistoryBackup, mode: BackupRestoreMode, recoveryData: Data,
+                                                 recoveryURL: URL) throws {
+        guard let writeBudget else { throw HistoryStoreError.invalidBackup }
+        var databaseBytes: Int64 = 262_144
+        if mode == .replace {
+            databaseBytes = try HistoryWriteBudget.adding(databaseBytes, existingDatabaseRewriteBytesWithoutLock())
+        }
+        var attachmentBytes: Int64 = 0
+        var digests = Set<String>()
+        for record in backup.records {
+            databaseBytes = try HistoryWriteBudget.adding(databaseBytes,
+                HistoryWriteBudget.databaseBytes(for: record, pageAllowance: 4_096))
+            for part in record.parts {
+                for representation in part.representations {
+                    let digest = RepresentationStorage.digest(representation.data)
+                    if digests.insert(digest).inserted,
+                       !FileManager.default.fileExists(atPath: try representations.url(for: digest).path) {
+                        attachmentBytes = try HistoryWriteBudget.adding(attachmentBytes, Int64(representation.data.count))
+                    }
+                }
+            }
+        }
+        // The recovery archive and prior library remain present throughout replacement.
+        // A portable owned URL is rewritten to this profile. Reserve fresh URL metadata/blocks
+        // independently of the source digest because the new path differs after import.
+        for _ in backup.ownedFileBindings ?? [] {
+            attachmentBytes = try HistoryWriteBudget.adding(attachmentBytes, 4_096)
+        }
+        var ownedBytes: Int64 = 0
+        for asset in backup.ownedFiles ?? [] {
+            ownedBytes = try HistoryWriteBudget.adding(ownedBytes, Int64(asset.data.count) * 2)
+            databaseBytes = try HistoryWriteBudget.adding(databaseBytes, 65_536)
+        }
+        for board in backup.pinboards {
+            databaseBytes = try HistoryWriteBudget.adding(databaseBytes,
+                69_632 + Int64(board.name.utf8.count + board.color.utf8.count) * 8)
+        }
+        if backup.pinboardOrder != nil {
+            // Merge rewrites every retained sidebar position as well as the imported positions.
+            // The prepaid scope bypasses the lower-level guard, so include both sets here.
+            let existingCount = mode == .merge ? try orderedPinboardsWithoutLock().count : 0
+            let rewrittenCount = Int64(existingCount) + Int64(backup.pinboards.count)
+            databaseBytes = try HistoryWriteBudget.adding(databaseBytes, 65_536 + rewrittenCount * 4_096)
+        }
+        try writeBudget.prepay([
+            .init(destination: databaseURL, bytes: databaseBytes),
+            .init(destination: representations.directory, bytes: attachmentBytes),
+            .init(destination: ownedFileStorage.directory, bytes: ownedBytes),
+            .init(destination: recoveryURL, bytes: Int64(recoveryData.count))
+        ])
     }
 
     /// Conservative JSON size bound based on stored metadata, without reading .blob or owned payload files.

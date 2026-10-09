@@ -101,7 +101,26 @@ extension HistoryStore {
             let state = try requireSharedBoard(boardID: boardID, accountID: accountID)
             try transaction {
                 for id in operationIDs {
-                    try syncExecute("INSERT OR IGNORE INTO shared_accepted_operations(operation_id, namespace, payload) SELECT operation_id, account_id, payload FROM sync_outbox WHERE account_id = ? AND operation_id = ?", [state.descriptor.namespace, id.uuidString])
+                    let statement = try prepare("""
+                        SELECT length(o.payload), a.namespace, a.payload = o.payload
+                        FROM sync_outbox o LEFT JOIN shared_accepted_operations a ON a.operation_id = o.operation_id
+                        WHERE o.account_id = ? AND o.operation_id = ?
+                        """)
+                    defer { sqlite3_finalize(statement) }
+                    try bind(state.descriptor.namespace, at: 1, to: statement)
+                    try bind(id.uuidString, at: 2, to: statement)
+                    let status = sqlite3_step(statement)
+                    if status == SQLITE_DONE { continue }
+                    try check(status, allowingRow: true)
+                    if let namespace = textColumn(statement, 1) {
+                        guard namespace == state.descriptor.namespace else { throw SyncError.namespaceConflict }
+                        guard sqlite3_column_int(statement, 2) == 1 else { throw SyncError.invalidOperation }
+                        // The exact accepted copy already exists; only queue cleanup remains.
+                    } else {
+                        let byteCount = sqlite3_column_int64(statement, 0)
+                        try reserveSyncPayloadWithoutLock(byteCount: byteCount, retiringByteCount: byteCount)
+                        try syncExecute("INSERT INTO shared_accepted_operations(operation_id, namespace, payload) SELECT operation_id, account_id, payload FROM sync_outbox WHERE account_id = ? AND operation_id = ?", [state.descriptor.namespace, id.uuidString])
+                    }
                     try syncExecute("DELETE FROM sync_outbox WHERE account_id = ? AND operation_id = ?", [state.descriptor.namespace, id.uuidString])
                 }
             }
@@ -285,11 +304,17 @@ extension HistoryStore {
     }
 
     func rememberAcceptedSharedOperation(_ operation: SyncOperation) throws {
+        if let namespace = try syncScalar("SELECT namespace FROM shared_accepted_operations WHERE operation_id = ?", [operation.operationID.uuidString]) {
+            guard namespace == operation.accountID else { throw SyncError.namespaceConflict }
+            return
+        }
+        let payload = try JSONEncoder().encode(operation)
+        try reserveSyncPayloadWithoutLock(payload)
         let statement = try prepare("INSERT OR IGNORE INTO shared_accepted_operations(operation_id, namespace, payload) VALUES (?, ?, ?)")
         defer { sqlite3_finalize(statement) }
         try bind(operation.operationID.uuidString, at: 1, to: statement)
         try bind(operation.accountID, at: 2, to: statement)
-        try bind(try JSONEncoder().encode(operation), at: 3, to: statement)
+        try bind(payload, at: 3, to: statement)
         try stepToCompletion(statement)
     }
 

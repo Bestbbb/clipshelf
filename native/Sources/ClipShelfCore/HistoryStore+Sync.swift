@@ -83,11 +83,16 @@ extension HistoryStore {
                     }
                     if accountID.hasPrefix("shared:") { try rememberAcceptedSharedOperation(operation) }
                     if try syncLogContains(accountID: accountID, id: operation.operationID) { continue }
+                    if try syncScalar("SELECT operation_id FROM sync_inbox WHERE operation_id = ?", [operation.operationID.uuidString]) != nil { continue }
+                    let payload = try JSONEncoder().encode(operation)
+                    // Missing causal parents or owned-file dependencies may leave this operation
+                    // in the inbox without ever reaching record binding during this transaction.
+                    try reserveSyncPayloadWithoutLock(payload)
                     let statement = try prepare("INSERT OR IGNORE INTO sync_inbox (operation_id, account_id, payload) VALUES (?, ?, ?)")
                     defer { sqlite3_finalize(statement) }
                     try bind(operation.operationID.uuidString, at: 1, to: statement)
                     try bind(accountID, at: 2, to: statement)
-                    try bind(try JSONEncoder().encode(operation), at: 3, to: statement)
+                    try bind(payload, at: 3, to: statement)
                     try stepToCompletion(statement)
                 }
                 if let scope = try ownedScopeWithoutLock(namespace: accountID) { try registerOwnedPendingDependencies(scope: scope) }
@@ -317,6 +322,10 @@ extension HistoryStore {
         try validateSyncOperation(operation, accountID: operation.accountID)
         let payload = try JSONEncoder().encode(operation)
         guard payload.count <= 256 * 1_024 * 1_024 else { throw HistoryStoreError.valueTooLarge }
+        // Ordering and board mutations also enqueue the complete portable record. The
+        // encoded payload is the authority here, not the small visible metadata change.
+        // Tombstones remain possible when reclaiming space; actual SQLite errors still roll back.
+        if operation.action != .delete { try reserveSyncPayloadWithoutLock(payload) }
         let statement = try prepare("INSERT INTO sync_outbox(operation_id, account_id, payload) VALUES (?, ?, ?)")
         defer { sqlite3_finalize(statement) }
         try bind(operation.operationID.uuidString, at: 1, to: statement)

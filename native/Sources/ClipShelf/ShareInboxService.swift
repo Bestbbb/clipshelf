@@ -75,6 +75,9 @@ actor ShareInboxService {
     private var importsAllowed = true
     private var lastPublishedCatalog: ShareInboxCatalog?
 
+    /// The already-authorized inbox path; querying it does not create any directory.
+    func storageRootURL() -> URL { directory.root }
+
     static func configured(store: HistoryStore, privateDirectory: URL, bundle: Bundle = .main) throws -> ShareInboxService {
         try ShareInboxService(store: store, privateDirectory: privateDirectory, inbox: ShareInboxDirectory.configured(bundle: bundle))
     }

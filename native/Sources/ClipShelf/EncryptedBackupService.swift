@@ -24,6 +24,17 @@ enum EncryptedBackupService {
     private static let magic = Data([0x43, 0x53, 0x42, 0x4b, 0x01])
     private static let maximumSize = 512 * 1024 * 1024
 
+    struct FileOperations {
+        var write: (Data, URL) throws -> Void
+        var publish: (URL, URL) throws -> Void
+        static let live = FileOperations(write: { data, url in
+            try data.write(to: url, options: .withoutOverwriting)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        }, publish: { source, destination in
+            try FileManager.default.moveItem(at: source, to: destination)
+        })
+    }
+
     static func isEncrypted(_ url: URL) throws -> Bool {
         let (file, _) = try openSource(url)
         defer { try? file.close() }
@@ -53,21 +64,30 @@ enum EncryptedBackupService {
         } catch { throw EncryptedBackupError.invalidBackup }
     }
 
-    static func export(store: HistoryStore, to destination: URL, password: String) throws {
-        // The chosen destination may be a synced folder or remote volume. Plaintext
-        // must never be staged there, even temporarily or with restrictive permissions.
-        let localStaging = try temporaryDirectory(in: FileManager.default.temporaryDirectory)
-        defer { try? FileManager.default.removeItem(at: localStaging) }
-        let plain = localStaging.appendingPathComponent("archive.clipshelf")
-        try store.exportBackup(to: plain)
-        let ciphertext = try seal(Data(contentsOf: plain), password: password)
-        let staging = try temporaryDirectory(in: destination.deletingLastPathComponent())
-        defer { try? FileManager.default.removeItem(at: staging) }
-        let encrypted = staging.appendingPathComponent("encrypted.clipshelf")
-        try ciphertext.write(to: encrypted, options: .withoutOverwriting)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: encrypted.path)
-        // A complete file is published only after sealing succeeds; existing files are never overwritten.
-        try FileManager.default.moveItem(at: encrypted, to: destination)
+    static func export(store: HistoryStore, to destination: URL, password: String,
+                       files: FileOperations = .live) throws {
+        do {
+            // Core freezes a complete archive in one snapshot. Encryption already needs the
+            // bytes in memory; no plaintext copy needs to be written to any staging volume.
+            let plaintext = try store.exportBackupData()
+            let lease = try store.spaceCoordinator.reserve([
+                .init(destination: destination, bytes: Int64(plaintext.count) + 49)
+            ])
+            defer { try? lease.release() }
+            let ciphertext = try seal(plaintext, password: password)
+            try lease.revalidate()
+            let staging = try temporaryDirectory(in: destination.deletingLastPathComponent())
+            defer { try? FileManager.default.removeItem(at: staging) }
+            let encrypted = staging.appendingPathComponent("encrypted.clipshelf")
+            try lease.revalidate()
+            try files.write(ciphertext, encrypted)
+            try lease.validateDestinations()
+            // A complete file is published only after sealing succeeds; existing files are never overwritten.
+            try files.publish(encrypted, destination)
+        } catch {
+            if let failure = StorageWriteFailure.classify(error) { throw failure }
+            throw error
+        }
     }
 
     static func restore(store: HistoryStore, from source: URL, password: String, mode: BackupRestoreMode) throws -> BackupRestoreSummary {
@@ -77,14 +97,25 @@ enum EncryptedBackupService {
 
     /// Authentication and complete Core validation precede any migration or store mutation.
     /// Core owns the immutable prepared value; plaintext staging is removed before return.
-    static func prepareRestore(from source: URL, password: String, mode: BackupRestoreMode, store: HistoryStore) throws -> PreparedBackupRestore {
+    static func prepareRestore(from source: URL, password: String, mode: BackupRestoreMode, store: HistoryStore,
+                               temporaryRoot: URL = FileManager.default.temporaryDirectory,
+                               files: FileOperations = .live) throws -> PreparedBackupRestore {
         let plaintext = try open(readSource(source), password: password)
-        let staging = try temporaryDirectory(in: FileManager.default.temporaryDirectory)
-        defer { try? FileManager.default.removeItem(at: staging) }
-        let file = staging.appendingPathComponent("archive.clipshelf")
-        try plaintext.write(to: file, options: .withoutOverwriting)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-        return try store.prepareBackupRestore(from: file, mode: mode)
+        do {
+            let lease = try store.spaceCoordinator.reserve([.init(destination: temporaryRoot, bytes: Int64(plaintext.count))])
+            defer { try? lease.release() }
+            try lease.revalidate()
+            let staging = try temporaryDirectory(in: temporaryRoot)
+            defer { try? FileManager.default.removeItem(at: staging) }
+            let file = staging.appendingPathComponent("archive.clipshelf")
+            try lease.revalidate()
+            try files.write(plaintext, file)
+            try lease.validateDestinations()
+            return try store.prepareBackupRestore(from: file, mode: mode)
+        } catch {
+            if let failure = StorageWriteFailure.classify(error) { throw failure }
+            throw error
+        }
     }
 
     private static func openSource(_ url: URL) throws -> (FileHandle, stat) {
