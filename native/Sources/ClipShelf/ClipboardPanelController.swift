@@ -571,7 +571,20 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         for card in cardViews { card.isSelected = selectedIDs.contains(card.record.id) }
         updateSelectionCount()
         if focusResults { window?.makeFirstResponder(resultsView) }
-        if let index = filteredRecords.firstIndex(where: { $0.id == id }) { resultsView.scrollToItems(at: [IndexPath(item: index, section: 0)], scrollPosition: .nearestHorizontalEdge) }
+        if let index = filteredRecords.firstIndex(where: { $0.id == id }) { revealItem(at: index) }
+    }
+
+    private func revealItem(at index: Int) {
+        resultsView.layoutSubtreeIfNeeded()
+        guard let layout = resultsView.collectionViewLayout,
+              let frame = layout.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame else { return }
+        let visible = scrollView.contentView.bounds
+        var targetX = visible.minX
+        if frame.minX < visible.minX { targetX = frame.minX }
+        else if frame.maxX > visible.maxX { targetX = frame.maxX - visible.width }
+        let maximumX = max(0, layout.collectionViewContentSize.width - visible.width)
+        scrollView.contentView.scroll(to: NSPoint(x: min(max(0, targetX), maximumX), y: 0))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
     private func moveSelection(_ offset: Int, extending: Bool = false) {

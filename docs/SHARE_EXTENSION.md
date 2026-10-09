@@ -1,6 +1,6 @@
 # macOS 入站分享扩展
 
-状态：2026-10-09，实现及隔离测试阶段。代码提供 App + Share Extension 两个 Xcode target；完整 Xcode 构建与已签名扩展的宿主验收仍有下述门禁。本文对应 F15、[技术规格](TECHNICAL_SPEC.zh-CN.md) 和[产品动线](PRODUCT_FLOWS.zh-CN.md)。
+状态：2026-10-09，实现及隔离测试阶段。代码提供 App + Share Extension 两个 Xcode target；独立 GitHub Actions 环境已通过完整无签名 Xcode 构建，已签名扩展的宿主验收仍待完成。本文对应 F15、[技术规格](TECHNICAL_SPEC.zh-CN.md) 和[产品动线](PRODUCT_FLOWS.zh-CN.md)。
 
 ## 用户动线
 
@@ -84,7 +84,9 @@ xcodebuild -project native/ClipShelf.xcodeproj \
   CODE_SIGNING_ALLOWED=NO build
 ```
 
-该命令只验证无签名编译/嵌入结构，不等于扩展可安装和访问 App Group。当前机器执行到 Xcode 自身插件装载阶段即失败（exit 70），尚未进入项目编译：`IDESimulatorFoundation` 请求的 `DVTDownloads` 符号在 `/Library/Developer/PrivateFrameworks` 的已安装版本缺失。日志为 `/tmp/clipshelf-xcode-share.log`。将 Xcode 配套安装包仅展开到临时目录并设置该进程的 `DYLD_FRAMEWORK_PATH` 后仍失败；没有修改系统框架、运行安装器或登录 Apple 账号。此门禁解除后须重新执行完整命令，不能把单文件编译成功替代 Xcode 构建成功。
+该命令只验证无签名编译/嵌入结构，不等于扩展可安装和访问 App Group。[GitHub Actions 的独立 macOS 环境](https://github.com/Bestbbb/clipshelf/actions/runs/37942481115)已成功完成 App 与嵌入扩展的完整构建。
+
+本地机器另有 Xcode 安装问题：执行到插件装载阶段即失败（exit 70），尚未进入项目编译；`IDESimulatorFoundation` 请求的 `DVTDownloads` 符号在 `/Library/Developer/PrivateFrameworks` 的已安装版本缺失。日志为 `/tmp/clipshelf-xcode-share.log`。将 Xcode 配套安装包仅展开到临时目录并设置该进程的 `DYLD_FRAMEWORK_PATH` 后仍失败；没有修改系统框架、运行安装器或登录 Apple 账号。本机环境修复后仍应重新执行完整命令。
 
 正式调试或分发须使用同一个开发团队、正确的 Bundle IDs 和可用 App Group，配置：
 
@@ -103,7 +105,7 @@ Xcode App target 通过 `INFOPLIST_KEY_ClipShelfAppGroupIdentifier` 合并现有
 已完成的隔离验证：
 
 - SwiftPM 编译 `ShareInboxShared`、`ClipShelf`；扩展源码通过 `swiftc -typecheck -application-extension`。
-- Xcode 工程、Info 与 entitlements 的 `plutil -lint` 通过；尚无完整 `xcodebuild` 成功证据。
+- Xcode 工程、Info 与 entitlements 的 `plutil -lint` 通过；独立 GitHub Actions 完整无签名 `xcodebuild` 成功。
 - `ShareInboxTests` 使用临时数据库、临时容器和合成 `NSItemProvider`，覆盖取消、确认门禁、机密标记、大小限制、相同内容多次分享、删除后的幂等重投、文件持久化、损坏/符号链接/路径穿越、账号与暂停、共享权限及原子账号检查。最终测试数量与结果以本轮根任务的完整测试报告为准。
 - 未读取真实剪贴板或用户历史，未安装或注册真实扩展。
 
