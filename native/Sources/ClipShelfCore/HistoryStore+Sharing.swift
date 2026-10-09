@@ -156,7 +156,7 @@ extension HistoryStore {
                 if !operations.isEmpty || clearCachedContent {
                     // Rebuild accepted content locally so a downgrade remains readable even while offline.
                     let personalPosition = try syncScalar("SELECT CAST(position AS TEXT) FROM pinboard_local_order WHERE board_id = ?", [boardID.uuidString])
-                    for table in ["sync_inbox", "sync_heads", "sync_log", "sync_tombstones", "sync_cursors"] {
+                    for table in ["sync_inbox", "sync_heads", "sync_content_heads", "sync_order_heads", "sync_log", "sync_tombstones", "sync_cursors"] {
                         try syncExecute("DELETE FROM \(table) WHERE account_id = ?", [state.descriptor.namespace])
                     }
                     try syncExecute("DELETE FROM clipboard_records WHERE id IN (SELECT entity_id FROM sync_namespaces WHERE entity_kind = 'clipboard' AND account_id = ?)", [state.descriptor.namespace])
@@ -197,7 +197,7 @@ extension HistoryStore {
     public func recoverFailedSharedDraft(operationID: UUID, boardID: UUID, accountID: String) throws -> ClipboardRecord {
         let drafts = try failedSharedDrafts(boardID: boardID, accountID: accountID)
         guard var record = drafts.first(where: { $0.id == operationID })?.operation.record else { throw HistoryStoreError.recordNotFound }
-        record.id = UUID(); record.pinboardID = nil; record.isInHistory = true; record.revision = 1
+        record.id = UUID(); record.pinboardID = nil; record.pinboardOrder = nil; record.isInHistory = true; record.revision = 1
         return try create(record)
     }
 

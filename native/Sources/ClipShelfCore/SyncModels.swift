@@ -16,11 +16,13 @@ public struct SyncOperation: Codable, Equatable, Sendable {
     public let createdAt: Date
     public let record: ClipboardRecord?
     public let pinboard: Pinboard?
+    /// True for position-only edits. Older peers omit this field and remain full-content operations.
+    public let orderingOnly: Bool?
 
     public init(operationID: UUID = UUID(), accountID: String, entityID: UUID,
                 entityKind: SyncEntityKind, action: SyncAction, baseRevision: Int,
                 revision: Int, baseOperationID: UUID? = nil, createdAt: Date = Date(),
-                record: ClipboardRecord? = nil, pinboard: Pinboard? = nil) {
+                record: ClipboardRecord? = nil, pinboard: Pinboard? = nil, orderingOnly: Bool? = nil) {
         self.operationID = operationID
         self.accountID = accountID
         self.entityID = entityID
@@ -32,6 +34,7 @@ public struct SyncOperation: Codable, Equatable, Sendable {
         self.createdAt = createdAt
         self.record = record
         self.pinboard = pinboard
+        self.orderingOnly = orderingOnly
     }
 }
 

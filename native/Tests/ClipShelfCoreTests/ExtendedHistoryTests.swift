@@ -331,7 +331,9 @@ final class ExtendedHistoryTests: XCTestCase {
         let captured = ClipboardRecord(text: "same", pinboardID: privateBoard.id)
         try store.record(captured)
         let created = ClipboardRecord(text: "same", pinboardID: scopedBoard.id, isInHistory: false)
-        XCTAssertEqual(try store.create(created), created)
+        var expected = created
+        expected.pinboardOrder = 0
+        XCTAssertEqual(try store.create(created), expected)
         XCTAssertEqual(try store.item(id: captured.id)?.pinboardID, privateBoard.id)
         XCTAssertEqual(try store.searchMetadata(HistoryQuery(pinboardIDs: [scopedBoard.id])).map(\.id), [created.id])
         XCTAssertThrowsError(try store.create(ClipboardRecord(text: "orphan", isInHistory: false)))

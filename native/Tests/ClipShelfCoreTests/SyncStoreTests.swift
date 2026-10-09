@@ -129,6 +129,36 @@ final class SyncStoreTests: XCTestCase {
         XCTAssertTrue(try b.hasSyncTombstone(accountID: account, kind: .clipboard, entityID: original.id))
     }
 
+    func testDeletingWholeBoardPreservesConcurrentEditAsUnpinnedConflictAndSyncContinues() async throws {
+        let a = try store("a"), b = try store("b")
+        try a.configureSync(accountID: account); try b.configureSync(accountID: account)
+        let cloud = MemorySyncTransport()
+        let syncA = SyncCoordinator(store: a, transport: cloud), syncB = SyncCoordinator(store: b, transport: cloud)
+        let board = try a.createPinboard(name: "Delete with content")
+        let original = try a.create(ClipboardRecord(text: "original", pinboardID: board.id))
+        _ = try await syncA.synchronize(accountID: account); _ = try await syncB.synchronize(accountID: account)
+        try a.deletePinboard(id: board.id, deleteItems: true)
+        var edited = try XCTUnwrap(b.item(id: original.id)); edited.text = "offline edit survives deleted board"
+        _ = try b.update(record: edited)
+        _ = try await syncA.synchronize(accountID: account); _ = try await syncB.synchronize(accountID: account)
+        _ = try await syncA.synchronize(accountID: account)
+        for device in [a, b] {
+            XCTAssertNil(try device.item(id: original.id))
+            XCTAssertFalse(try device.pinboards().contains { $0.id == board.id })
+            let recovered = try XCTUnwrap(device.load().first)
+            XCTAssertEqual(try device.load().count, 1)
+            XCTAssertEqual(recovered.text, edited.text)
+            XCTAssertNil(recovered.pinboardID); XCTAssertNil(recovered.pinboardOrder)
+            XCTAssertTrue(recovered.isInHistory)
+            XCTAssertTrue(try device.hasSyncTombstone(accountID: account, kind: .clipboard, entityID: original.id))
+            XCTAssertEqual(try device.pendingSyncOperations(accountID: account), [])
+        }
+        let recoveredIDs = try a.load().map(\.id)
+        XCTAssertEqual(recoveredIDs, try b.load().map(\.id))
+        _ = try await syncA.synchronize(accountID: account); _ = try await syncB.synchronize(accountID: account)
+        XCTAssertEqual(try store("a").load().map(\.id), recoveredIDs)
+    }
+
     func testLostServerResponseRetriesSameOperationWithoutDuplicates() async throws {
         let local = try store("local")
         try local.configureSync(accountID: account)

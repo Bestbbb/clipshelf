@@ -3,6 +3,17 @@ import ClipShelfCore
 import ImageIO
 import UniformTypeIdentifiers
 
+/// Opt-in event diagnostics: never include record IDs, titles, URLs, or payload bytes.
+@MainActor
+enum ClipboardDragTrace {
+    static let enabled = ProcessInfo.processInfo.arguments.contains("--trace-drag")
+    static func log(_ message: @autoclosure () -> String) {
+        guard enabled else { return }
+        let line = "[ClipShelf drag \(String(format: "%.3f", ProcessInfo.processInfo.systemUptime))] \(message())\n"
+        FileHandle.standardError.write(Data(line.utf8))
+    }
+}
+
 /// A presentation-only value. It intentionally contains no clipboard payload bytes.
 struct ClipboardCardContent {
     let id: UUID
@@ -48,9 +59,21 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     let record: ClipboardCardContent
     var onSelect: (() -> Void)?
     var onOpen: (() -> Void)?
-    var onDragRequested: ((NSEvent) -> Void)?
+    var onPrepareDrag: ((NSEvent) -> Void)?
+    var onDragError: ((Error) -> Void)?
+    private(set) var activeGestureID: UUID?
     private(set) var draggedRecordIDs: [UUID] = []
+    private(set) var draggedRecordRevisions: [UUID: Int] = [:]
+    var dragOriginID: UUID?
     var isSelected = false { didSet { updateAppearance() } }
+
+    static let recordIDType = NSPasteboard.PasteboardType("io.github.bestbbb.clipshelf.record-id")
+    private enum DragKind { case ordering, payload }
+    private var dragKind: DragKind?
+    private var preparedWriters: [NSPasteboardItem] = []
+    private var mouseDownLocation = NSPoint.zero
+    private var latestDragEvent: NSEvent?
+    private var isDragging = false
 
     private let accent = NSView()
     private let sourceLabel = NSTextField(labelWithString: "")
@@ -93,6 +116,10 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         bodyLabel.lineBreakMode = .byTruncatingTail
         bodyLabel.cell?.wraps = true
         bodyLabel.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        for label in [sourceLabel, bodyLabel, detailLabel, shortcutLabel] {
+            label.isSelectable = false
+            label.isEditable = false
+        }
 
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
@@ -105,6 +132,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         detailLabel.lineBreakMode = .byTruncatingTail
 
         previewImage.imageScaling = .scaleProportionallyUpOrDown
+        previewImage.isEditable = false
         previewImage.wantsLayer = true
         previewImage.layer?.cornerRadius = 8
         previewImage.layer?.masksToBounds = true
@@ -194,51 +222,151 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         if NSApp.currentEvent?.clickCount == 2 { onOpen?() } else { onSelect?() }
     }
 
+    // All children are decorative; the card owns selection and drag gestures.
+    override func hitTest(_ point: NSPoint) -> NSView? { super.hitTest(point) == nil ? nil : self }
+
     override func mouseDown(with event: NSEvent) {
+        trace("mouseDown clicks=\(event.clickCount) event=\(event.eventNumber) flags=\(event.modifierFlags.rawValue)")
+        resetDragGesture()
         guard event.clickCount < 2 else { onOpen?(); return }
-        // Capture the selected group before a plain click changes the selection.
+        activeGestureID = UUID()
+        mouseDownLocation = event.locationInWindow
         onSelect?()
-        let start = convert(event.locationInWindow, from: nil)
-        while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
-            if next.type == .leftMouseUp { return }
-            let point = convert(next.locationInWindow, from: nil)
-            if hypot(point.x - start.x, point.y - start.y) >= 5 {
-                onDragRequested?(next)
-                return
-            }
+        // Start payload reads before the drag threshold, without a nested event loop.
+        onPrepareDrag?(event)
+        trace("mouseDown prepared")
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        trace("mouseDragged event=\(event.eventNumber) dx=\(event.locationInWindow.x - mouseDownLocation.x) dy=\(event.locationInWindow.y - mouseDownLocation.y)")
+        guard activeGestureID != nil, !isDragging,
+              hypot(event.locationInWindow.x - mouseDownLocation.x, event.locationInWindow.y - mouseDownLocation.y) >= 5 else { return }
+        latestDragEvent = event
+        startPreparedDragIfReady()
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        trace("mouseUp event=\(event.eventNumber)")
+        if !isDragging { resetDragGesture() }
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow !== window { cancelPendingDrag() }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    override func cancelOperation(_ sender: Any?) { cancelPendingDrag() }
+
+    func cancelPendingDrag() {
+        trace("cancelPendingDrag")
+        if !isDragging { resetDragGesture(); return }
+        // A native session retains its source metadata until endedAt, but can never restart.
+        activeGestureID = nil
+        latestDragEvent = nil
+        preparedWriters.removeAll()
+    }
+
+    func prepareOrderingDrag(contents: [ClipboardCardContent], originID: UUID) {
+        guard activeGestureID != nil else { return }
+        dragKind = .ordering
+        dragOriginID = originID
+        draggedRecordIDs = contents.map(\.id)
+        draggedRecordRevisions = Dictionary(uniqueKeysWithValues: contents.map { ($0.id, $0.revision) })
+        preparedWriters = Self.orderingDragItems(for: contents)
+        trace("prepareOrderingDrag")
+    }
+
+    func preparePayloadDrag(originID: UUID) {
+        guard activeGestureID != nil else { return }
+        dragKind = .payload
+        dragOriginID = originID
+        trace("preparePayloadDrag")
+    }
+
+    /// Completion belongs to one mouse gesture; a released/replaced gesture cannot start later.
+    @discardableResult
+    func providePreparedPayload(records: [ClipboardRecord], gestureID: UUID) -> Bool {
+        trace("providePreparedPayload count=\(records.count) gestureMatches=\(activeGestureID == gestureID)")
+        guard activeGestureID == gestureID, dragKind == .payload, !isDragging else { return false }
+        do {
+            preparedWriters = try Self.payloadDragItems(for: records)
+            draggedRecordIDs = records.map(\.id)
+            draggedRecordRevisions = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0.revision) })
+            startPreparedDragIfReady()
+            return true
+        } catch {
+            resetDragGesture()
+            onDragError?(error)
+            return false
         }
     }
 
-    func beginDrag(records: [ClipboardRecord], event: NSEvent) {
-        draggedRecordIDs = records.map(\.id)
-        var items: [NSDraggingItem] = []
-        for record in records {
-            let parts = record.parts.isEmpty ? [ClipboardPart(representations: [])] : record.parts
-            for (index, part) in parts.enumerated() {
-                let writer = NSPasteboardItem()
-                for representation in part.representations {
-                    writer.setData(representation.data, forType: NSPasteboard.PasteboardType(representation.typeIdentifier))
-                }
-                writer.setString(record.id.uuidString, forType: NSPasteboard.PasteboardType("io.github.bestbbb.clipshelf.record-id"))
-                if index == 0 {
-                    if !writer.types.contains(.string), !record.text.isEmpty { writer.setString(record.text, forType: .string) }
-                    if !writer.types.contains(.rtf), let rtf = record.rtf { writer.setData(rtf, forType: .rtf) }
-                    if !writer.types.contains(.html), let html = record.html { writer.setData(html, forType: .html) }
-                }
-                guard !writer.types.isEmpty else { continue }
-                let dragging = NSDraggingItem(pasteboardWriter: writer)
-                let icon = previewImage.image ?? NSImage(systemSymbolName: record.kind == .file ? "doc" : "doc.on.clipboard", accessibilityDescription: "剪贴板内容")
-                dragging.setDraggingFrame(NSRect(x: 12, y: 40, width: 120, height: 120), contents: icon)
-                items.append(dragging)
-            }
+    static func orderingDragItems(for contents: [ClipboardCardContent]) -> [NSPasteboardItem] {
+        contents.map { content in
+            let item = NSPasteboardItem()
+            item.setString(content.id.uuidString, forType: recordIDType)
+            return item
         }
-        guard !items.isEmpty else { return }
+    }
+
+    static func payloadDragItems(for records: [ClipboardRecord]) throws -> [NSPasteboardItem] {
+        // Preserve each original item's representations and order. Display titles are never payloads.
+        try records.flatMap { try ClipboardCodec.items(for: [$0], plainText: false) }
+    }
+
+    var hasPreparedDragGesture: Bool {
+        activeGestureID != nil && !isDragging && !preparedWriters.isEmpty && latestDragEvent != nil
+    }
+
+    private func startPreparedDragIfReady() {
+        trace("startPreparedDragIfReady attempt")
+        // The window's mouse event sequence owns the gesture. Assistive input can deliver
+        // valid mouseDragged events without changing the global physical-button mask.
+        guard hasPreparedDragGesture, let event = latestDragEvent, window?.isVisible == true else { return }
+        let icon = previewImage.image ?? NSImage(systemSymbolName: record.kind == .file ? "doc" : "doc.on.clipboard", accessibilityDescription: "剪贴板内容")
+        let items = preparedWriters.map { writer in
+            let dragging = NSDraggingItem(pasteboardWriter: writer)
+            dragging.setDraggingFrame(NSRect(x: 12, y: 40, width: 120, height: 120), contents: icon)
+            return dragging
+        }
+        isDragging = true
+        trace("beginDraggingSession calling")
         let session = beginDraggingSession(with: items, event: event, source: self)
+        trace("beginDraggingSession returned")
         session.animatesToStartingPositionsOnCancelOrFail = true
         session.draggingFormation = .pile
     }
 
-    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .copy }
+    func dragOperationMask(for context: NSDraggingContext) -> NSDragOperation {
+        if dragKind == .ordering { return context == .withinApplication ? .move : [] }
+        return context == .withinApplication ? [.copy, .move] : .copy
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        let operation = dragOperationMask(for: context)
+        trace("sourceOperation context=\(context == .withinApplication ? "inside" : "outside") mask=\(operation.rawValue)")
+        return operation
+    }
+    func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) { trace("session willBegin") }
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        trace("session ended operation=\(operation.rawValue)")
+        resetDragGesture()
+    }
+
+    private func trace(_ stage: String) {
+        ClipboardDragTrace.log("card \(stage) active=\(activeGestureID != nil) kind=\(dragKind == .ordering ? "ordering" : dragKind == .payload ? "payload" : "none") prepared=\(preparedWriters.count) records=\(draggedRecordIDs.count) dragging=\(isDragging) latestEvent=\(latestDragEvent != nil) window=\(window != nil) pressedMouseButtons=\(NSEvent.pressedMouseButtons)")
+    }
+
+    private func resetDragGesture() {
+        activeGestureID = nil
+        dragKind = nil
+        preparedWriters = []
+        latestDragEvent = nil
+        isDragging = false
+        draggedRecordIDs = []
+        draggedRecordRevisions = [:]
+        dragOriginID = nil
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()

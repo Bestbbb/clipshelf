@@ -23,6 +23,7 @@ public struct ClipboardRecordMetadata: Identifiable, Equatable, Codable, Sendabl
     public let renamedTitle: String?
     public let ocrText: String?
     public let pinboardID: UUID?
+    public let pinboardOrder: Int64?
     public let isInHistory: Bool
     public let revision: Int
     public let kind: ClipboardContentKind
@@ -37,6 +38,8 @@ public struct ClipboardRecordMetadata: Identifiable, Equatable, Codable, Sendabl
     public var preview: String { String(text.prefix(1_000)) }
 }
 
+public enum HistorySortOrder: String, Codable, Sendable { case recent, pinboard }
+
 public struct HistoryQuery: Sendable {
     public var text: String
     public var kind: ClipboardContentKind?
@@ -46,9 +49,10 @@ public struct HistoryQuery: Sendable {
     public var pinboardIDs: Set<UUID>
     public var includePinned: Bool
     public var limit: Int
+    public var sortOrder: HistorySortOrder
     public init(text: String = "", kind: ClipboardContentKind? = nil, sourceBundleID: String? = nil,
                 copiedAfter: Date? = nil, copiedBefore: Date? = nil, pinboardIDs: Set<UUID> = [],
-                includePinned: Bool = true, limit: Int = 500) {
+                includePinned: Bool = true, limit: Int = 500, sortOrder: HistorySortOrder = .recent) {
         self.text = text
         self.kind = kind
         self.sourceBundleID = sourceBundleID
@@ -57,6 +61,7 @@ public struct HistoryQuery: Sendable {
         self.pinboardIDs = pinboardIDs
         self.includePinned = includePinned
         self.limit = limit
+        self.sortOrder = sortOrder
     }
 }
 

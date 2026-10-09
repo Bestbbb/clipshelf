@@ -1,4 +1,5 @@
 import ClipShelfCore
+import CryptoKit
 import Foundation
 import ImageIO
 import Vision
@@ -7,17 +8,32 @@ import Vision
 /// does not capture the screen, and never fetches links or contacts a model provider.
 @MainActor
 final class LocalIntelligenceService {
-    struct OCRRegion: Equatable, Sendable {
+    nonisolated static let defaultRecognitionLanguages = ["zh-Hans", "zh-Hant", "en-US"]
+    nonisolated static let ocrEngineIdentifier = "Apple Vision VNRecognizeTextRequest"
+    nonisolated static var ocrEngineRevision: Int { VNRecognizeTextRequest.currentRevision }
+    nonisolated static var ocrEngineVersion: String { ProcessInfo.processInfo.operatingSystemVersionString }
+
+    struct OCRSpan: Equatable, Codable, Sendable {
+        let utf16Location: Int
+        let utf16Length: Int
+        let boundingBox: CGRect
+    }
+    struct OCRRegion: Equatable, Codable, Sendable {
         let text: String
-        /// Vision-normalized coordinates (0...1), with the origin at the lower left.
+        /// Coordinates refer to the EXIF-oriented image, with lower-left origin.
         let boundingBox: CGRect
         let confidence: Float
+        var spans: [OCRSpan] = []
     }
-
-    struct OCRResult: Equatable, Sendable {
+    struct OCRResult: Equatable, Codable, Sendable {
         let text: String
         let regions: [OCRRegion]
         let recognitionLanguages: [String]
+        let sourceImageDigest: String
+        let engineIdentifier: String
+        let engineRevision: Int
+        let engineVersion: String
+        let orientedPixelSize: CGSize
     }
 
     struct Suggestion: Equatable, Sendable {
@@ -30,11 +46,13 @@ final class LocalIntelligenceService {
     enum RecognitionError: LocalizedError {
         case invalidImage
         case unsupportedLanguages
+        case imageTooLarge
 
         var errorDescription: String? {
             switch self {
             case .invalidImage: return "无法读取这份图片数据。"
             case .unsupportedLanguages: return "当前系统不支持所请求的文字识别语言。"
+            case .imageTooLarge: return "图片尺寸超出本机识别上限，原图仍保留。"
             }
         }
     }
@@ -49,7 +67,7 @@ final class LocalIntelligenceService {
     /// cancels Vision, and a superseded result is never returned as current output.
     func recognizeText(
         in imageData: Data,
-        recognitionLanguages: [String] = ["zh-Hans", "zh-Hant", "en-US"]
+        recognitionLanguages: [String] = LocalIntelligenceService.defaultRecognitionLanguages
     ) async throws -> OCRResult {
         cancelRecognition()
         let generation = recognitionGeneration
@@ -138,11 +156,9 @@ final class LocalIntelligenceService {
         work: RecognitionWork
     ) throws -> OCRResult {
         try Task.checkCancellation()
-        guard !imageData.isEmpty,
-              let source = CGImageSourceCreateWithData(imageData as CFData, nil),
-              CGImageSourceGetCount(source) > 0 else { throw RecognitionError.invalidImage }
-
+        let image = try decodedImage(in: imageData)
         let request = VNRecognizeTextRequest()
+        request.revision = Self.ocrEngineRevision
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
         request.automaticallyDetectsLanguage = true
@@ -155,17 +171,62 @@ final class LocalIntelligenceService {
         guard work.install(request) else { throw CancellationError() }
         defer { work.release() }
         try Task.checkCancellation()
-        try VNImageRequestHandler(data: imageData, options: [:]).perform([request])
+        try VNImageRequestHandler(cgImage: image, orientation: .up, options: [:]).perform([request])
         try Task.checkCancellation()
 
+        var remainingSpans = 20_000
         let regions = (request.results ?? []).compactMap { observation -> OCRRegion? in
             guard let candidate = observation.topCandidates(1).first,
                   !candidate.string.isEmpty else { return nil }
+            var spans: [OCRSpan] = []
+            // Vision may return word-level bounds for individual characters at
+            // accurate recognition level; retain its actual bounds, never invent them.
+            candidate.string.enumerateSubstrings(in: candidate.string.startIndex..<candidate.string.endIndex,
+                                                 options: .byComposedCharacterSequences) { _, range, _, stop in
+                guard remainingSpans > 0 else { stop = true; return }
+                if let rectangle = try? candidate.boundingBox(for: range),
+                   rectangle.boundingBox.width > 0, rectangle.boundingBox.height > 0 {
+                    let utf16 = NSRange(range, in: candidate.string)
+                    spans.append(OCRSpan(utf16Location: utf16.location, utf16Length: utf16.length,
+                                         boundingBox: rectangle.boundingBox))
+                    remainingSpans -= 1
+                }
+            }
             return OCRRegion(text: candidate.string, boundingBox: observation.boundingBox,
-                             confidence: candidate.confidence)
+                             confidence: candidate.confidence, spans: spans)
         }
+        try Task.checkCancellation()
         return OCRResult(text: regions.map(\.text).joined(separator: "\n"),
-                         regions: regions, recognitionLanguages: request.recognitionLanguages)
+                         regions: regions, recognitionLanguages: request.recognitionLanguages,
+                         sourceImageDigest: Self.imageDigest(imageData), engineIdentifier: Self.ocrEngineIdentifier,
+                         engineRevision: request.revision, engineVersion: Self.ocrEngineVersion,
+                         orientedPixelSize: CGSize(width: image.width, height: image.height))
+    }
+
+    nonisolated static func imageDigest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Shared by preview and recognition so EXIF rotations/mirroring have one
+    /// coordinate space. It creates a display raster; original bytes are untouched.
+    nonisolated static func decodedImage(in data: Data) throws -> CGImage {
+        guard !data.isEmpty, let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetCount(source) > 0,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int, width > 0, height > 0 else {
+            throw RecognitionError.invalidImage
+        }
+        guard width <= 32_768, height <= 32_768, Int64(width) * Int64(height) <= 100_000_000 else {
+            throw RecognitionError.imageTooLarge
+        }
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: min(4_096, max(width, height)),
+            kCGImageSourceShouldCacheImmediately: true
+        ] as CFDictionary) else { throw RecognitionError.invalidImage }
+        return image
     }
 
     private struct IndexedRecord {

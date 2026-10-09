@@ -22,7 +22,7 @@ enum ClipboardIntentError: LocalizedError {
 /// Merely indexing these actions does not read clipboard history or instantiate a store.
 @MainActor
 final class ClipboardIntentRuntime {
-    static let shared = ClipboardIntentRuntime(loadOnDemand: true)
+    static let shared = ClipboardIntentRuntime(loadOnDemand: !CommandLine.arguments.contains("--demo") && !CommandLine.arguments.contains("--validation"))
     private let loadOnDemand: Bool
     var store: HistoryStore?
     var enabled = false

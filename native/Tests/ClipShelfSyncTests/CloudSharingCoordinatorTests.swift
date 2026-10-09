@@ -54,8 +54,7 @@ final class CloudSharingCoordinatorTests: XCTestCase {
     func testExplicitEnableCreateInvitationAndStopWithLocalCopy() async throws {
         let store = try HistoryStore(databaseURL: directory.appendingPathComponent("history.sqlite3"))
         let source = try store.createPinboard(name: "Project")
-        let original = ClipboardRecord(text: "selected content", pinboardID: source.id)
-        try store.create(original)
+        let original = try store.create(ClipboardRecord(text: "selected content", pinboardID: source.id))
         let transport = LifecycleTransportFixture()
         let manager = CloudSharingCoordinator(store: store, transport: transport)
         XCTAssertNil(try store.sharingConfiguration().accountID)

@@ -22,21 +22,45 @@ private struct ShelfPDFDocument: @unchecked Sendable { let document: PDFDocument
 
 private final class ResultsFocusView: NSCollectionView {
     override var acceptsFirstResponder: Bool { true }
-    var onDropItems: (([NSPasteboardItem], Any?) -> Void)?
-    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation { onDropItems != nil && sender.draggingPasteboard.pasteboardItems?.isEmpty == false ? .copy : [] }
-    override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool { onDropItems != nil }
+    var onDropItems: (([NSPasteboardItem], Any?, NSPoint) -> Bool)?
+    var onDragLocation: ((NSPoint, Any?) -> NSDragOperation)?
+    var onDragExit: (() -> Void)?
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        ClipboardDragTrace.log("results draggingEntered sourceIsCard=\(sender.draggingSource is ClipboardCardView) sourceMask=\(sender.draggingSourceOperationMask.rawValue)")
+        return draggingUpdated(sender)
+    }
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        guard sender.draggingPasteboard.pasteboardItems?.isEmpty == false else { return [] }
+        let operation = onDragLocation?(convert(sender.draggingLocation, from: nil), sender.draggingSource) ?? .copy
+        ClipboardDragTrace.log("results draggingUpdated returnedMask=\(operation.rawValue)")
+        return operation
+    }
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) { ClipboardDragTrace.log("results draggingExited"); onDragExit?() }
+    override func draggingEnded(_ sender: any NSDraggingInfo) { ClipboardDragTrace.log("results draggingEnded"); onDragExit?() }
+    override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        ClipboardDragTrace.log("results prepareForDragOperation hasCallback=\(onDropItems != nil)")
+        return onDropItems != nil
+    }
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        ClipboardDragTrace.log("results performDragOperation items=\(sender.draggingPasteboard.pasteboardItems?.count ?? 0) sourceIsCard=\(sender.draggingSource is ClipboardCardView)")
+        defer { onDragExit?() }
         guard let items = sender.draggingPasteboard.pasteboardItems, !items.isEmpty, let onDropItems else { return false }
-        onDropItems(items, sender.draggingSource)
-        return true
+        let accepted = onDropItems(items, sender.draggingSource, convert(sender.draggingLocation, from: nil))
+        ClipboardDragTrace.log("results performDragOperation accepted=\(accepted)")
+        return accepted
     }
 }
 
 private final class ShelfDropSurface: NSVisualEffectView {
     var onDropItems: (([NSPasteboardItem], Any?) -> Void)?
-    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation { onDropItems != nil && sender.draggingPasteboard.pasteboardItems?.isEmpty == false ? .copy : [] }
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        let operation: NSDragOperation = onDropItems != nil && sender.draggingPasteboard.pasteboardItems?.isEmpty == false ? .copy : []
+        ClipboardDragTrace.log("surface draggingEntered sourceIsCard=\(sender.draggingSource is ClipboardCardView) returnedMask=\(operation.rawValue)")
+        return operation
+    }
     override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool { onDropItems != nil }
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        ClipboardDragTrace.log("surface performDragOperation items=\(sender.draggingPasteboard.pasteboardItems?.count ?? 0) sourceIsCard=\(sender.draggingSource is ClipboardCardView)")
         guard let items = sender.draggingPasteboard.pasteboardItems, !items.isEmpty, let onDropItems else { return false }
         onDropItems(items, sender.draggingSource)
         return true
@@ -56,7 +80,7 @@ private final class ClipboardCollectionItem: NSCollectionViewItem {
 
 /// Presents history without activating ClipShelf or performing clipboard side effects.
 @MainActor
-final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate, NSWindowDelegate, NSCollectionViewDataSource, @preconcurrency QLPreviewPanelDataSource {
+final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate, NSWindowDelegate, NSCollectionViewDataSource, NSMenuItemValidation, @preconcurrency QLPreviewPanelDataSource {
     var onPaste: ((ClipboardRecord, Bool) -> Void)?
     var onPasteRecords: (([ClipboardRecord], Bool) -> Void)?
     var onCopy: ((ClipboardRecord) -> Void)?
@@ -72,6 +96,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     var onReorderPinboards: (([UUID]) -> Void)?
     var onDeletePinboard: ((Pinboard) -> Void)?
     var onMoveRecords: (([ClipboardRecord], UUID?) -> Void)?
+    /// Atomically moves these IDs before an anchor; completion must return on main.
+    var onReorderRecords: ((UUID, [UUID], UUID?, [UUID: Int], @escaping (Result<Void, Error>) -> Void) -> Void)?
     var onRotateImage: ((ClipboardRecord) -> Void)?
     var onExtractText: ((ClipboardRecord) -> Void)?
     var onOpenRecord: ((ClipboardRecord) -> Void)?
@@ -81,6 +107,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     var onCompactModeChange: ((Bool) -> Void)?
     var onShareRecord: ((ClipboardRecord) -> Void)?
     var onCopyImageFile: ((ClipboardRecord) -> Void)?
+    var ocrCache: OCRDerivedCache = .shared
+    var ocrSourceStore: HistoryStore?
     /// The application loads payload bytes on a background queue and returns on main.
     var resolveRecord: ((UUID, @escaping (ClipboardRecord?) -> Void) -> Void)?
     var onDismiss: (() -> Void)?
@@ -98,13 +126,27 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private let compactButton = NSButton(title: "紧凑", target: nil, action: nil)
     private var compactMode = false
     private let boardPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let multiBoardButton = NSButton(title: "多板筛选…", target: nil, action: nil)
+    private let clearFiltersButton = NSButton(title: "清除条件", target: nil, action: nil)
+    private let orderPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let orderingActions = NSPopUpButton(frame: .zero, pullsDown: true)
+    private var filterPopover: NSPopover?
+    private var boardScope = PanelBoardScope()
+    private var manualOrder = false
+    private var orderingRequestID: UUID?
+    private var reorderStatus: String?
+    private var pendingRevealID: UUID?
+    private let insertionLine = NSView()
     private let typePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let sourcePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let datePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let loadMoreButton = NSButton(title: "加载更多", target: nil, action: nil)
     private var pinboards: [Pinboard] = []
     private var sources: [String: String] = [:]
-    private var selectedBoardID: UUID?
+    private var selectedBoardID: UUID? {
+        get { boardScope.navigationID }
+        set { boardScope.navigate(to: newValue) }
+    }
     private var selectedKind: ClipboardContentKind?
     private var selectedSourceID: String?
     private var copiedAfter: Date?
@@ -122,6 +164,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private var eventMonitor: Any?
     private var detailWindow: NSPanel?
     private var linkPreview: LinkPreviewController?
+    private var imagePreview: ImagePreviewController?
     private var detailPDFView: PDFView?
     private var pdfPageObserver: NSObjectProtocol?
     private var pdfLoadTask: Task<Void, Never>?
@@ -132,6 +175,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private var inlineRecords: [UUID: ClipboardRecord] = [:]
     private var viewGeneration = UUID()
     private var queryGeneration = UUID()
+    private var queryPending = false
     private var pendingActionID: UUID?
     private let thumbnailCache = NSCache<NSString, NSImage>()
     private var thumbnailJobs: [() -> Void] = []
@@ -139,7 +183,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private var requestedThumbnails: Set<String> = []
 
     init() {
-        let panel = ShelfPanel(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 404), styleMask: [.borderless, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
+        let panel = ShelfPanel(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 430), styleMask: [.borderless, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isReleasedWhenClosed = false
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
@@ -149,7 +193,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         panel.hasShadow = true
         panel.animationBehavior = .utilityWindow
         panel.title = "ClipShelf 剪贴板历史"
-        panel.minSize = NSSize(width: 720, height: 312)
+        panel.minSize = NSSize(width: 720, height: 338)
         super.init(window: panel)
         panel.delegate = self
         thumbnailCache.totalCostLimit = 32 * 1_024 * 1_024
@@ -174,6 +218,10 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         self.records = Array(contents.prefix(resultLimit))
         searchField.stringValue = ""
         selectedBoardID = nil
+        manualOrder = false
+        orderingRequestID = nil
+        reorderStatus = nil
+        pendingRevealID = nil
         selectedKind = nil
         selectedSourceID = nil
         copiedAfter = nil
@@ -190,7 +238,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         reloadResults(resetScroll: true)
         let visible = (screen ?? NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         let width = max(520, min(1180, visible.width - 40))
-        window?.setFrame(NSRect(x: visible.midX - width / 2, y: visible.minY + 18, width: width, height: compactMode ? 312 : 404), display: false)
+        window?.setFrame(NSRect(x: visible.midX - width / 2, y: visible.minY + 18, width: width, height: compactMode ? 338 : 430), display: false)
         window?.makeKeyAndOrderFront(nil)
         window?.makeFirstResponder(searchField)
         installEventMonitor()
@@ -209,14 +257,25 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func updateContents(_ contents: [ClipboardCardContent], status: String?) {
+        queryPending = false
         self.records = Array(contents.prefix(resultLimit))
-        if let status { statusLabel.stringValue = status }
+        if let status { statusLabel.stringValue = reorderStatus ?? status }
         reloadResults()
+        if let id = pendingRevealID {
+            if filteredRecords.contains(where: { $0.id == id }) {
+                pendingRevealID = nil
+                if let index = filteredRecords.firstIndex(where: { $0.id == id }) { revealItem(at: index) }
+                window?.makeFirstResponder(resultsView)
+            } else if hasMoreResults {
+                statusLabel.stringValue = "该条目尚未加载，请点“加载更多”以定位。"
+            } else { pendingRevealID = nil }
+        }
     }
 
-    func setCapturePaused(_ paused: Bool) {
-        pauseButton.title = paused ? "继续记录" : "暂停记录"
-        pauseButton.setAccessibilityLabel(paused ? "继续记录剪贴板" : "暂停记录剪贴板")
+    func setCapturePaused(_ paused: Bool, recordingAllowed: Bool = true) {
+        pauseButton.isEnabled = recordingAllowed
+        pauseButton.title = recordingAllowed ? (paused ? "继续记录" : "暂停记录") : "验收模式"
+        pauseButton.setAccessibilityLabel(recordingAllowed ? (paused ? "继续记录剪贴板" : "暂停记录剪贴板") : "验收模式不记录剪贴板")
     }
 
     func edit(_ record: ClipboardRecord) { showDetail(record, editing: true) }
@@ -227,7 +286,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         compactButton.toolTip = compact ? "切换为大卡片" : "切换为紧凑卡片"
         guard let window else { return }
         var frame = window.frame
-        frame.size.height = compact ? 312 : 404
+        frame.size.height = compact ? 338 : 430
         window.setFrame(frame, display: true)
         updateCardLayout()
     }
@@ -240,9 +299,14 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             boardPopup.addItem(withTitle: board.name)
             boardPopup.lastItem?.representedObject = board.id
         }
+        let oldScope = boardScope
+        boardScope.retain(Set(pinboards.map(\.id)))
         if let selectedBoardID, let index = self.pinboards.firstIndex(where: { $0.id == selectedBoardID }) { boardPopup.selectItem(at: index + 1) }
-        else { selectedBoardID = nil; boardPopup.selectItem(at: 0) }
-        if isVisible { reloadResults() }
+        else { boardPopup.selectItem(at: 0) }
+        updateFilterControls()
+        if isVisible {
+            if oldScope != boardScope { issueQuery(resetLimit: true) } else { reloadResults() }
+        }
     }
 
     func setSources(_ sources: [String: String]) {
@@ -258,11 +322,16 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     func dismiss() {
         guard isVisible else { return }
+        cardViews.forEach { $0.cancelPendingDrag() }
         viewGeneration = UUID()
         pendingActionID = nil
         thumbnailJobs.removeAll()
         requestedThumbnails.removeAll()
         linkPreview?.dismiss()
+        imagePreview?.dismiss()
+        filterPopover?.close()
+        filterPopover = nil
+        insertionLine.isHidden = true
         detailWindow?.close()
         window?.orderOut(nil)
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor); self.eventMonitor = nil }
@@ -354,11 +423,36 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         loadMoreButton.bezelStyle = .inline
         loadMoreButton.target = self
         loadMoreButton.action = #selector(loadMore)
-        let filters = NSStackView(views: [boardPopup, boardActions, spacer, typePopup, sourcePopup, datePopup, loadMoreButton])
-        filters.orientation = .horizontal
-        filters.alignment = .centerY
-        filters.spacing = 10
-        [boardPopup, typePopup, sourcePopup, datePopup, boardActions].forEach { $0.controlSize = .small; $0.font = .systemFont(ofSize: 11) }
+        multiBoardButton.target = self
+        multiBoardButton.action = #selector(showBoardFilters)
+        multiBoardButton.bezelStyle = .rounded
+        multiBoardButton.setAccessibilityLabel("勾选多个分组筛选")
+        clearFiltersButton.target = self
+        clearFiltersButton.action = #selector(clearFilters)
+        clearFiltersButton.bezelStyle = .inline
+        orderPopup.addItems(withTitles: ["最近复制", "分组内手动顺序"])
+        orderPopup.target = self
+        orderPopup.action = #selector(orderChanged)
+        orderPopup.setAccessibilityLabel("条目顺序")
+        orderingActions.addItem(withTitle: "调整条目顺序")
+        for (title, action, key) in [("选中条目前移", #selector(moveItemsEarlier), "\u{F702}"), ("选中条目后移", #selector(moveItemsLater), "\u{F703}")] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.keyEquivalentModifierMask = [.command, .option]
+            item.target = self
+            orderingActions.menu?.addItem(item)
+        }
+        orderingActions.toolTip = "拖动卡片在分组内排序；⌥ 拖动原始内容到其他 App；⌥⌘← / ⌥⌘→ 移动选中条目"
+        let boardRow = NSStackView(views: [boardPopup, multiBoardButton, boardActions, spacer, clearFiltersButton])
+        let filterRow = NSStackView(views: [typePopup, sourcePopup, datePopup, orderPopup, orderingActions, NSView(), loadMoreButton])
+        for row in [boardRow, filterRow] { row.orientation = .horizontal; row.alignment = .centerY; row.spacing = 10 }
+        let filters = NSStackView(views: [boardRow, filterRow])
+        filters.orientation = .vertical
+        filters.alignment = .leading
+        filters.spacing = 6
+        boardRow.widthAnchor.constraint(equalTo: filters.widthAnchor).isActive = true
+        filterRow.widthAnchor.constraint(equalTo: filters.widthAnchor).isActive = true
+        [boardPopup, typePopup, sourcePopup, datePopup, boardActions, orderPopup, orderingActions].forEach { $0.controlSize = .small; $0.font = .systemFont(ofSize: 11) }
+        [multiBoardButton, clearFiltersButton].forEach { $0.controlSize = .small; $0.font = .systemFont(ofSize: 11) }
 
         scrollView.drawsBackground = false
         scrollView.hasHorizontalScroller = true
@@ -376,7 +470,14 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         resultsView.collectionViewLayout = layout
         resultsView.dataSource = self
         resultsView.registerForDraggedTypes(dragTypes)
-        resultsView.onDropItems = { [weak self] items, source in self?.handleDrop(items, source: source) }
+        resultsView.onDropItems = { [weak self] items, source, point in self?.handleResultsDrop(items, source: source, point: point) ?? false }
+        resultsView.onDragLocation = { [weak self] point, source in self?.updateDragInsertion(at: point, source: source) ?? [] }
+        resultsView.onDragExit = { [weak self] in self?.insertionLine.isHidden = true }
+        insertionLine.wantsLayer = true
+        insertionLine.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        insertionLine.layer?.cornerRadius = 2
+        insertionLine.isHidden = true
+        resultsView.addSubview(insertionLine)
         resultsView.isSelectable = false
         resultsView.backgroundColors = [.clear]
         resultsView.register(ClipboardCollectionItem.self, forItemWithIdentifier: NSUserInterfaceItemIdentifier("clipboard-card"))
@@ -424,7 +525,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             filters.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 22),
             filters.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -22),
             filters.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 13),
-            filters.heightAnchor.constraint(equalToConstant: 24),
+            filters.heightAnchor.constraint(equalToConstant: 50),
             boardPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 110),
             sourcePopup.widthAnchor.constraint(lessThanOrEqualToConstant: 200),
             scrollView.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 22),
@@ -445,7 +546,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         guard !isComposing else { return }
         // Starting a search intentionally leaves the current board: results are global
         // unless the user subsequently selects a board as an explicit search filter.
-        selectedBoardID = nil
+        boardScope.beginTextSearch()
         boardPopup.selectItem(at: 0)
         issueQuery(resetLimit: true)
     }
@@ -462,7 +563,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             (query.isEmpty || $0.text.localizedStandardContains(query) || $0.title.localizedStandardContains(query) || ($0.ocrText?.localizedStandardContains(query) ?? false) || ($0.sourceApp?.localizedStandardContains(query) ?? false))
             && (selectedKind == nil || $0.kind == selectedKind)
             && (selectedSourceID == nil || $0.sourceBundleID == selectedSourceID)
-            && (selectedBoardID == nil || $0.pinboardID == selectedBoardID)
+            && (boardScope.queryIDs.isEmpty || $0.pinboardID.map { boardScope.queryIDs.contains($0) } == true)
             && (copiedAfter == nil || $0.copiedAt >= copiedAfter!)
             && (copiedBefore == nil || $0.copiedAt <= copiedBefore!)
         }
@@ -471,14 +572,15 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         if selectedIDs.isEmpty, let selectedID { selectedIDs.insert(selectedID) }
         resultsView.reloadData()
         emptyStack.isHidden = !filteredRecords.isEmpty
-        if query.isEmpty {
+        if query.isEmpty && !hasFilters {
             emptyTitle.stringValue = "复制一点内容，从这里开始"
             emptyDescription.stringValue = "在其他 App 中复制文本，再按 ⌘⇧V 打开 ClipShelf。"
         } else {
             emptyTitle.stringValue = "没有找到相关内容"
-            emptyDescription.stringValue = "试试更短的关键词，或按 esc 清空搜索。"
+            emptyDescription.stringValue = "试试更短的关键词，或点击“清除条件”重新搜索全部内容。"
         }
         updateSelectionCount()
+        updateFilterControls()
         loadMoreButton.isHidden = onQueryChange == nil || records.count < resultLimit
         resultsView.layoutSubtreeIfNeeded()
         let maximumX = max(0, resultsView.bounds.width - scrollView.contentView.bounds.width)
@@ -513,14 +615,25 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             let plain = NSApp.currentEvent?.modifierFlags.contains(.shift) == true
             self.resolve(record) { self.onPaste?($0, plain) }
         }
-        card.onDragRequested = { [weak self, weak card] event in
-            guard let self else { return }
+        if manualOrder {
+            card.toolTip = "拖动以调整分组内顺序；按住 ⌥ 拖动原始内容到其他 App。"
+            card.setAccessibilityHelp("单击选择，双击粘贴；拖动调整分组内顺序，⌥ 拖出原始内容；⌥⌘左右箭头调整顺序。")
+        }
+        card.onPrepareDrag = { [weak self, weak card] event in
+            guard let self, let card, let gestureID = card.activeGestureID else { return }
             let contents = self.selectedIDs.contains(record.id) ? self.selectedRecords : [record]
-            self.resolve(contents) { records in
-                guard NSEvent.pressedMouseButtons & 1 != 0 else { return }
-                card?.beginDrag(records: records, event: event)
+            ClipboardDragTrace.log("panel prepare manual=\(self.manualOrder) option=\(event.modifierFlags.contains(.option)) canReorder=\(self.canReorderItems) queryPending=\(self.queryPending) requestPending=\(self.orderingRequestID != nil) count=\(contents.count)")
+            if self.manualOrder && !event.modifierFlags.contains(.option) {
+                guard self.canReorderItems else { return }
+                card.prepareOrderingDrag(contents: contents, originID: self.viewGeneration)
+            } else {
+                card.preparePayloadDrag(originID: self.viewGeneration)
+                self.resolve(contents) { [weak card] records in
+                    card?.providePreparedPayload(records: records, gestureID: gestureID)
+                }
             }
         }
+        card.onDragError = { [weak self] error in self?.statusLabel.stringValue = "无法拖出内容：\(error.localizedDescription)" }
         if record.kind == .image { requestThumbnail(record, for: card) }
         let menu = NSMenu()
         for (title, action) in [("粘贴", #selector(pasteFromMenu(_:))), ("以纯文本粘贴", #selector(pastePlainFromMenu(_:))), ("复制", #selector(copyFromMenu(_:))), ("预览", #selector(previewFromMenu(_:))), ("打开", #selector(openFromMenu(_:))), ("编辑", #selector(editFromMenu(_:))), ("重命名", #selector(renameFromMenu(_:))), ("删除", #selector(deleteFromMenu(_:)))] {
@@ -528,6 +641,13 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             item.target = self
             item.representedObject = record.id
             menu.addItem(item)
+        }
+        if canReorderItems {
+            menu.addItem(.separator())
+            for (title, action) in [("选中条目前移（⌥⌘←）", #selector(reorderEarlierFromMenu(_:))), ("选中条目后移（⌥⌘→）", #selector(reorderLaterFromMenu(_:)))] {
+                let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+                item.target = self; item.representedObject = record.id; menu.addItem(item)
+            }
         }
         card.menu = menu
         let shareItem = NSMenuItem(title: "分享…", action: #selector(shareFromMenu(_:)), keyEquivalent: "")
@@ -555,6 +675,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func select(_ id: UUID, focusResults: Bool, extending: Bool = false, toggling: Bool = false) {
+        reorderStatus = nil
         if extending,
            let anchor = filteredRecords.firstIndex(where: { $0.id == (selectionAnchorID ?? selectedID) }),
            let next = filteredRecords.firstIndex(where: { $0.id == id }) {
@@ -595,6 +716,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func updateSelectionCount() {
+        orderingActions.isEnabled = canReorderItems && !selectedIDs.isEmpty
         countLabel.stringValue = selectedIDs.count > 1 ? "\(filteredRecords.count) 条 · 已选 \(selectedIDs.count) 条" : "\(filteredRecords.count) 条"
     }
 
@@ -606,15 +728,158 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         }
     }
 
+    private var hasFilters: Bool {
+        !searchField.stringValue.isEmpty || !boardScope.queryIDs.isEmpty || selectedKind != nil || selectedSourceID != nil || copiedAfter != nil || copiedBefore != nil
+    }
+    private var hasMoreResults: Bool { onQueryChange != nil && records.count >= resultLimit }
+    private var canReorderItems: Bool { manualOrder && boardScope.singleBoardID != nil && onReorderRecords != nil && orderingRequestID == nil && !queryPending }
+
+    private func updateFilterControls() {
+        let count = boardScope.filteredIDs.count
+        multiBoardButton.title = count == 0 ? "多板筛选…" : "已筛选 \(count) 个分组…"
+        multiBoardButton.toolTip = pinboards.filter { boardScope.filteredIDs.contains($0.id) }.map(\.name).joined(separator: "、")
+        clearFiltersButton.isEnabled = hasFilters
+        if boardScope.singleBoardID == nil { manualOrder = false }
+        orderPopup.isEnabled = boardScope.singleBoardID != nil
+        orderPopup.selectItem(at: manualOrder ? 1 : 0)
+        orderingActions.isEnabled = canReorderItems && !selectedIDs.isEmpty
+        orderingActions.isHidden = boardScope.singleBoardID == nil
+    }
+
+    @objc private func showBoardFilters() {
+        let controller = PinboardFilterController(boards: pinboards, selected: boardScope.queryIDs)
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = controller
+        popover.contentSize = NSSize(width: 310, height: 340)
+        controller.onCancel = { [weak popover] in popover?.close() }
+        controller.onApply = { [weak self, weak popover] ids in
+            guard let self else { return }
+            self.boardScope.filter(ids.intersection(Set(self.pinboards.map(\.id))))
+            self.boardPopup.selectItem(at: 0)
+            self.manualOrder = self.boardScope.singleBoardID != nil
+            popover?.close()
+            self.issueQuery(resetLimit: true)
+        }
+        filterPopover?.close()
+        filterPopover = popover
+        popover.show(relativeTo: multiBoardButton.bounds, of: multiBoardButton, preferredEdge: .maxY)
+    }
+
+    @objc private func clearFilters() {
+        searchField.stringValue = ""
+        boardScope.navigate(to: nil)
+        selectedKind = nil; selectedSourceID = nil; copiedAfter = nil; copiedBefore = nil; lastDateIndex = 0
+        manualOrder = false; pendingRevealID = nil
+        [boardPopup, typePopup, sourcePopup, datePopup].forEach { $0.selectItem(at: 0) }
+        issueQuery(resetLimit: true)
+        window?.makeFirstResponder(searchField)
+    }
+    @objc private func orderChanged() { manualOrder = orderPopup.indexOfSelectedItem == 1 && boardScope.singleBoardID != nil; issueQuery(resetLimit: true) }
+    @objc private func moveItemsEarlier() { stepSelectedItems(forward: false) }
+    @objc private func moveItemsLater() { stepSelectedItems(forward: true) }
+    @objc private func reorderEarlierFromMenu(_ item: NSMenuItem) { selectContextItemIfNeeded(item); stepSelectedItems(forward: false) }
+    @objc private func reorderLaterFromMenu(_ item: NSMenuItem) { selectContextItemIfNeeded(item); stepSelectedItems(forward: true) }
+    private func selectContextItemIfNeeded(_ item: NSMenuItem) {
+        if let id = item.representedObject as? UUID, !selectedIDs.contains(id) { select(id, focusResults: true) }
+    }
+    private func stepSelectedItems(forward: Bool) {
+        guard canReorderItems else { statusLabel.stringValue = "请先选择一个分组，并切换为“分组内手动顺序”。"; return }
+        do {
+            let plan = try PanelReorderPlan.step(movingIDs: selectedIDs, visibleIDs: filteredRecords.map(\.id), forward: forward, hasMore: hasMoreResults)
+            applyReorder(plan)
+        } catch { reportReorderPlanningError(error) }
+    }
+    private func applyReorder(_ plan: PanelReorderPlan, dragRevisions: [UUID: Int] = [:]) {
+        ClipboardDragTrace.log("panel applyReorder canReorder=\(canReorderItems) movingCount=\(plan.movingIDs.count) hasAnchor=\(plan.beforeID != nil)")
+        guard canReorderItems, let boardID = boardScope.singleBoardID, let onReorderRecords else { return }
+        let relevant = Set(plan.movingIDs + (plan.beforeID.map { [$0] } ?? []))
+        var versions = Dictionary(uniqueKeysWithValues: filteredRecords.filter { relevant.contains($0.id) }.map { ($0.id, $0.revision) })
+        for id in plan.movingIDs { if let revision = dragRevisions[id] { versions[id] = revision } }
+        guard versions.count == relevant.count,
+              filteredRecords.filter({ relevant.contains($0.id) }).allSatisfy({ $0.pinboardID == boardID }) else {
+            statusLabel.stringValue = "内容已变化，请刷新后重试。"; issueQuery(resetLimit: false); return
+        }
+        let requestID = UUID(), session = viewGeneration, query = queryGeneration
+        orderingRequestID = requestID
+        statusLabel.stringValue = "正在保存分组顺序…"
+        updateFilterControls()
+        onReorderRecords(boardID, plan.movingIDs, plan.beforeID, versions) { [weak self] result in
+            guard let self, self.orderingRequestID == requestID else { return }
+            self.orderingRequestID = nil
+            self.updateFilterControls()
+            guard self.isVisible, self.viewGeneration == session else { return }
+            switch result {
+            case .success:
+                self.reorderStatus = "已保存分组顺序"
+                self.statusLabel.stringValue = self.reorderStatus!
+                if self.queryGeneration == query, self.boardScope.singleBoardID == boardID { self.pendingRevealID = self.selectedID }
+            case .failure(let error):
+                self.reorderStatus = "顺序未更改，请刷新后重试。\(error.localizedDescription)"
+                self.statusLabel.stringValue = self.reorderStatus!
+            }
+            // Storage is authoritative; no speculative reorder can overwrite a newer refresh.
+            self.issueQuery(resetLimit: false, preserveReveal: self.queryGeneration == query, preserveStatus: true)
+        }
+    }
+    private func reportReorderPlanningError(_ error: Error) {
+        if error as? PanelReorderPlan.PlanningError == .unloadedBoundary {
+            statusLabel.stringValue = "后面还有未加载的内容，请先点“加载更多”再移动到这里。"
+        } else if error as? PanelReorderPlan.PlanningError != .noMovement {
+            statusLabel.stringValue = "当前选择已变化，请重新选择后排序。"
+        }
+    }
+    private func insertionIndex(at point: NSPoint) -> Int {
+        guard let layout = resultsView.collectionViewLayout else { return filteredRecords.count }
+        for index in filteredRecords.indices {
+            if let frame = layout.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame, point.x < frame.midX { return index }
+        }
+        return filteredRecords.count
+    }
+    private func ownedDraggedCard(_ source: Any?) -> ClipboardCardView? {
+        ClipboardDragTrace.log("panel ownedSource isCard=\(source is ClipboardCardView) generationMatches=\((source as? ClipboardCardView)?.dragOriginID == viewGeneration)")
+        guard let card = source as? ClipboardCardView, card.dragOriginID == viewGeneration else { return nil }
+        return card
+    }
+    private func updateDragInsertion(at point: NSPoint, source: Any?) -> NSDragOperation {
+        insertionLine.isHidden = true
+        guard let card = ownedDraggedCard(source) else { return boardScope.queryIDs.count > 1 ? [] : .copy }
+        guard canReorderItems else { return boardScope.queryIDs.count > 1 ? [] : .move }
+        let index = insertionIndex(at: point)
+        ClipboardDragTrace.log("panel insertion index=\(index) total=\(filteredRecords.count) movingCount=\(card.draggedRecordIDs.count) hasMore=\(hasMoreResults)")
+        guard (try? PanelReorderPlan.insertion(movingIDs: Set(card.draggedRecordIDs), visibleIDs: filteredRecords.map(\.id), at: index, hasMore: hasMoreResults)) != nil,
+              let layout = resultsView.collectionViewLayout else { return [] }
+        let adjacent = index < filteredRecords.count ? index : max(0, index - 1)
+        if let frame = layout.layoutAttributesForItem(at: IndexPath(item: adjacent, section: 0))?.frame {
+            let x = index < filteredRecords.count ? frame.minX - 6 : frame.maxX + 4
+            insertionLine.frame = NSRect(x: max(0, x), y: frame.minY, width: 3, height: frame.height)
+            insertionLine.isHidden = false
+        }
+        return .move
+    }
+    private func handleResultsDrop(_ items: [NSPasteboardItem], source: Any?, point: NSPoint) -> Bool {
+        ClipboardDragTrace.log("panel handleResultsDrop manual=\(manualOrder) canReorder=\(canReorderItems) items=\(items.count)")
+        if let card = ownedDraggedCard(source), manualOrder {
+            guard canReorderItems else { return false }
+            do {
+                let plan = try PanelReorderPlan.insertion(movingIDs: Set(card.draggedRecordIDs), visibleIDs: filteredRecords.map(\.id), at: insertionIndex(at: point), hasMore: hasMoreResults)
+                applyReorder(plan, dragRevisions: card.draggedRecordRevisions); return true
+            } catch { reportReorderPlanningError(error); return false }
+        }
+        handleDrop(items, source: source)
+        return boardScope.queryIDs.count <= 1
+    }
     private func handleDrop(_ items: [NSPasteboardItem], source: Any?) {
-        if let card = source as? ClipboardCardView, card.window === window {
+        guard boardScope.queryIDs.count <= 1 else { statusLabel.stringValue = "拖入前请选择一个目标分组，或清除多板筛选。"; return }
+        if let card = ownedDraggedCard(source) {
             // Trust the in-process source object's IDs, never a pasteboard marker.
+            guard !manualOrder else { statusLabel.stringValue = "请将条目拖到卡片之间的插入标记处。"; return }
             let ids = Set(card.draggedRecordIDs)
             let contents = filteredRecords.filter { ids.contains($0.id) }
-            let destination = selectedBoardID
+            let destination = boardScope.singleBoardID
             resolve(contents) { [weak self] in self?.onMoveRecords?($0, destination) }
         } else {
-            onDropItems?(items, selectedBoardID)
+            onDropItems?(items, boardScope.singleBoardID)
         }
     }
 
@@ -769,6 +1034,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         }
         switch event.keyCode {
         case 53:
+            cardViews.forEach { $0.cancelPendingDrag() }
+            pendingActionID = nil
             if !searchField.stringValue.isEmpty { searchField.stringValue = ""; issueQuery(resetLimit: true); window?.makeFirstResponder(searchField) }
             else { dismiss() }
             return true
@@ -789,6 +1056,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         case 49 where !isEditingSearch && !command:
             if let selectedRecord { resolve(selectedRecord) { [weak self] in self?.showDetail($0, editing: false) } }
             return true
+        case 123 where !isEditingSearch && command && flags.contains(.option): stepSelectedItems(forward: false); return true
+        case 124 where !isEditingSearch && command && flags.contains(.option): stepSelectedItems(forward: true); return true
         case 123 where !isEditingSearch && command: moveBoardSelection(-1); return true
         case 124 where !isEditingSearch && command: moveBoardSelection(1); return true
         case 126 where !isEditingSearch && command:
@@ -823,17 +1092,21 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         switch kind { case .text: return "文本"; case .link: return "链接"; case .image: return "图片"; case .file: return "文件"; case .color: return "颜色" }
     }
 
-    private func issueQuery(resetLimit: Bool) {
+    private func issueQuery(resetLimit: Bool, preserveReveal: Bool = false, preserveStatus: Bool = false) {
         queryGeneration = UUID()
+        if !preserveStatus { reorderStatus = nil }
+        if !preserveReveal { pendingRevealID = nil }
         if resetLimit { resultLimit = 300; scrollView.contentView.scroll(to: .zero) }
-        let query = HistoryQuery(text: searchField.stringValue, kind: selectedKind, sourceBundleID: selectedSourceID, copiedAfter: copiedAfter, copiedBefore: copiedBefore, pinboardIDs: Set(selectedBoardID.map { [$0] } ?? []), includePinned: true, limit: resultLimit)
+        queryPending = onQueryChange != nil
+        updateFilterControls()
+        let query = HistoryQuery(text: searchField.stringValue, kind: selectedKind, sourceBundleID: selectedSourceID, copiedAfter: copiedAfter, copiedBefore: copiedBefore, pinboardIDs: boardScope.queryIDs, includePinned: true, limit: resultLimit, sortOrder: manualOrder && boardScope.singleBoardID != nil ? .pinboard : .recent)
         if let onQueryChange { onQueryChange(query) } else { reloadResults(resetScroll: resetLimit) }
     }
 
-    @objc private func boardChanged() { selectedBoardID = boardPopup.selectedItem?.representedObject as? UUID; issueQuery(resetLimit: true) }
+    @objc private func boardChanged() { selectedBoardID = boardPopup.selectedItem?.representedObject as? UUID; manualOrder = selectedBoardID != nil; issueQuery(resetLimit: true) }
     @objc private func typeChanged() { selectedKind = (typePopup.selectedItem?.representedObject as? String).flatMap(ClipboardContentKind.init(rawValue:)); issueQuery(resetLimit: true) }
     @objc private func sourceChanged() { selectedSourceID = sourcePopup.selectedItem?.representedObject as? String; issueQuery(resetLimit: true) }
-    @objc private func loadMore() { resultLimit += 300; issueQuery(resetLimit: false) }
+    @objc private func loadMore() { resultLimit += 300; issueQuery(resetLimit: false, preserveReveal: true) }
 
     @objc private func dateChanged() {
         if datePopup.indexOfSelectedItem == 4 { promptDateRange(); return }
@@ -889,9 +1162,14 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         selectedSourceID = nil; sourcePopup.selectItem(at: 0)
         copiedAfter = nil; copiedBefore = nil; datePopup.selectItem(at: 0)
         selectedBoardID = record.pinboardID
+        manualOrder = record.pinboardID != nil
+        pendingRevealID = record.id
+        selectedIDs = [record.id]
+        selectionAnchorID = record.id
+        lastDateIndex = 0
         if let index = pinboards.firstIndex(where: { $0.id == record.pinboardID }) { boardPopup.selectItem(at: index + 1) } else { boardPopup.selectItem(at: 0) }
-        issueQuery(resetLimit: true)
-        if filteredRecords.contains(where: { $0.id == record.id }) { select(record.id, focusResults: true) }
+        issueQuery(resetLimit: true, preserveReveal: true)
+        if onQueryChange == nil, filteredRecords.contains(where: { $0.id == record.id }) { pendingRevealID = nil; select(record.id, focusResults: true) }
     }
 
     private func promptBoard(_ board: Pinboard?) {
@@ -923,19 +1201,29 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     @objc private func createBoard() { promptBoard(nil) }
-    @objc private func renameBoard() { if let board = pinboards.first(where: { $0.id == selectedBoardID }) { promptBoard(board) } }
+    @objc private func renameBoard() { if let board = pinboards.first(where: { $0.id == boardScope.singleBoardID }) { promptBoard(board) } }
     @objc private func moveBoardEarlier() { reorderCurrentBoard(by: -1) }
     @objc private func moveBoardLater() { reorderCurrentBoard(by: 1) }
     private func reorderCurrentBoard(by offset: Int) {
-        guard let index = pinboards.firstIndex(where: { $0.id == selectedBoardID }), pinboards.indices.contains(index + offset) else { return }
+        guard let index = pinboards.firstIndex(where: { $0.id == boardScope.singleBoardID }), pinboards.indices.contains(index + offset) else { return }
         var reordered = pinboards
         reordered.swapAt(index, index + offset)
         onReorderPinboards?(reordered.map(\.id))
     }
     @objc private func deleteBoard() {
-        guard let board = pinboards.first(where: { $0.id == selectedBoardID }) else { return }
+        guard let board = pinboards.first(where: { $0.id == boardScope.singleBoardID }) else { return }
         // The application owns the destructive-action choices and confirmation.
         onDeletePinboard?(board)
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(renameBoard), #selector(deleteBoard): return boardScope.singleBoardID != nil
+        case #selector(moveBoardEarlier): return pinboards.firstIndex(where: { $0.id == boardScope.singleBoardID }).map { $0 > 0 } ?? false
+        case #selector(moveBoardLater): return pinboards.firstIndex(where: { $0.id == boardScope.singleBoardID }).map { $0 + 1 < pinboards.count } ?? false
+        case #selector(moveItemsEarlier), #selector(moveItemsLater), #selector(reorderEarlierFromMenu(_:)), #selector(reorderLaterFromMenu(_:)): return canReorderItems && !selectedIDs.isEmpty
+        default: return true
+        }
     }
 
     @objc private func moveFromMenu(_ sender: NSMenuItem) {
@@ -947,6 +1235,23 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func showDetail(_ record: ClipboardRecord, editing: Bool) {
         linkPreview?.dismiss()
+        imagePreview?.dismiss()
+        if record.kind == .image {
+            detailWindow?.close()
+            let session = viewGeneration
+            let preview = ImagePreviewController(record: record, searchQuery: searchField.stringValue,
+                                                 cache: ocrCache, sourceStore: ocrSourceStore)
+            imagePreview = preview
+            preview.onDismiss = { [weak self, weak preview] in
+                guard let self, self.imagePreview === preview else { return }
+                self.imagePreview = nil
+                if self.isVisible, self.viewGeneration == session { self.window?.makeKey(); self.window?.makeFirstResponder(self.resultsView) }
+            }
+            preview.onRotate = { [weak self] in self?.onRotateImage?(record) }
+            preview.onExtractText = { [weak self] in self?.onExtractText?(record) }
+            preview.present(relativeTo: window)
+            return
+        }
         if let pdf = record.parts.flatMap(\.representations).first(where: { ClipboardCardContent.isPDFType($0.typeIdentifier) }) {
             showPDFPreview(record, data: pdf.data)
             return
@@ -1172,7 +1477,14 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     func windowWillClose(_ notification: Notification) {
-        guard let closing = notification.object as? NSWindow, closing === detailWindow else { return }
+        guard let closing = notification.object as? NSWindow else { return }
+        if closing === window {
+            cardViews.forEach { $0.cancelPendingDrag() }
+            viewGeneration = UUID()
+            pendingActionID = nil
+            return
+        }
+        guard closing === detailWindow else { return }
         window?.removeChildWindow(closing)
         detailWindow = nil
         pdfLoadTask?.cancel(); pdfLoadTask = nil

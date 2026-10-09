@@ -32,6 +32,7 @@ public struct ClipboardRecord: Identifiable, Equatable, Codable, Sendable {
     public var renamedTitle: String?
     public var ocrText: String?
     public var pinboardID: UUID?
+    public var pinboardOrder: Int64?
     public var isInHistory: Bool
     public var revision: Int
 
@@ -48,7 +49,8 @@ public struct ClipboardRecord: Identifiable, Equatable, Codable, Sendable {
         ocrText: String? = nil,
         pinboardID: UUID? = nil,
         isInHistory: Bool = true,
-        revision: Int = 1
+        revision: Int = 1,
+        pinboardOrder: Int64? = nil
     ) {
         self.id = id
         self.text = text
@@ -61,6 +63,7 @@ public struct ClipboardRecord: Identifiable, Equatable, Codable, Sendable {
         self.renamedTitle = renamedTitle
         self.ocrText = ocrText
         self.pinboardID = pinboardID
+        self.pinboardOrder = pinboardOrder
         self.isInHistory = isInHistory
         self.revision = revision
     }
@@ -96,7 +99,7 @@ public struct ClipboardRecord: Identifiable, Equatable, Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, text, sourceApp, sourceBundleID, copiedAt, rtf, html, parts
-        case renamedTitle, ocrText, pinboardID, isInHistory, revision
+        case renamedTitle, ocrText, pinboardID, isInHistory, revision, pinboardOrder
     }
 
     public init(from decoder: Decoder) throws {
@@ -112,6 +115,7 @@ public struct ClipboardRecord: Identifiable, Equatable, Codable, Sendable {
         renamedTitle = try values.decodeIfPresent(String.self, forKey: .renamedTitle)
         ocrText = try values.decodeIfPresent(String.self, forKey: .ocrText)
         pinboardID = try values.decodeIfPresent(UUID.self, forKey: .pinboardID)
+        pinboardOrder = try values.decodeIfPresent(Int64.self, forKey: .pinboardOrder)
         isInHistory = try values.decodeIfPresent(Bool.self, forKey: .isInHistory) ?? true
         revision = try values.decodeIfPresent(Int.self, forKey: .revision) ?? 1
     }

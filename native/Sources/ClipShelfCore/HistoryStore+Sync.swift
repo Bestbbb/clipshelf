@@ -155,11 +155,20 @@ extension HistoryStore {
             CREATE TABLE IF NOT EXISTS sync_outbox (operation_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, payload BLOB NOT NULL);
             CREATE TABLE IF NOT EXISTS sync_inbox (operation_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, payload BLOB NOT NULL);
             CREATE TABLE IF NOT EXISTS sync_log (operation_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL, base_operation_id TEXT, revision INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS sync_order_dirty(entity_id TEXT PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS sync_content_heads(account_id TEXT NOT NULL, entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL, operation_id TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(account_id, entity_kind, entity_id));
+            CREATE TABLE IF NOT EXISTS sync_order_heads(account_id TEXT NOT NULL, entity_id TEXT NOT NULL, operation_id TEXT NOT NULL, board_id TEXT, PRIMARY KEY(account_id, entity_id));
             CREATE TABLE IF NOT EXISTS sync_heads (account_id TEXT NOT NULL, entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL, operation_id TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(account_id, entity_kind, entity_id));
             CREATE TABLE IF NOT EXISTS sync_tombstones (account_id TEXT NOT NULL, entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL, operation_id TEXT NOT NULL, PRIMARY KEY(account_id, entity_kind, entity_id));
             CREATE TABLE IF NOT EXISTS sync_cursors (account_id TEXT PRIMARY KEY, cursor BLOB);
             CREATE INDEX IF NOT EXISTS sync_outbox_account ON sync_outbox(account_id);
             CREATE INDEX IF NOT EXISTS sync_inbox_account ON sync_inbox(account_id);
+            """)
+        try execute("""
+            INSERT OR IGNORE INTO sync_content_heads SELECT * FROM sync_heads;
+            INSERT OR IGNORE INTO sync_order_heads(account_id, entity_id, operation_id, board_id)
+            SELECT account_id, entity_id, operation_id, pinboard_id FROM sync_heads
+            JOIN clipboard_records ON clipboard_records.id = sync_heads.entity_id WHERE entity_kind = 'clipboard';
             """)
         for (table, kind) in [("clipboard_records", "clipboard"), ("pinboards", "pinboard")] {
             for (event, action, row) in [("INSERT", "upsert", "NEW"), ("UPDATE", "upsert", "NEW"), ("DELETE", "delete", "OLD")] {
@@ -201,7 +210,8 @@ extension HistoryStore {
     }
 
     func flushSyncDirty() throws {
-        if suppressSyncCapture { try execute("DELETE FROM sync_dirty"); return }
+        if suppressSyncCapture { try execute("DELETE FROM sync_dirty; DELETE FROM sync_order_dirty"); return }
+        try publishOrderingBaselinesForDirtyBoards()
         let activeAccount = try syncConfigurationWithoutLock().accountID
         let statement = try prepare("SELECT entity_kind, entity_id, action FROM sync_dirty ORDER BY CASE entity_kind WHEN 'pinboard' THEN 0 ELSE 1 END, rowid")
         var dirty: [(SyncEntityKind, UUID, SyncAction)] = []
@@ -236,7 +246,12 @@ extension HistoryStore {
                 if let record, record.pinboardID != state.descriptor.boardID { throw SyncError.namespaceConflict }
             }
             try setSyncNamespace(kind: kind, id: id, accountID: accountID)
-            let head = try syncHead(accountID: accountID, kind: kind, id: id)
+            let hasOrderMarker = try syncScalar("SELECT entity_id FROM sync_order_dirty WHERE entity_id = ?", [id.uuidString]) != nil
+            var head = try syncHead(accountID: accountID, kind: kind, id: id, table: "sync_content_heads")
+            if kind == .clipboard, action == .upsert, hasOrderMarker,
+               let position = try syncOrderHead(accountID: accountID, id: id) {
+                head = (position.id, position.revision)
+            }
             let board = kind == .pinboard && action == .upsert ? try pinboardsWithoutLock().first { $0.id == id } : nil
             if let boardID = record?.pinboardID {
                 if let owner = try syncNamespace(kind: .pinboard, id: boardID), owner != accountID { throw SyncError.namespaceConflict }
@@ -253,10 +268,11 @@ extension HistoryStore {
             if action == .upsert, try syncIsDeleted(accountID: accountID, kind: kind, id: id) { throw SyncError.invalidOperation }
             let operation = SyncOperation(accountID: accountID, entityID: id, entityKind: kind, action: action,
                                           baseRevision: head?.revision ?? 0, revision: (head?.revision ?? 0) + 1,
-                                          baseOperationID: head?.id, record: record, pinboard: board)
+                                          baseOperationID: head?.id, record: record, pinboard: board,
+                                          orderingOnly: kind == .clipboard && action == .upsert && head != nil && hasOrderMarker ? true : nil)
             try enqueueSyncOperation(operation)
         }
-        try execute("DELETE FROM sync_dirty")
+        try execute("DELETE FROM sync_dirty; DELETE FROM sync_order_dirty")
     }
 
     func hasSyncBoundState() throws -> Bool {
@@ -287,6 +303,13 @@ extension HistoryStore {
         try stepToCompletion(statement)
         try logSyncOperation(operation)
         try setSyncHead(operation)
+        if operation.orderingOnly != true { try setSyncHead(operation, table: "sync_content_heads") }
+        if let record = operation.record {
+            let position = try syncOrderHead(accountID: operation.accountID, id: operation.entityID)
+            if operation.orderingOnly == true || position == nil || position?.boardID != record.pinboardID {
+                try setSyncOrderHead(operation, boardID: record.pinboardID)
+            }
+        }
         if operation.action == .delete { try writeSyncTombstone(operation) }
     }
 
@@ -296,6 +319,10 @@ extension HistoryStore {
               operation.revision == operation.baseRevision + 1,
               operation.revision < Int.max, operation.createdAt.timeIntervalSinceReferenceDate.isFinite,
               (operation.baseOperationID == nil) == (operation.baseRevision == 0) else { throw SyncError.invalidOperation }
+        if operation.orderingOnly == true {
+            guard operation.action == .upsert, operation.entityKind == .clipboard, operation.baseRevision > 0,
+                  operation.record?.pinboardID != nil, operation.record?.pinboardOrder != nil else { throw SyncError.invalidOperation }
+        }
         if operation.action == .delete {
             guard operation.record == nil, operation.pinboard == nil else { throw SyncError.invalidOperation }
         } else if operation.entityKind == .clipboard {
@@ -314,7 +341,14 @@ extension HistoryStore {
         if let parent = operation.baseOperationID {
             guard try syncScalar("SELECT revision FROM sync_log WHERE operation_id = ? AND account_id = ? AND entity_kind = ? AND entity_id = ?", [parent.uuidString, account, kind.rawValue, id.uuidString]) == String(operation.baseRevision) else { throw SyncError.invalidOperation }
         }
-        let head = try syncHead(accountID: account, kind: kind, id: id)
+        if operation.orderingOnly == true {
+            try applyOrderingOperation(operation)
+            try advanceSyncHead(operation)
+            try logSyncOperation(operation)
+            return
+        }
+        // A drag changes location, not content. Content conflict arbitration uses its own head.
+        let head = try syncHead(accountID: account, kind: kind, id: id, table: "sync_content_heads")
         if operation.action == .delete {
             if let head, head.id != operation.baseOperationID,
                !(try syncIsAncestor(head.id, of: operation.baseOperationID, accountID: account)) {
@@ -323,11 +357,11 @@ extension HistoryStore {
             if kind == .clipboard {
                 try syncExecute("DELETE FROM clipboard_records WHERE id = ?", [id.uuidString])
             } else {
-                try syncExecute("UPDATE clipboard_records SET pinboard_id = NULL, is_in_history = 1, revision = revision + 1 WHERE pinboard_id = ?", [id.uuidString])
+                try syncExecute("UPDATE clipboard_records SET pinboard_id = NULL, pinboard_order = NULL, is_in_history = 1, revision = revision + 1 WHERE pinboard_id = ?", [id.uuidString])
                 try syncExecute("DELETE FROM pinboards WHERE id = ?", [id.uuidString])
             }
             try writeSyncTombstone(operation)
-            try setSyncHead(operation)
+            try setSyncHead(operation, table: "sync_content_heads")
         } else if try syncIsDeleted(accountID: account, kind: kind, id: id) {
             // A concurrent edit cannot revive the deleted identity, but its content remains recoverable.
             if let head, !(try syncIsAncestor(operation.operationID, of: head.id, accountID: account)) {
@@ -339,19 +373,20 @@ extension HistoryStore {
                     // A descendant is already local; receiving its parent later must not overwrite it.
                 } else if try syncIsAncestor(head.id, of: operation.baseOperationID, accountID: account) {
                     try applySyncPayload(operation)
-                    try setSyncHead(operation)
+                    try setSyncHead(operation, table: "sync_content_heads")
                 } else if operation.operationID.uuidString > head.id.uuidString {
-                    try preserveConflict(kind: kind, id: id, operationID: head.id, accountID: account)
+                    if try !isOrderingOnlyConflict(operation) { try preserveConflict(kind: kind, id: id, operationID: head.id, accountID: account) }
                     try applySyncPayload(operation)
-                    try setSyncHead(operation)
+                    try setSyncHead(operation, table: "sync_content_heads")
                 } else {
-                    try preserveRemoteConflict(operation)
+                    if try !isOrderingOnlyConflict(operation) { try preserveRemoteConflict(operation) }
                 }
             } else {
                 try applySyncPayload(operation)
-                try setSyncHead(operation)
+                try setSyncHead(operation, table: "sync_content_heads")
             }
         }
+        try advanceSyncHead(operation)
         try logSyncOperation(operation)
     }
 
@@ -359,12 +394,75 @@ extension HistoryStore {
         if var record = operation.record {
             if let board = record.pinboardID, try syncIsDeleted(accountID: operation.accountID, kind: .pinboard, id: board) {
                 record.pinboardID = nil
+                record.pinboardOrder = nil
                 record.isInHistory = true
             }
-            if try itemWithoutLock(id: record.id) != nil { try replaceContents(record) } else { try insert(record) }
+            if let current = try itemWithoutLock(id: record.id) {
+                if record.pinboardID == current.pinboardID {
+                    // Full snapshots carry their author's last-known position. Position-only operations
+                    // arbitrate it independently, so a concurrent text edit cannot undo a drag.
+                    record.pinboardOrder = current.pinboardOrder ?? record.pinboardOrder
+                } else { try setSyncOrderHead(operation, boardID: record.pinboardID) }
+                if record != current { record.revision = max(record.revision, current.revision + 1) }
+                try replaceContents(record)
+            } else {
+                try insert(record)
+                try setSyncOrderHead(operation, boardID: record.pinboardID)
+            }
         } else if let board = operation.pinboard {
             try savePinboard(board, replace: try pinboardsWithoutLock().contains { $0.id == board.id })
         }
+    }
+
+    func applyOrderingOperation(_ operation: SyncOperation) throws {
+        guard try !syncIsDeleted(accountID: operation.accountID, kind: .clipboard, id: operation.entityID),
+              let incoming = operation.record, let current = try itemWithoutLock(id: operation.entityID),
+              current.pinboardID == incoming.pinboardID else { return }
+        let head = try syncOrderHead(accountID: operation.accountID, id: operation.entityID)
+        if let head {
+            if try syncIsAncestor(operation.operationID, of: head.id, accountID: operation.accountID) { return }
+            let follows = try syncIsAncestor(head.id, of: operation.baseOperationID, accountID: operation.accountID)
+            if !follows, operation.operationID.uuidString < head.id.uuidString { return }
+        }
+        if current.pinboardOrder != incoming.pinboardOrder {
+            try writePlacement(id: current.id, boardID: current.pinboardID, rank: incoming.pinboardOrder)
+        }
+        try setSyncOrderHead(operation, boardID: current.pinboardID)
+    }
+
+    func syncOrderHead(accountID: String, id: UUID) throws -> (id: UUID, boardID: UUID?, revision: Int)? {
+        let statement = try prepare("SELECT sync_order_heads.operation_id, board_id, revision FROM sync_order_heads JOIN sync_log ON sync_log.operation_id = sync_order_heads.operation_id WHERE sync_order_heads.account_id = ? AND sync_order_heads.entity_id = ?")
+        defer { sqlite3_finalize(statement) }
+        try bind(accountID, at: 1, to: statement); try bind(id.uuidString, at: 2, to: statement)
+        let status = sqlite3_step(statement)
+        if status == SQLITE_DONE { return nil }
+        try check(status, allowingRow: true)
+        guard let operationID = textColumn(statement, 0).flatMap(UUID.init(uuidString:)) else { throw SyncError.invalidOperation }
+        return (operationID, textColumn(statement, 1).flatMap(UUID.init(uuidString:)), Int(sqlite3_column_int64(statement, 2)))
+    }
+
+    func setSyncOrderHead(_ operation: SyncOperation, boardID: UUID?) throws {
+        try syncExecute("""
+            INSERT INTO sync_order_heads(account_id, entity_id, operation_id, board_id) VALUES (?, ?, ?, ?)
+            ON CONFLICT(account_id, entity_id) DO UPDATE SET operation_id = excluded.operation_id, board_id = excluded.board_id
+            """, [operation.accountID, operation.entityID.uuidString, operation.operationID.uuidString, boardID?.uuidString])
+    }
+
+    func advanceSyncHead(_ operation: SyncOperation) throws {
+        let head = try syncHead(accountID: operation.accountID, kind: operation.entityKind, id: operation.entityID)
+        if let head {
+            if try syncIsAncestor(operation.operationID, of: head.id, accountID: operation.accountID) { return }
+            let follows = try syncIsAncestor(head.id, of: operation.baseOperationID, accountID: operation.accountID)
+            if operation.action != .delete, !follows, operation.operationID.uuidString < head.id.uuidString { return }
+        }
+        try setSyncHead(operation)
+    }
+
+    func isOrderingOnlyConflict(_ operation: SyncOperation) throws -> Bool {
+        guard let incoming = operation.record, let current = try itemWithoutLock(id: incoming.id) else { return false }
+        return incoming.hasSameContents(as: current) && incoming.copiedAt == current.copiedAt
+            && incoming.renamedTitle == current.renamedTitle && incoming.ocrText == current.ocrText
+            && incoming.pinboardID == current.pinboardID && incoming.isInHistory == current.isInHistory
     }
 
     func preserveConflict(kind: SyncEntityKind, id: UUID, operationID: UUID, accountID: String) throws {
@@ -392,6 +490,12 @@ extension HistoryStore {
             record.id = id
             record.renamedTitle = record.title + " (Conflict)"
             record.isInHistory = true
+            if let boardID = record.pinboardID {
+                let deleted = try syncIsDeleted(accountID: operation.accountID, kind: .pinboard, id: boardID)
+                let exists = try syncScalar("SELECT id FROM pinboards WHERE id = ?", [boardID.uuidString]) != nil
+                // The concurrent edit remains recoverable even after its whole board was deleted.
+                if deleted || !exists { record.pinboardID = nil; record.pinboardOrder = nil }
+            }
             if try itemWithoutLock(id: id) == nil {
                 try insert(record)
                 try setSyncNamespace(kind: .clipboard, id: id, accountID: operation.accountID)
@@ -412,8 +516,8 @@ extension HistoryStore {
         return UUID(uuidString: String(value[0..<8]) + "-" + String(value[8..<12]) + "-" + String(value[12..<16]) + "-" + String(value[16..<20]) + "-" + String(value[20..<32]))!
     }
 
-    func syncHead(accountID: String, kind: SyncEntityKind, id: UUID) throws -> (id: UUID, revision: Int)? {
-        let statement = try prepare("SELECT operation_id, revision FROM sync_heads WHERE account_id = ? AND entity_kind = ? AND entity_id = ?")
+    func syncHead(accountID: String, kind: SyncEntityKind, id: UUID, table: String = "sync_heads") throws -> (id: UUID, revision: Int)? {
+        let statement = try prepare("SELECT operation_id, revision FROM \(table) WHERE account_id = ? AND entity_kind = ? AND entity_id = ?")
         defer { sqlite3_finalize(statement) }
         try bind(accountID, at: 1, to: statement); try bind(kind.rawValue, at: 2, to: statement); try bind(id.uuidString, at: 3, to: statement)
         let status = sqlite3_step(statement)
@@ -423,8 +527,8 @@ extension HistoryStore {
         return (operationID, Int(sqlite3_column_int64(statement, 1)))
     }
 
-    func setSyncHead(_ operation: SyncOperation) throws {
-        try syncExecute("INSERT INTO sync_heads(account_id, entity_kind, entity_id, operation_id, revision) VALUES (?, ?, ?, ?, ?) ON CONFLICT(account_id, entity_kind, entity_id) DO UPDATE SET operation_id = excluded.operation_id, revision = excluded.revision",
+    func setSyncHead(_ operation: SyncOperation, table: String = "sync_heads") throws {
+        try syncExecute("INSERT INTO \(table)(account_id, entity_kind, entity_id, operation_id, revision) VALUES (?, ?, ?, ?, ?) ON CONFLICT(account_id, entity_kind, entity_id) DO UPDATE SET operation_id = excluded.operation_id, revision = excluded.revision",
                         [operation.accountID, operation.entityKind.rawValue, operation.entityID.uuidString, operation.operationID.uuidString, String(operation.revision)])
     }
 

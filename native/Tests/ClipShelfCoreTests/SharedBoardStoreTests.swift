@@ -56,8 +56,7 @@ final class SharedBoardStoreTests: XCTestCase {
     func testSharingCopyIsIndependentOfPrivateHistoryAndPrivateSyncQueue() throws {
         let local = try store("local")
         let source = try local.createPinboard(name: "Private source")
-        let privateRecord = ClipboardRecord(text: "share selected only", pinboardID: source.id)
-        try local.create(privateRecord)
+        let privateRecord = try local.create(ClipboardRecord(text: "share selected only", pinboardID: source.id))
         try local.create(ClipboardRecord(text: "never share this"))
         try local.configureSharing(accountID: "owner")
         let share = descriptor(UUID(), account: "owner")

@@ -18,6 +18,37 @@ Demo uses synthetic records and does not start clipboard recording, global
 shortcuts, MCP, cloud requests, or screen context collection. Quit an existing
 instance before changing launch modes.
 
+For isolated acceptance work, use the separate validation mode after building:
+
+```sh
+open build/ClipShelf.app --args --validation
+```
+
+Validation uses synthetic records, a temporary database, separate preferences,
+and a separate OCR cache. Clipboard capture and background integrations are
+disabled. It exercises normal queries and the real paste path: choosing an item
+to paste **does write to the system clipboard**, and direct insertion still
+requires Accessibility authorization and a valid target. It is not the same as
+the demo, which never writes to the system clipboard. Use a blank temporary
+target document and quit the existing instance before switching modes.
+
+Multi-Pinboard checkbox filtering, combined type/source/date conditions, manual
+item-order controls, and the OCR preview/cache are implemented in the current
+source. Schema-v7 migration and ordering synchronization pass automated tests,
+including simulated concurrent edits; real-device synchronization still needs acceptance. Normal/compact
+layouts and single-item keyboard/mouse reordering have been checked with synthetic data.
+Multi-item dragging, browser targets, and Accessibility-based direct paste still need
+live validation. Deep-page Cmd-G location currently requires loading
+more results; device filtering and FTS indexing remain open work.
+
+In one Pinboard's manual-order view, drag a card to reorder it. Hold Option while
+dragging to export its original content to another app. Ordinary history view
+continues to drag original content directly. Internal sorting markers are never
+offered as external clipboard content.
+
+Acceptance evidence and remaining browser/Accessibility checks are recorded in
+[IMPLEMENTATION_STATUS.zh-CN.md](IMPLEMENTATION_STATUS.zh-CN.md).
+
 The default output has an ad-hoc signature. It is useful for development but is
 not a notarized public release. GitHub Actions builds the same development bundle
 and uploads a ZIP artifact; it does not publish a release or use signing secrets.

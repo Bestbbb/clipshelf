@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ClipShelf 本地粘贴验收</title>
+<style>
+  body { max-width: 900px; margin: 48px auto; padding: 0 24px; font: 16px/1.6 system-ui; color: #223047; background: #f7f8fa; }
+  h1 { font-size: 28px; } section { background: white; padding: 22px; margin: 20px 0; border: 1px solid #d8dfe8; border-radius: 12px; }
+  label { display: block; font-weight: 600; } textarea, [contenteditable] { box-sizing: border-box; width: 100%; min-height: 120px; padding: 12px; margin: 10px 0; border: 1px solid #8793a5; border-radius: 6px; font: 15px/1.6 ui-monospace, monospace; white-space: pre-wrap; }
+  button { font: inherit; margin: 4px 10px 4px 0; padding: 6px 14px; } output { display: block; white-space: pre-wrap; font-family: ui-monospace, monospace; }
+  p { max-width: 70ch; } #status { font-weight: 600; }
+</style>
+<h1>ClipShelf 本地粘贴验收</h1>
+<p>此页面没有网络请求或存储。请配合 <code>--validation</code> 模式，只粘贴合成条目。刷新即可重置全部内容。</p>
+<section>
+  <label for="plain">纯文本目标</label>
+  <textarea id="plain" spellcheck="false">BEFORE | AFTER</textarea>
+  <button id="prepare">重置并把光标放在竖线后</button>
+  <label for="alternate">另一个输入位置</label>
+  <textarea id="alternate" spellcheck="false">OTHER FIELD</textarea>
+</section>
+<section>
+  <label id="rich-label">富文本目标</label>
+  <div id="rich" role="textbox" aria-labelledby="rich-label" contenteditable="true" spellcheck="false"><b>BEFORE</b> | AFTER</div>
+</section>
+<section>
+  <div id="status" role="status">尚未收到粘贴事件</div>
+  <output id="events" aria-label="粘贴验收事件">paste=0; input=0</output>
+  <output id="payload" aria-label="粘贴后的文本"></output>
+</section>
+<script>
+  const plain = document.getElementById('plain');
+  let pastes = 0, inputs = 0, lastTarget = '';
+  function show() {
+    document.getElementById('events').textContent = `paste=${pastes}; input=${inputs}; target=${lastTarget}; focused=${document.activeElement.id || 'none'}`;
+    document.getElementById('payload').textContent = `plain: ${plain.value}\nalternate: ${document.getElementById('alternate').value}\nrich: ${document.getElementById('rich').innerText}`;
+  }
+  document.getElementById('prepare').addEventListener('click', () => {
+    pastes = 0; inputs = 0; lastTarget = '';
+    plain.value = 'BEFORE | AFTER';
+    document.getElementById('alternate').value = 'OTHER FIELD';
+    document.getElementById('rich').innerHTML = '<b>BEFORE</b> | AFTER';
+    plain.focus(); plain.setSelectionRange(8, 8);
+    document.getElementById('status').textContent = '光标已就绪：请唤出 ClipShelf 并选择合成内容';
+    show();
+  });
+  for (const field of [plain, document.getElementById('alternate'), document.getElementById('rich')]) {
+    field.addEventListener('paste', () => {
+      pastes += 1; lastTarget = field.id;
+      document.getElementById('status').textContent = `收到第 ${pastes} 次粘贴事件，目标 ${lastTarget}`;
+      show();
+    });
+    field.addEventListener('input', () => { inputs += 1; show(); });
+    field.addEventListener('focus', show);
+  }
+</script>
+</html>

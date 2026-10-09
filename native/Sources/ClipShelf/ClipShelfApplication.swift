@@ -9,8 +9,10 @@ import PDFKit
 
 @MainActor
 final class ClipShelfApplication: NSObject, NSApplicationDelegate {
-    private let demo = CommandLine.arguments.contains("--demo")
-    private let preferences = UserDefaults.standard
+    private let profile = RuntimeProfile.current
+    private let demo = RuntimeProfile.current.mode == .demo
+    private let validation = RuntimeProfile.current.mode == .validation
+    private let preferences = RuntimeProfile.current.preferences
     private var store: HistoryStore?
     private var mcpSettings: MCPSettingsController?
     private var cloudSettings: CloudSyncSettingsController?
@@ -28,6 +30,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     private let stackPanel = StackPanelController()
     private let stackKeys = StackKeyMonitor()
     private let intelligence = LocalIntelligenceService()
+    private let ocrCache: OCRDerivedCache = RuntimeProfile.current.validationDirectory.map {
+        OCRDerivedCache(directory: $0.appendingPathComponent("OCR", isDirectory: true))
+    } ?? .shared
     private let systemIntegration = SystemIntegrationController()
     private let contextSuggestions = ContextSuggestionService()
     private let suggestionsPanel = SuggestionPanelController()
@@ -37,6 +42,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     private var currentQuery = HistoryQuery(includePinned: false, limit: 300)
     private var queryGeneration: UInt64 = 0
     private var queryTask: Task<Void, Never>?
+    private var ocrCleanupTask: Task<Void, Never>?
+    private var ocrCleanupRequested = false
     private var pausedUntil: Date?
     private var pauseTimer: Timer?
     private var retentionTimer: Timer?
@@ -72,20 +79,30 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             return
         }
         do {
-            let directory = try FileManager.default.url(for: .applicationSupportDirectory,
-                in: .userDomainMask, appropriateFor: nil, create: true)
-                .appendingPathComponent("ClipShelf Development", isDirectory: true)
+            let directory = try profile.dataDirectory()
             store = try HistoryStore(databaseURL: directory.appendingPathComponent("history.sqlite"))
-            configureShareInbox(store: store!, directory: directory)
-            cloudSettings = CloudSyncSettingsController(store: store!)
-            cloudSettings?.onDataChanged = { [weak self] in self?.reload() }
-            cloudSettings?.resumeIfEnabled()
-            sharingSettings = SharingSettingsController(store: store!)
-            sharingSettings?.onDataChanged = { [weak self] in self?.reload() }
-            sharingSettings?.onCopyLink = { [weak self] url in
-                _ = self?.paste.copy(ClipboardRecord(text: url.absoluteString))
+            panel.ocrSourceStore = store
+            if profile.allowsBackgroundIntegrations {
+                configureShareInbox(store: store!, directory: directory)
+                cloudSettings = CloudSyncSettingsController(store: store!)
+                cloudSettings?.onDataChanged = { [weak self] in self?.reload() }
+                cloudSettings?.resumeIfEnabled()
+                sharingSettings = SharingSettingsController(store: store!)
+                sharingSettings?.onDataChanged = { [weak self] in self?.reload() }
+                sharingSettings?.onCopyLink = { [weak self] url in
+                    _ = self?.paste.copy(ClipboardRecord(text: url.absoluteString))
+                }
+                sharingSettings?.resumeIfEnabled()
+            } else if validation, let store {
+                let codeBoard = try store.createPinboard(name: "验收 · 代码", color: "#457B9D")
+                let referenceBoard = try store.createPinboard(name: "验收 · 资料", color: "#AA7744")
+                for (index, original) in Self.demoRecords.enumerated() {
+                    var record = original
+                    if index == 2 { record.pinboardID = codeBoard.id }
+                    if [1, 6].contains(index) { record.pinboardID = referenceBoard.id }
+                    _ = try store.create(record)
+                }
             }
-            sharingSettings?.resumeIfEnabled()
             applyRetention()
             reload()
         } catch {
@@ -98,11 +115,13 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             self.reload(); self.scheduleOCR(for: created)
         }
         systemIntegration.onStatus = { [weak self] in self?.setStatus($0) }
-        systemIntegration.registerServices()
-        ClipboardIntentRuntime.shared.store = store
-        ClipboardIntentRuntime.shared.enabled = preferences.bool(forKey: "shortcutsEnabled")
-        ClipboardIntentRuntime.shared.onDataChanged = { [weak self] in self?.reload() }
-        ClipShelfShortcuts.updateAppShortcutParameters()
+        if profile.allowsBackgroundIntegrations {
+            systemIntegration.registerServices()
+            ClipboardIntentRuntime.shared.store = store
+            ClipboardIntentRuntime.shared.enabled = preferences.bool(forKey: "shortcutsEnabled")
+            ClipboardIntentRuntime.shared.onDataChanged = { [weak self] in self?.reload() }
+            ClipShelfShortcuts.updateAppShortcutParameters()
+        }
         capture.excludedBundleIDs = Set(excluded)
         capture.onCapture = { [weak self] record in
             guard let self, let store = self.store else { return }
@@ -132,7 +151,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         installObservers()
         if let deadline = preferences.object(forKey: "pauseUntil") as? Date, deadline > Date() {
             scheduleResume(at: deadline)
-        } else if store != nil, preferences.bool(forKey: "recordingEnabled") { capture.start() }
+        } else if !validation, store != nil, preferences.bool(forKey: "recordingEnabled") { capture.start() }
         retentionTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.applyRetention() }
         }
@@ -146,7 +165,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "clipboard", accessibilityDescription: "ClipShelf 剪贴板")
         let menu = NSMenu()
-        let title = NSMenuItem(title: "ClipShelf · 开发预览", action: nil, keyEquivalent: "")
+        menu.autoenablesItems = !validation
+        let title = NSMenuItem(title: validation ? "ClipShelf · 隔离验收" : "ClipShelf · 开发预览", action: nil, keyEquivalent: "")
         menu.addItem(title)
         stateItem = NSMenuItem(title: "记录已暂停", action: nil, keyEquivalent: "")
         menu.addItem(stateItem)
@@ -217,6 +237,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     private func configurePanel() {
+        panel.ocrCache = ocrCache
         panel.onShareRecord = { [weak self] record in
             guard let self, !self.demo, let view = self.panel.window?.contentView else { return }
             do { try self.systemIntegration.share(record, from: view) }
@@ -225,7 +246,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         panel.onCopyImageFile = { [weak self] record in
             guard let self, !self.demo else { return }
             do {
-                let url = try SystemIntegrationController.exportImage(record)
+                let url = try SystemIntegrationController.exportImage(record,
+                    directory: self.profile.validationDirectory?.appendingPathComponent("ImageExports", isDirectory: true))
                 let file = ClipboardRecord(text: url.lastPathComponent, parts: [ClipboardPart(representations: [
                     ClipboardRepresentation(typeIdentifier: "public.file-url", data: Data(url.absoluteString.utf8))])])
                 if self.paste.copy(file) { self.setStatus("图片已复制为 PNG 文件，可切回目标应用粘贴。") }
@@ -258,7 +280,10 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         panel.onDelete = { [weak self] record in
             guard let self else { return }
             if self.demo { self.records.removeAll { $0.id == record.id }; self.refresh(); return }
-            do { self.remember([record]); try self.store?.delete(id: record.id); self.reload() }
+            do {
+                try self.store?.delete(id: record.id); self.remember([record]); self.reload()
+                Task { try? await self.ocrCache.remove(recordID: record.id) }
+            }
             catch { self.setStatus("删除失败，原记录仍保留。") }
         }
         panel.onPauseToggle = { [weak self] in self?.toggleRecording() }
@@ -275,7 +300,13 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         panel.onDeleteRecords = { [weak self] selected in
             guard let self else { return }
             if self.demo { self.records.removeAll { item in selected.contains { $0.id == item.id } }; self.refresh(); return }
-            do { self.remember(selected); for record in selected { try self.store?.delete(id: record.id) }; self.reload() }
+            do {
+                for record in selected {
+                    try self.store?.delete(id: record.id)
+                    Task { try? await self.ocrCache.remove(recordID: record.id) }
+                }
+                self.remember(selected); self.reload()
+            }
             catch { self.setStatus("部分内容未能删除，请刷新后检查。") }
         }
         panel.onEdit = { [weak self] record, text, rtf in
@@ -307,11 +338,28 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             do { try self.store?.reorderPinboards(ids: ids); self.reload() }
             catch { self.setStatus("分组列表已改变，顺序未保存；请刷新后重试。"); self.reload() }
         }
+        panel.onReorderRecords = { [weak self] boardID, ids, beforeID, revisions, completion in
+            guard let self, !self.demo, let store = self.store else {
+                completion(.failure(HistoryStoreError.recordNotFound)); return
+            }
+            Task { @MainActor in
+                do {
+                    try await Task.detached(priority: .userInitiated) {
+                        try store.move(recordIDs: ids, to: boardID, before: beforeID, expectedRevisions: revisions)
+                    }.value
+                    completion(.success(()))
+                } catch { completion(.failure(error)) }
+            }
+        }
         panel.onDeletePinboard = { [weak self] board in self?.deletePinboard(board) }
         panel.onMoveRecords = { [weak self] selected, boardID in
             guard let self, !self.demo else { return }
-            do { self.remember(selected); for record in selected { try self.store?.move(recordID: record.id, to: boardID) }; self.reload() }
-            catch { self.setStatus("部分内容未能移动，请刷新后检查。") }
+            do {
+                try self.store?.move(recordIDs: selected.map(\.id), to: boardID,
+                                     expectedRevisions: Dictionary(uniqueKeysWithValues: selected.map { ($0.id, $0.revision) }))
+                self.remember(selected); self.reload()
+            }
+            catch { self.setStatus("内容已改变或无法移动，本次移动未保存；请刷新后重试。"); self.reload() }
         }
         panel.onExtractText = { [weak self] record in self?.extractText(record) }
         panel.onRotateImage = { [weak self] record in self?.rotateImage(record) }
@@ -368,7 +416,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             cancelSuggestions(); capture.stop(); paste.cancel(); panel.dismiss(); stackKeys.stop()
             if let shareInbox { Task { try? await shareInbox.publishDestinations(allowImports: false) } }
         } else {
-            if preferences.bool(forKey: "recordingEnabled"), pausedUntil == nil, store != nil { capture.start() }
+            if !validation, preferences.bool(forKey: "recordingEnabled"), pausedUntil == nil, store != nil { capture.start() }
             if stack.peek() != nil, paste.hasPermission { _ = stackKeys.start() }
             processShareInbox()
         }
@@ -442,11 +490,16 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     private func item(_ title: String, _ action: Selector) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
+        if validation, [#selector(toggleRecording), #selector(pauseFor(_:)), #selector(toggleLoginItem),
+                        #selector(showMCPSettings), #selector(showCloudSettings), #selector(showSharingSettings),
+                        #selector(showSuggestions), #selector(importFromCamera), #selector(configureShortcuts),
+                        #selector(checkShareInbox)].contains(action) { item.isEnabled = false }
         return item
     }
 
     private var statusText: String {
-        if let statusMessage { return statusMessage }
+        if let statusMessage { return validation ? "隔离验收 · \(statusMessage)" : statusMessage }
+        if validation { return "隔离验收 · 合成内容 · 记录关闭 · \(paste.hasPermission ? "直接粘贴可用" : "辅助功能未授权，仅复制")" }
         let recording = capture.isRunning ? "记录中" : "记录已暂停"
         let mode = paste.hasPermission ? "直接粘贴可用" : "复制模式 · 授权后可直接粘贴"
         return "\(recording) · \(demo ? records.count : metadata.count) 条结果 · \(mode)"
@@ -454,6 +507,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
 
     private func reload() {
         guard let store else { refresh(); return }
+        requestOCRCleanup(store: store)
         queryTask?.cancel()
         queryGeneration &+= 1
         let generation = queryGeneration
@@ -472,14 +526,28 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func requestOCRCleanup(store: HistoryStore) {
+        ocrCleanupRequested = true
+        guard ocrCleanupTask == nil else { return }
+        ocrCleanupTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.ocrCleanupTask = nil }
+            repeat {
+                do { try await Task.sleep(nanoseconds: 200_000_000) } catch { return }
+                self.ocrCleanupRequested = false
+                try? await self.ocrCache.purgeStaleEntries(using: store)
+            } while self.ocrCleanupRequested && !Task.isCancelled
+        }
+    }
+
     private func refresh() {
         stateItem?.title = demo ? "演示模式 · 记录关闭" : (capture.isRunning ? "正在记录" : "记录已暂停")
         recordingItem?.title = capture.isRunning ? "暂停记录" : "开始记录"
-        recordingItem?.isEnabled = !demo && store != nil
+        recordingItem?.isEnabled = !demo && !validation && store != nil
         permissionItem?.isEnabled = !demo
         permissionItem?.title = paste.hasPermission ? "检查直接粘贴权限…" : "开启直接粘贴…"
         statusItem?.button?.toolTip = "ClipShelf · \(capture.isRunning ? "记录中" : "已暂停")"
-        panel.setCapturePaused(!capture.isRunning)
+        panel.setCapturePaused(!capture.isRunning, recordingAllowed: !validation)
         if demo { panel.update(records: records, status: statusText) }
         else { panel.update(metadata: metadata, status: statusText) }
     }
@@ -514,7 +582,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func toggleRecording() {
-        guard !demo, store != nil else { return }
+        guard !demo, !validation, store != nil else { return }
         if !preferences.bool(forKey: "hasSeenWelcome") { showWelcome(); return }
         cancelSuggestions()
         if capture.isRunning { capture.stop() } else { capture.start() }
@@ -594,19 +662,17 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "清空")
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertSecondButtonReturn else { return }
-        do { try store?.clearHistory(); reload() }
+        do { try store?.clearHistory(); reload(); Task { try? await ocrCache.clear() } }
         catch { showError("清空失败", detail: "无法写入数据库，请稍后重试。") }
     }
 
     @objc private func revealData() {
         guard !demo else { return }
-        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ClipShelf Development")
-        NSWorkspace.shared.open(directory)
+        if let directory = try? profile.dataDirectory() { NSWorkspace.shared.open(directory) }
     }
 
     private func showWelcome() {
-        guard !isTerminating else { return }
+        guard !isTerminating, !validation else { return }
         let alert = NSAlert()
         alert.messageText = "欢迎使用 ClipShelf"
         alert.informativeText = "ClipShelf 在本机保存之后复制的文字、图片和文件引用。使用 ⌘⇧V 打开历史，⌘⇧C 使用顺序粘贴。\n\n你可以随时从菜单栏暂停记录或排除应用。直接粘贴需要单独授予辅助功能权限；未授权仍可复制后手动粘贴。"
@@ -640,7 +706,10 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "删除分组及全部内容")
         let choice = alert.runModal()
         guard choice != .alertFirstButtonReturn else { return }
-        do { try store?.deletePinboard(id: board.id, deleteItems: choice == .alertThirdButtonReturn); reload() }
+        do {
+            try store?.deletePinboard(id: board.id, deleteItems: choice == .alertThirdButtonReturn); reload()
+            if choice == .alertThirdButtonReturn { Task { try? await ocrCache.clear() } }
+        }
         catch { setStatus("分组删除失败，请重试。") }
     }
 
@@ -683,7 +752,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     private func imageData(_ record: ClipboardRecord) -> Data? {
-        record.parts.flatMap(\.representations).first { ["public.png", "public.tiff", "public.jpeg"].contains($0.typeIdentifier) }?.data
+        OCRDerivedCache.imageData(in: record)
     }
 
     private func scheduleOCR(for record: ClipboardRecord) {
@@ -695,7 +764,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
                 let result = try await service.recognizeText(in: image)
                 guard let self, let latest = try self.store?.item(id: record.id), latest.revision == record.revision else { return }
                 var updated = latest; updated.ocrText = result.text
-                _ = try self.store?.update(record: updated)
+                if let stored = try self.store?.update(record: updated) {
+                    try? await self.ocrCache.store(result, for: stored, imageData: image, sourceStore: self.store)
+                }
                 self.reload()
             } catch { /* OCR is derived content; original image remains available. */ }
         }
@@ -707,7 +778,18 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let result = try await self.intelligence.recognizeText(in: image)
+                let result: LocalIntelligenceService.OCRResult
+                if let cached = try? await self.ocrCache.result(for: record, imageData: image) {
+                    result = cached
+                } else {
+                    result = try await self.intelligence.recognizeText(in: image)
+                }
+                if !self.demo {
+                    guard let latest = try self.store?.item(id: record.id), latest.revision == record.revision else {
+                        self.setStatus("原图已改变或删除，请重新打开图片后提取文字。"); return
+                    }
+                    try? await self.ocrCache.store(result, for: latest, imageData: image, sourceStore: self.store)
+                }
                 guard !result.text.isEmpty else { self.setStatus("未识别到可用文字。"); return }
                 let text = ClipboardRecord(text: result.text, sourceApp: "ClipShelf OCR", sourceBundleID: Bundle.main.bundleIdentifier)
                 if self.demo { self.records.insert(text, at: 0); self.refresh() }
@@ -730,11 +812,12 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         edited.parts = [ClipboardPart(representations: [ClipboardRepresentation(typeIdentifier: "public.png", data: png)])]
         edited.text = "图片 \(cg.height) × \(cg.width)"; edited.rtf = nil; edited.html = nil; edited.ocrText = nil
         updateRecord(edited)
+        Task { try? await ocrCache.remove(recordID: record.id) }
         if !demo, let latest = try? store?.item(id: record.id) { scheduleOCR(for: latest) }
     }
 
     @objc private func pauseFor(_ sender: NSMenuItem) {
-        guard !demo else { return }
+        guard !demo, !validation else { return }
         cancelSuggestions()
         capture.stop(); pauseTimer?.invalidate()
         let until = Date().addingTimeInterval(Double(sender.tag) * 60)
@@ -744,6 +827,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     private func scheduleResume(at until: Date) {
+        guard !validation else { return }
         pauseTimer?.invalidate()
         pausedUntil = until
         preferences.set(until, forKey: "pauseUntil")
@@ -761,7 +845,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         guard !demo, let store else { return }
         let days = preferences.integer(forKey: "retentionDays")
         guard days > 0 else { return }
-        do { _ = try store.prune(before: Date().addingTimeInterval(-Double(days) * 86_400)) }
+        do {
+            if try store.prune(before: Date().addingTimeInterval(-Double(days) * 86_400)) > 0 {
+                requestOCRCleanup(store: store)
+            }
+        }
         catch { statusMessage = "历史清理未完成，原有内容保留。" }
     }
 
@@ -824,7 +912,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showMCPSettings() {
-        guard !demo, let store else { return }
+        guard profile.allowsBackgroundIntegrations, let store else { return }
         cancelSuggestions()
         panel.dismiss()
         do {
@@ -838,24 +926,24 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showCloudSettings() {
-        guard !demo else { return }
+        guard profile.allowsBackgroundIntegrations else { return }
         cancelSuggestions()
         panel.dismiss(); cloudSettings?.present()
     }
 
     @objc private func showSharingSettings() {
-        guard !demo else { return }
+        guard profile.allowsBackgroundIntegrations else { return }
         cancelSuggestions()
         panel.dismiss(); sharingSettings?.present()
     }
 
     func application(_ application: NSApplication, userDidAcceptCloudKitShareWith metadata: CKShare.Metadata) {
-        guard !demo, let url = metadata.share.url else { return }
+        guard profile.allowsBackgroundIntegrations, let url = metadata.share.url else { return }
         sharingSettings?.offerInvitation(url)
     }
 
     @objc private func importFromCamera() {
-        guard !demo else { return }
+        guard profile.allowsBackgroundIntegrations else { return }
         cancelSuggestions()
         panel.dismiss(); systemIntegration.presentCameraImport()
     }
@@ -884,7 +972,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showSuggestions() {
-        guard !demo, let store else { return }
+        guard profile.allowsBackgroundIntegrations, let store else { return }
         let originalTarget = panel.isVisible ? target : paste.captureTarget()
         guard let originalTarget else { setStatus("请回到需要粘贴的应用后再打开智能建议。"); return }
         cancelSuggestions(); panel.dismiss()
@@ -919,7 +1007,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func configureShortcuts() {
-        guard !demo else { return }
+        guard profile.allowsBackgroundIntegrations else { return }
         let alert = NSAlert(); alert.messageText = "快捷指令访问"
         alert.informativeText = "允许后，你运行的快捷指令可新增文本，并读取本地内容、当前同步账号及仍可读取的共享板；旧账号缓存和已撤销共享不会提供。快捷指令后续动作可能把内容发送给其他应用或网络服务。关闭后，这些动作会返回无权访问。"
         let allow = NSButton(checkboxWithTitle: "允许快捷指令新增和读取 ClipShelf 内容", target: nil, action: nil)
@@ -999,6 +1087,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
                     return try store.restoreBackup(from: url, mode: mode)
                 }.value
                 let scope = result.restoredAsLocalOnly ? "恢复内容仅保存在本机，尚未上传。" : ""
+                try? await self?.ocrCache.clear()
                 self?.reload(); self?.setStatus("已恢复 \(result.importedRecords) 条内容。\(scope)恢复前副本保存在本机数据目录。")
             } catch { self?.showError("恢复失败", detail: "\(error.localizedDescription)\n现有数据保留。") }
         }
@@ -1021,7 +1110,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func toggleLoginItem() {
-        guard !demo else { return }
+        guard profile.allowsBackgroundIntegrations else { return }
         do {
             if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister(); setStatus("已关闭登录启动。") }
             else { try SMAppService.mainApp.register(); setStatus("已请求登录启动，可在系统设置中管理。") }
@@ -1041,6 +1130,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         isTerminating = true
         capture.stop(); hotKey.unregister(); stackHotKey.unregister(); stackKeys.stop(); stack.end(); paste.cancel()
         queryTask?.cancel(); pauseTimer?.invalidate(); retentionTimer?.invalidate()
+        ocrCleanupTask?.cancel()
         shareInboxTask?.cancel(); shareInboxTimer?.invalidate()
         intelligence.cancelRecognition(); intelligence.cancelSuggestions()
         cancelSuggestions()
@@ -1048,6 +1138,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         cloudSettings?.stop()
         sharingSettings?.stop()
         ClipboardIntentRuntime.shared.store = nil
+        profile.discardValidationPreferences()
         if let outsideMonitor { NSEvent.removeMonitor(outsideMonitor) }
         for observer in [activationObserver].compactMap({ $0 }) + lifecycleObservers {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
