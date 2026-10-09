@@ -36,7 +36,7 @@ final class ExtendedHistoryTests: XCTestCase {
         let reopened = try HistoryStore(databaseURL: databaseURL)
         XCTAssertEqual(try reopened.load(), [original])
         let attachmentDirectory = databaseURL.deletingPathExtension().appendingPathExtension("attachments")
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: attachmentDirectory.path).count, 4)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: attachmentDirectory.path).filter { $0.hasSuffix(".blob") }.count, 4)
         XCTAssertEqual(original.kind, .image)
     }
 

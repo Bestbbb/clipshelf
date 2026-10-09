@@ -300,6 +300,7 @@ extension HistoryStore {
 
     func enqueueSyncOperation(_ operation: SyncOperation) throws {
         try validateSyncOperation(operation, accountID: operation.accountID)
+        if let record = operation.record { try snapshotOwnedFileBindingsWithoutLock(operationID: operation.operationID, record: record) }
         let payload = try JSONEncoder().encode(operation)
         guard payload.count <= 256 * 1_024 * 1_024 else { throw HistoryStoreError.valueTooLarge }
         let statement = try prepare("INSERT INTO sync_outbox(operation_id, account_id, payload) VALUES (?, ?, ?)")
@@ -481,6 +482,7 @@ extension HistoryStore {
             record.isInHistory = true
             if try itemWithoutLock(id: record.id) == nil {
                 try insert(record)
+                try copyOwnedFileBindingsWithoutLock(from: id, to: record)
                 try setSyncNamespace(kind: .clipboard, id: record.id, accountID: accountID)
             }
         } else if kind == .pinboard, var board = try pinboardsWithoutLock().first(where: { $0.id == id }) {

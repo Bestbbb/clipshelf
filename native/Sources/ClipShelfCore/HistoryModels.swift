@@ -99,12 +99,14 @@ public struct BackupRestoreSummary: Sendable {
     public let identitiesRemapped: Bool
 }
 
-struct HistoryBackup: Codable {
-    var schemaVersion = 2
+struct HistoryBackup: Codable, Sendable {
+    var schemaVersion = 3
     var records: [ClipboardRecord]
     var pinboards: [Pinboard]
     var pinboardOrder: [UUID]? = nil
     var containsSyncedContent: Bool? = nil
+    var ownedFiles: [OwnedFileBackupAsset]? = nil
+    var ownedFileBindings: [OwnedFileBinding]? = nil
 }
 
 struct BackupEnvelope: Codable {

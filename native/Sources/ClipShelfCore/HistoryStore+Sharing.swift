@@ -55,12 +55,14 @@ extension HistoryStore {
                 try setSyncNamespace(kind: .pinboard, id: board.id, accountID: descriptor.namespace)
                 try savePinboard(board, replace: false)
                 for var record in contents {
+                    let originalID = record.id
                     record.id = UUID()
                     record.pinboardID = board.id
                     record.isInHistory = false
                     record.revision = 1
                     try setSyncNamespace(kind: .clipboard, id: record.id, accountID: descriptor.namespace)
                     try insert(record)
+                    try copyOwnedFileBindingsWithoutLock(from: originalID, to: record)
                 }
                 return board
             }
@@ -166,6 +168,22 @@ extension HistoryStore {
                     } else {
                         try syncExecute("INSERT OR IGNORE INTO sync_inbox(operation_id, account_id, payload) SELECT operation_id, namespace, payload FROM shared_accepted_operations WHERE namespace = ?", [state.descriptor.namespace])
                         try drainSyncInbox(accountID: state.descriptor.namespace)
+                        // Only accepted operations created locally have an ownership snapshot.
+                        // Rebuilding a cache must not erase that proof or infer it from remote URLs.
+                        let accepted = try prepare("SELECT payload FROM shared_accepted_operations WHERE namespace = ? ORDER BY rowid")
+                        defer { sqlite3_finalize(accepted) }
+                        try bind(state.descriptor.namespace, at: 1, to: accepted)
+                        for operation in try syncReadOperations(accepted) {
+                            guard let original = operation.record,
+                                  let current = try itemWithoutLock(id: original.id) else { continue }
+                            let prior = try rebasingOwnedFileOperationRecordWithoutLock(operationID: operation.operationID, record: original)
+                            if current.parts == original.parts || current.parts == prior.parts {
+                                var rebound = current
+                                rebound.parts = prior.parts
+                                if rebound.parts != current.parts { try replaceContents(rebound) }
+                                try restoreOwnedFileOperationBindingsWithoutLock(operationID: operation.operationID, record: rebound)
+                            }
+                        }
                         if let personalPosition, try pinboardsWithoutLock().contains(where: { $0.id == boardID }) {
                             try syncExecute("INSERT INTO pinboard_local_order(board_id, position) VALUES (?, ?)", [boardID.uuidString, personalPosition])
                         }
@@ -195,10 +213,26 @@ extension HistoryStore {
     /// Recover a rejected item as a new local history item; it is never automatically resent to the shared board.
     @discardableResult
     public func recoverFailedSharedDraft(operationID: UUID, boardID: UUID, accountID: String) throws -> ClipboardRecord {
-        let drafts = try failedSharedDrafts(boardID: boardID, accountID: accountID)
-        guard var record = drafts.first(where: { $0.id == operationID })?.operation.record else { throw HistoryStoreError.recordNotFound }
-        record.id = UUID(); record.pinboardID = nil; record.pinboardOrder = nil; record.isInHistory = true; record.revision = 1
-        return try create(record, preserveOrigin: true)
+        try synchronized {
+            try transaction {
+                let state = try requireSharedBoard(boardID: boardID, accountID: accountID)
+                let statement = try prepare("SELECT payload FROM shared_failed_drafts WHERE operation_id = ? AND namespace = ? AND account_id = ?")
+                defer { sqlite3_finalize(statement) }
+                try bind(operationID.uuidString, at: 1, to: statement)
+                try bind(state.descriptor.namespace, at: 2, to: statement)
+                try bind(accountID, at: 3, to: statement)
+                let status = sqlite3_step(statement)
+                guard status != SQLITE_DONE else { throw HistoryStoreError.recordNotFound }
+                try check(status, allowingRow: true)
+                guard let data = dataColumn(statement, 0),
+                      var record = try JSONDecoder().decode(FailedSharedDraft.self, from: data).operation.record else { throw HistoryStoreError.recordNotFound }
+                record = try rebasingOwnedFileOperationRecordWithoutLock(operationID: operationID, record: record)
+                record.id = UUID(); record.pinboardID = nil; record.pinboardOrder = nil; record.isInHistory = true; record.revision = 1
+                try insert(record)
+                try restoreOwnedFileOperationBindingsWithoutLock(operationID: operationID, record: record)
+                return record
+            }
+        }
     }
 
     @discardableResult
@@ -213,8 +247,10 @@ extension HistoryStore {
                 board.id = UUID(); board.name = String(board.name.prefix(150)) + String(nameSuffix.prefix(40))
                 try savePinboard(board, replace: false)
                 for var record in contents {
+                    let originalID = record.id
                     record.id = UUID(); record.pinboardID = board.id; record.isInHistory = false; record.revision = 1
                     try insert(record)
+                    try copyOwnedFileBindingsWithoutLock(from: originalID, to: record)
                 }
                 return board
             }

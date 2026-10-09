@@ -8,6 +8,8 @@ public enum HistoryStoreError: Error, LocalizedError {
     case invalidStoredRecord
     case valueTooLarge
     case corruptAttachment
+    case invalidOwnedFile
+    case corruptOwnedFile
     case recordNotFound
     case pinboardNotFound
     case invalidPinboard
@@ -30,6 +32,8 @@ public enum HistoryStoreError: Error, LocalizedError {
         case .invalidStoredRecord: return "A history record could not be decoded."
         case .valueTooLarge: return "The clipboard representation is too large to store."
         case .corruptAttachment: return "A clipboard attachment is missing or failed its integrity check."
+        case .invalidOwnedFile: return "托管文件的名称、内容或归属无效，未保存任何部分内容。"
+        case .corruptOwnedFile: return "托管文件原件缺失、被修改或包含不安全路径，未继续操作。"
         case .recordNotFound: return "This clipboard item no longer exists."
         case .pinboardNotFound: return "This pinboard no longer exists."
         case .invalidPinboard: return "A pinboard needs a name and a six-digit color."
@@ -60,6 +64,9 @@ public final class HistoryStore: @unchecked Sendable {
     var sourceMetadataCache: MetadataCacheEntry<[String: String]>?
     var deviceMetadataCache: MetadataCacheEntry<[ClipboardOriginDevice]>?
     let representations: RepresentationStorage
+    let ownedFileStorage: OwnedFileStorage
+    var newOwnedFileDirectories: [UUID]?
+    var ownedFilesSchemaReady = false
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     static let columns = "id, text, source_app, source_bundle_id, copied_at, rtf, html, parts, renamed_title, ocr_text, pinboard_id, is_in_history, revision, content_kind, pinboard_order, origin_device_id, origin_device_name, origin_device_conflict"
     private static let metadataColumns = "id, text, source_app, source_bundle_id, copied_at, NULL, NULL, parts, renamed_title, ocr_text, pinboard_id, is_in_history, revision, content_kind, pinboard_order, origin_device_id, origin_device_name, origin_device_conflict"
@@ -76,6 +83,7 @@ public final class HistoryStore: @unchecked Sendable {
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
+        ownedFileStorage = try OwnedFileStorage(databaseURL: databaseURL)
         var connection: OpaquePointer?
         let status = sqlite3_open_v2(
             databaseURL.path, &connection,
@@ -505,65 +513,6 @@ public final class HistoryStore: @unchecked Sendable {
         }
     }
 
-    /// Backups contain plaintext clipboard contents. File permissions are restricted to the current user.
-    public func exportBackup(to destination: URL) throws {
-        try synchronized {
-            try transaction { try exportBackupWithoutLock(to: destination) }
-        }
-    }
-
-    @discardableResult
-    public func restoreBackup(from source: URL, mode: BackupRestoreMode) throws -> BackupRestoreSummary {
-        let backup = try readBackup(source)
-        return try synchronized {
-            let recovery = try recoveryURL(reason: "restore", extension: "clipshelfbackup")
-            suppressSyncCapture = true
-            defer { suppressSyncCapture = false }
-            return try transaction {
-                let boundProfile = try hasSyncBoundState()
-                if mode == .replace, boundProfile { throw HistoryStoreError.syncedProfileRequiresLocalMerge }
-                let remapIdentities = boundProfile || backup.containsSyncedContent == true
-                try exportBackupWithoutLock(to: recovery)
-                if mode == .replace {
-                    try execute("DELETE FROM clipboard_records")
-                    try execute("DELETE FROM pinboards")
-                }
-                let existingOrder = try orderedPinboardsWithoutLock().map(\.id)
-                let existingBoards = Set(existingOrder)
-                var boardCount = 0
-                var boardIDs: [UUID: UUID] = [:]
-                for var board in backup.pinboards {
-                    let originalID = board.id
-                    if remapIdentities { board.id = UUID() }
-                    boardIDs[originalID] = board.id
-                    if existingBoards.contains(board.id) { continue }
-                    try markSyncLocalOnly(kind: .pinboard, id: board.id)
-                    try savePinboard(board, replace: false)
-                    boardCount += 1
-                }
-                if let order = backup.pinboardOrder {
-                    try reorderPinboardsWithoutLock(ids: existingOrder + order.compactMap { boardIDs[$0] }.filter { !existingBoards.contains($0) })
-                }
-                var recordCount = 0
-                // The archive is newest first; insert oldest first to preserve capture order.
-                for var record in backup.records.reversed() {
-                    if remapIdentities { record.id = UUID() }
-                    record.pinboardID = record.pinboardID.flatMap { boardIDs[$0] }
-                    if let current = try itemWithoutLock(id: record.id) {
-                        if current == record { continue }
-                        // Keep both versions on a merge conflict instead of silently replacing either.
-                        record.id = UUID()
-                    }
-                    try markSyncLocalOnly(kind: .clipboard, id: record.id)
-                    try insert(record)
-                    recordCount += 1
-                }
-                return BackupRestoreSummary(importedRecords: recordCount, importedPinboards: boardCount, recoveryBackupURL: recovery,
-                                            restoredAsLocalOnly: true, identitiesRemapped: remapIdentities)
-            }
-        }
-    }
-
     /// Reclaims unreferenced attachment files under a database write lock.
     /// Run after mutation batches on a background queue, not while rendering the panel.
     @discardableResult
@@ -672,6 +621,7 @@ public final class HistoryStore: @unchecked Sendable {
         defer { sqlite3_finalize(statement) }
         try bindRecord(record, to: statement)
         try stepToCompletion(statement)
+        try retainMatchingOwnedFileBindingsWithoutLock(record)
     }
 
     func itemWithoutLock(id: UUID) throws -> ClipboardRecord? {
@@ -736,55 +686,6 @@ public final class HistoryStore: @unchecked Sendable {
         return Int(sqlite3_column_int64(statement, 0))
     }
 
-    func exportBackupWithoutLock(to destination: URL) throws {
-        guard destination.isFileURL, !destination.path.utf8.contains(0) else { throw HistoryStoreError.invalidDatabaseURL }
-        guard !FileManager.default.fileExists(atPath: destination.path) else { throw HistoryStoreError.backupExists }
-        let statement = try prepare("SELECT \(Self.columns) FROM clipboard_records ORDER BY rowid DESC")
-        defer { sqlite3_finalize(statement) }
-        let backup = HistoryBackup(records: try readRecords(statement), pinboards: try pinboardsWithoutLock(),
-                                   pinboardOrder: try orderedPinboardsWithoutLock().map(\.id), containsSyncedContent: try hasSyncBoundState())
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let payload = try encoder.encode(backup)
-        let envelope = BackupEnvelope(checksum: RepresentationStorage.digest(payload), payload: payload)
-        let data = try encoder.encode(envelope)
-        guard data.count <= 512 * 1_024 * 1_024 else { throw HistoryStoreError.valueTooLarge }
-        let stagingDirectory = destination.deletingLastPathComponent().appendingPathComponent(".clipshelf-export-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: false,
-                                                attributes: [.posixPermissions: 0o700])
-        defer { try? FileManager.default.removeItem(at: stagingDirectory) }
-        let staged = stagingDirectory.appendingPathComponent("backup")
-        try data.write(to: staged, options: .withoutOverwriting)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: staged.path)
-        // Same-volume move publishes a complete file and refuses an existing destination.
-        try FileManager.default.moveItem(at: staged, to: destination)
-    }
-
-    func readBackup(_ source: URL) throws -> HistoryBackup {
-        guard source.isFileURL else { throw HistoryStoreError.invalidBackup }
-        let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
-        guard let size = attributes[.size] as? NSNumber, size.int64Value <= 512 * 1_024 * 1_024 else { throw HistoryStoreError.invalidBackup }
-        let data = try Data(contentsOf: source, options: .mappedIfSafe)
-        guard data.count <= 512 * 1_024 * 1_024 else { throw HistoryStoreError.invalidBackup }
-        let envelope = try JSONDecoder().decode(BackupEnvelope.self, from: data)
-        guard envelope.formatVersion == 1, envelope.checksum == RepresentationStorage.digest(envelope.payload) else { throw HistoryStoreError.invalidBackup }
-        let backup = try JSONDecoder().decode(HistoryBackup.self, from: envelope.payload)
-        guard backup.schemaVersion == 2, backup.records.count <= 100_000, backup.pinboards.count <= 10_000,
-              Set(backup.records.map(\.id)).count == backup.records.count,
-              Set(backup.pinboards.map(\.id)).count == backup.pinboards.count else { throw HistoryStoreError.invalidBackup }
-        let boards = Set(backup.pinboards.map(\.id))
-        if let order = backup.pinboardOrder {
-            guard Set(order) == boards, order.count == boards.count else { throw HistoryStoreError.invalidBackup }
-        }
-        for board in backup.pinboards { try validate(board) }
-        for record in backup.records {
-            try validate(record)
-            if let board = record.pinboardID, !boards.contains(board) { throw HistoryStoreError.invalidBackup }
-            guard record.isInHistory || record.pinboardID != nil else { throw HistoryStoreError.invalidBackup }
-        }
-        return backup
-    }
-
     func recoveryURL(reason: String, extension suffix: String) throws -> URL {
         let directory = databaseURL.deletingLastPathComponent().appendingPathComponent("Backups", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
@@ -823,7 +724,7 @@ public final class HistoryStore: @unchecked Sendable {
             try check(sqlite3_step(versionStatement), allowingRow: true)
             return Int(sqlite3_column_int(versionStatement, 0))
         }()
-        if (1...7).contains(version) { try recoveryDatabaseBackup(reason: "migration-v\(version)") }
+        if (1...8).contains(version) { try recoveryDatabaseBackup(reason: "migration-v\(version)") }
         suppressSyncCapture = true
         defer { suppressSyncCapture = false }
         try transaction {
@@ -873,7 +774,7 @@ public final class HistoryStore: @unchecked Sendable {
                     try stepToCompletion(update)
                 }
                 try execute("PRAGMA user_version = 2")
-            case 2, 3, 4, 5, 6, 7, 8: break
+            case 2, 3, 4, 5, 6, 7, 8, 9: break
             default: throw HistoryStoreError.unsupportedSchemaVersion(version)
             }
             try execute("CREATE TABLE IF NOT EXISTS pinboard_order_backfill(board_id TEXT PRIMARY KEY REFERENCES pinboards(id) ON DELETE CASCADE)")
@@ -894,9 +795,10 @@ public final class HistoryStore: @unchecked Sendable {
             try execute("CREATE INDEX IF NOT EXISTS clipboard_pinboard_order ON clipboard_records(pinboard_id, pinboard_order, id)")
             try createSyncSchema()
             try createSharingSchema()
+            try createOwnedFilesSchema()
             try execute("CREATE TABLE IF NOT EXISTS pinboard_local_order(board_id TEXT PRIMARY KEY REFERENCES pinboards(id) ON DELETE CASCADE, position INTEGER NOT NULL)")
             try initializeSearchIndex()
-            try execute("PRAGMA user_version = 8")
+            try execute("PRAGMA user_version = 9")
             syncSchemaReady = true
         }
     }
@@ -915,7 +817,7 @@ public final class HistoryStore: @unchecked Sendable {
               let text = textColumn(statement, 1) else {
             throw HistoryStoreError.invalidStoredRecord
         }
-        return ClipboardRecord(
+        let record = ClipboardRecord(
             id: id, text: text,
             sourceApp: textColumn(statement, 2), sourceBundleID: textColumn(statement, 3),
             copiedAt: Date(timeIntervalSinceReferenceDate: sqlite3_column_double(statement, 4)),
@@ -929,6 +831,7 @@ public final class HistoryStore: @unchecked Sendable {
             originDeviceID: textColumn(statement, 15).flatMap(UUID.init(uuidString:)),
             originDeviceName: textColumn(statement, 16), originDeviceConflict: sqlite3_column_int(statement, 17) != 0
         )
+        return ownedFilesSchemaReady ? try rebasingOwnedFileURLsWithoutLock(record) : record
     }
 
     func decodeMetadata(_ statement: OpaquePointer) throws -> ClipboardRecordMetadata {
@@ -1007,7 +910,15 @@ public final class HistoryStore: @unchecked Sendable {
     func transaction<T>(_ operation: () throws -> T) throws -> T {
         try execute("BEGIN IMMEDIATE")
         var committed = false
-        defer { if !committed { try? execute("ROLLBACK") } }
+        newOwnedFileDirectories = []
+        defer {
+            if !committed {
+                // Retain the writer lock during cleanup, including failures in outbox flush/COMMIT.
+                for id in newOwnedFileDirectories ?? [] { ownedFileStorage.removeNew(id) }
+                try? execute("ROLLBACK")
+            }
+            newOwnedFileDirectories = nil
+        }
         let result = try operation()
         if syncSchemaReady { try flushSyncDirty() }
         try execute("COMMIT")

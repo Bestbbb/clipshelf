@@ -13,11 +13,12 @@ extension HistoryStore {
                 try preflightSelectionPayload([reference], maximumBytes: 512 * 1_024 * 1_024)
                 guard let original = try itemWithoutLock(id: record.id) else { throw HistoryStoreError.recordNotFound }
                 let sync = try syncConfigurationWithoutLock(), sharing = try sharingConfigurationWithoutLock()
+                let bindings = try ownedFileBindingsWithoutLock(recordID: record.id)
                 let updated = try updateWithoutLock(record: record, current: original)
                 return HistorySelectionEditUndo(original: original,
                                                 expected: ClipboardSelectionReference(id: updated.id, revision: updated.revision),
                                                 storeIdentity: selectionStoreIdentity,
-                                                syncConfiguration: sync, sharingConfiguration: sharing)
+                                                syncConfiguration: sync, sharingConfiguration: sharing, ownedFileBindings: bindings)
             }
         }
     }
@@ -34,6 +35,7 @@ extension HistoryStore {
                 var original = undo.original
                 original.revision = undo.expected.revision
                 let restored = try updateWithoutLock(record: original, current: current)
+                try setOwnedFileBindingsWithoutLock(undo.ownedFileBindings, record: restored)
                 let reference = ClipboardSelectionReference(id: restored.id, revision: restored.revision)
                 return HistorySelectionUndoReceipt(references: [reference], storeIdentity: selectionStoreIdentity,
                                                    before: [ClipboardSelectionReference(id: undo.original.id, revision: undo.original.revision)],
@@ -51,6 +53,7 @@ extension HistoryStore {
         return HistorySelectionEditUndo(original: undo.original,
                                         expected: index.map { receipt.after[$0] } ?? undo.expected,
                                         storeIdentity: undo.storeIdentity,
-                                        syncConfiguration: undo.syncConfiguration, sharingConfiguration: undo.sharingConfiguration)
+                                        syncConfiguration: undo.syncConfiguration, sharingConfiguration: undo.sharingConfiguration,
+                                        ownedFileBindings: undo.ownedFileBindings)
     }
 }

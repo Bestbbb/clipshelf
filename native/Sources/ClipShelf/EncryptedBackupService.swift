@@ -1,6 +1,7 @@
 import ClipShelfCore
 import CommonCrypto
 import CryptoKit
+import Darwin
 import Foundation
 import Security
 
@@ -23,7 +24,7 @@ enum EncryptedBackupService {
     private static let maximumSize = 512 * 1024 * 1024
 
     static func isEncrypted(_ url: URL) throws -> Bool {
-        let file = try FileHandle(forReadingFrom: url)
+        let (file, _) = try openSource(url)
         defer { try? file.close() }
         return try file.read(upToCount: 4) == magic.prefix(4)
     }
@@ -69,15 +70,54 @@ enum EncryptedBackupService {
     }
 
     static func restore(store: HistoryStore, from source: URL, password: String, mode: BackupRestoreMode) throws -> BackupRestoreSummary {
-        let size = try source.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max
-        guard size <= maximumSize + 49 else { throw EncryptedBackupError.invalidBackup }
-        let plaintext = try open(Data(contentsOf: source), password: password)
+        let prepared = try prepareRestore(from: source, password: password, mode: mode, store: store)
+        return try store.restoreBackup(prepared)
+    }
+
+    /// Authentication and complete Core validation precede any migration or store mutation.
+    /// Core owns the immutable prepared value; plaintext staging is removed before return.
+    static func prepareRestore(from source: URL, password: String, mode: BackupRestoreMode, store: HistoryStore) throws -> PreparedBackupRestore {
+        let plaintext = try open(readSource(source), password: password)
         let staging = try temporaryDirectory(in: FileManager.default.temporaryDirectory)
         defer { try? FileManager.default.removeItem(at: staging) }
         let file = staging.appendingPathComponent("archive.clipshelf")
         try plaintext.write(to: file, options: .withoutOverwriting)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-        return try store.restoreBackup(from: file, mode: mode)
+        return try store.prepareBackupRestore(from: file, mode: mode)
+    }
+
+    private static func openSource(_ url: URL) throws -> (FileHandle, stat) {
+        guard url.isFileURL else { throw EncryptedBackupError.invalidBackup }
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else { throw EncryptedBackupError.invalidBackup }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_size >= 0, info.st_size <= maximumSize + 49 else {
+            Darwin.close(descriptor)
+            throw EncryptedBackupError.invalidBackup
+        }
+        return (FileHandle(fileDescriptor: descriptor, closeOnDealloc: true), info)
+    }
+
+    private static func readSource(_ url: URL) throws -> Data {
+        let (file, before) = try openSource(url)
+        defer { try? file.close() }
+        var data = Data()
+        // The descriptor and byte budget stay authoritative even if the path is
+        // replaced or the file grows after fstat. Never use an unbounded path read.
+        while let chunk = try file.read(upToCount: min(65_536, maximumSize + 50 - data.count)), !chunk.isEmpty {
+            guard chunk.count <= maximumSize + 49 - data.count else { throw EncryptedBackupError.invalidBackup }
+            data.append(chunk)
+        }
+        var after = stat()
+        guard fstat(file.fileDescriptor, &after) == 0,
+              before.st_dev == after.st_dev, before.st_ino == after.st_ino,
+              before.st_size == after.st_size, data.count == Int(before.st_size),
+              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec, before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec, before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec else {
+            throw EncryptedBackupError.invalidBackup
+        }
+        return data
     }
 
     private static func temporaryDirectory(in parent: URL) throws -> URL {

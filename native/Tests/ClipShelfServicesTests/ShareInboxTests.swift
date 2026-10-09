@@ -124,7 +124,10 @@ final class ShareInboxTests: XCTestCase {
         XCTAssertEqual(representation.typeIdentifier, "public.file-url")
         let url = try XCTUnwrap(URL(string: XCTUnwrap(String(data: representation.data, encoding: .utf8))))
         XCTAssertEqual(try Data(contentsOf: url), bytes)
-        XCTAssertTrue(url.path.contains("/ShareImports/Files/")); XCTAssertTrue(try inbox.pendingIDs().isEmpty)
+        XCTAssertFalse(url.path.contains("/ShareImports/Files/"))
+        let stored = try XCTUnwrap(store.load().first)
+        XCTAssertEqual(try store.ownedFileBindings(recordID: stored.id).count, 1)
+        XCTAssertTrue(try inbox.pendingIDs().isEmpty)
     }
     func testAccountChangeAndDisabledImportDoNotRedirectQueuedContent() async throws {
         try await service.publishDestinations()
@@ -217,4 +220,38 @@ final class ShareInboxTests: XCTestCase {
     func testMissingAppGroupFailsExplicitly() {
         XCTAssertThrowsError(try ShareInboxDirectory.configured(bundle: Bundle(for: Self.self)))
     }
+    func testUnsupportedRepresentationAfterFileLeavesNoFinalLegacyFileOrRecord() async throws {
+        try await service.publishDestinations()
+        let catalog = try inbox.readCatalog()
+        let draft = try inbox.makeDraft(itemCount: 1)
+        try draft.append(data: Data("verified staging file".utf8), typeIdentifier: "io.github.bestbbb.clipshelf.shared-file", itemIndex: 0, originalFilename: "fixture.txt")
+        try draft.append(data: Data([1, 2]), typeIdentifier: "com.example.unsupported-binary", itemIndex: 0)
+        let id = try draft.publish(destination: catalog.destinations[0], catalog: catalog)
+        let report = try await service.importPending()
+        XCTAssertEqual(report.failures.count, 1); XCTAssertEqual(report.imported, 0)
+        XCTAssertTrue(try store.load().isEmpty)
+        XCTAssertEqual(try inbox.pendingIDs(), [id])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("private/ShareImports/Files").path))
+    }
+
+    func testRepeatedFileImportsWithSameNameHaveIndependentManagedBytes() async throws {
+        try await service.publishDestinations()
+        let catalog = try inbox.readCatalog()
+        for value in ["first file", "second file"] {
+            let draft = try inbox.makeDraft(itemCount: 1)
+            try draft.append(data: Data(value.utf8), typeIdentifier: "io.github.bestbbb.clipshelf.shared-file", itemIndex: 0, originalFilename: "same.txt")
+            try draft.publish(destination: catalog.destinations[0], catalog: catalog)
+        }
+        let result = try await service.importPending()
+        XCTAssertEqual(result.imported, 2); XCTAssertTrue(result.failures.isEmpty)
+        let records = try store.load()
+        let urls = try records.map { record -> URL in
+            XCTAssertEqual(try store.ownedFileBindings(recordID: record.id).count, 1)
+            let value = try XCTUnwrap(record.parts.first?.representations.first)
+            return try XCTUnwrap(URL(string: XCTUnwrap(String(data: value.data, encoding: .utf8))))
+        }
+        XCTAssertEqual(Set(urls).count, 2)
+        XCTAssertEqual(try Set(urls.map { String(data: try Data(contentsOf: $0), encoding: .utf8)! }), ["first file", "second file"])
+    }
+
 }

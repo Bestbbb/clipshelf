@@ -68,7 +68,8 @@ extension HistoryStore {
                 let undo = HistorySelectionDeleteUndo(storeIdentity: selectionStoreIdentity, references: references,
                                                       syncConfiguration: try syncConfigurationWithoutLock(),
                                                       sharingConfiguration: try sharingConfigurationWithoutLock(),
-                                                      consumption: HistorySelectionUndoConsumption())
+                                                      consumption: HistorySelectionUndoConsumption(),
+                                                      ownedFileBindings: try references.flatMap { try ownedFileBindingsWithoutLock(recordID: $0.id) })
                 let statement = try prepare("DELETE FROM clipboard_records WHERE id = ?")
                 defer { sqlite3_finalize(statement) }
                 for item in items {
@@ -197,6 +198,7 @@ extension HistoryStore {
                 for original in originals.reversed() {
                     var record = original; record.revision += 1
                     try insert(record)
+                    try setOwnedFileBindingsWithoutLock(undo.ownedFileBindings.filter { $0.recordID == record.id }, record: record)
                 }
                 for original in originals { restored.append(ClipboardSelectionReference(id: original.id, revision: original.revision + 1)) }
                 return HistorySelectionUndoReceipt(references: restored, storeIdentity: selectionStoreIdentity,

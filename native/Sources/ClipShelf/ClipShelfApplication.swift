@@ -1208,7 +1208,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     @objc private func exportBackup() {
-        guard !demo, let store else { return }
+        guard !demo, let store, mutationIsAvailable() else { return }
         cancelSuggestions()
         panel.dismiss()
         let options = NSAlert(); options.messageText = "导出备份"
@@ -1230,16 +1230,25 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         password.stringValue = ""; repeatPassword.stringValue = ""
         let save = NSSavePanel(); save.nameFieldStringValue = "ClipShelf-backup.clipshelf"
         save.title = "导出本地备份"; save.message = secret == nil ? "将导出未加密文件，请妥善保存。" : "将导出密码加密文件。"
-        guard save.runModal() == .OK, let url = save.url else { return }
+        guard save.runModal() == .OK, let url = save.url, mutationIsAvailable() else { return }
+        selectionMutationInProgress = true
         Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.selectionMutationInProgress = false }
             do {
+                let privateDirectory = try self.profile.dataDirectory()
+                let migration = try await Task.detached {
+                    try ShareInboxService.migrateLegacyFiles(store: store, privateDirectory: privateDirectory)
+                }.value
+                if migration.migratedRecords > 0 { self.selectionUndoHistory.removeAll(); self.reload() }
+                try migration.requireComplete()
                 try await Task.detached {
                     if let secret { try EncryptedBackupService.export(store: store, to: url, password: secret) }
                     else { try store.exportBackup(to: url) }
                 }.value
-                self?.setStatus("备份已导出。")
+                self.setStatus("备份已导出。\(migration.snapshotNotice)")
             }
-            catch { self?.showError("导出失败", detail: "目标文件可能已存在，或没有写入权限。请选择新文件名。") }
+            catch { self.showError("导出失败", detail: error.localizedDescription) }
         }
     }
 
@@ -1272,14 +1281,21 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             guard let self else { return }
             defer { self.selectionMutationInProgress = false }
             do {
-                let result = try await Task.detached {
-                    if let password { return try EncryptedBackupService.restore(store: store, from: url, password: password, mode: mode) }
-                    return try store.restoreBackup(from: url, mode: mode)
+                let prepared = try await Task.detached {
+                    if let password { return try EncryptedBackupService.prepareRestore(from: url, password: password, mode: mode, store: store) }
+                    return try store.prepareBackupRestore(from: url, mode: mode)
                 }.value
+                let privateDirectory = try self.profile.dataDirectory()
+                let migration = try await Task.detached {
+                    try ShareInboxService.migrateLegacyFiles(store: store, privateDirectory: privateDirectory)
+                }.value
+                if migration.migratedRecords > 0 { self.selectionUndoHistory.removeAll(); self.reload() }
+                try migration.requireComplete()
+                let result = try await Task.detached { try store.restoreBackup(prepared) }.value
                 self.selectionUndoHistory.removeAll()
                 let scope = result.restoredAsLocalOnly ? "恢复内容仅保存在本机，尚未上传。" : ""
                 try? await self.ocrCache.clear()
-                self.reload(); self.setStatus("已恢复 \(result.importedRecords) 条内容。\(scope)恢复前副本保存在本机数据目录。")
+                self.reload(); self.setStatus("已恢复 \(result.importedRecords) 条内容。\(scope)恢复前副本保存在本机数据目录。\(migration.snapshotNotice)")
             } catch { self.showError("恢复失败", detail: "\(error.localizedDescription)\n现有数据保留。") }
         }
     }

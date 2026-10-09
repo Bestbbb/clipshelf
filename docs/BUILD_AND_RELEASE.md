@@ -241,15 +241,37 @@ unencrypted; password-protected export is not a claim of encrypted local storage
 or end-to-end encrypted iCloud synchronization.
 
 Image and rich-text representations include their original bytes. Ordinary
-Finder records contain external file-URL references. Share Inbox imports copy
-files into the app's private `ShareImports/Files` directory, but records and
-backup archives currently retain only those URLs, not the owned target bytes.
-Restoring to a fresh location without that original directory cannot recover
-the files from the archive alone; encryption does not close this gap. Supporting
-self-contained backup/restore of already owned share files and relocating
-missing originals are tracked work, not part of this shortcut implementation.
-This does not authorize permanently copying every external Finder file; Paste's
-file-retention semantics still need baseline confirmation.
+Finder records remain external file-URL references. New Share Inbox files use
+an explicit local asset registry in database schema 9. Each asset has a checked
+immutable original and a separate file projection for opening in other apps.
+Edits made by another app to that projection are not added to the stored
+original or its backup. Local file copies and trusted Undo retain asset bindings.
+
+Archive schema 3 embeds registered originals, SHA-256 metadata, and record/slot
+bindings. Restore validates the whole manifest, creates fresh asset IDs and
+paths in the destination profile, and never reads old paths from the archive.
+Schema 2 remains readable but cannot recover file bytes that were never stored.
+Encrypted export wraps the same schema 3 archive. Export checks a conservative
+metadata-based size budget before loading attachments, then enforces the final
+512 MiB envelope limit, including both layers of base64. This is not an RSS limit.
+
+Backup and restore actions first adopt legacy ShareImports files using local
+completed receipts, exact record/slot paths, and bounded regular-file reads.
+This does not require an App Group. Adoption preserves a migration-time snapshot;
+the old receipt cannot verify the original share bytes. Uncertain or missing
+files stop the action with a report, and deleted entries are not resurrected.
+For restore, password authentication and complete archive validation precede
+adoption. A prepared archive is bound to the current store and both account
+configuration generations. A portable recovery backup precedes database changes;
+SQL/outbox/commit failure removes only newly created owned assets.
+
+Unreferenced owned originals are currently retained so deletion/edit Undo and
+failed shared drafts keep their dependencies. There is no automatic asset garbage
+collection yet; deleting a history entry is not a secure erasure of those bytes.
+Local originals, projections, migration snapshots, and recovery backups are
+unencrypted. Cloud operations still carry file URLs; portable backup does not
+implement owned-file byte synchronization. Missing external-file relocation and
+Paste's file-retention semantics remain pending validation.
 
 MCP access and refresh credentials are held in the local Keychain. Developer
 signing material and runtime history must never be included in a release archive.
