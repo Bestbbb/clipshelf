@@ -9,10 +9,17 @@ struct RuntimeProfile {
     let validationDirectory: URL?
     let validationPreferenceDomain: String?
     let includesSearchFixtures: Bool
+    let isReleaseDistribution: Bool
 
     static let current = RuntimeProfile(arguments: CommandLine.arguments)
 
-    init(arguments: [String], temporaryDirectory: URL = FileManager.default.temporaryDirectory) {
+    init(arguments: [String], temporaryDirectory: URL = FileManager.default.temporaryDirectory,
+         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
+         distribution: String? = Bundle.main.object(forInfoDictionaryKey: "ClipShelfDistribution") as? String) {
+        isReleaseDistribution = distribution == "release" && bundleIdentifier.map {
+            $0.range(of: "^[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+\\z", options: .regularExpression) != nil &&
+            !$0.lowercased().split(separator: ".").contains(where: { ["dev", "demo", "validation"].contains(String($0)) })
+        } == true
         includesSearchFixtures = arguments.contains("--validation") && arguments.contains("--validation-search")
         if arguments.contains("--validation") {
             mode = .validation
@@ -31,12 +38,13 @@ struct RuntimeProfile {
     }
 
     var allowsBackgroundIntegrations: Bool { mode == .standard }
+    var dataDirectoryName: String { isReleaseDistribution ? "ClipShelf" : "ClipShelf Development" }
 
     func dataDirectory() throws -> URL {
         if let validationDirectory { return validationDirectory }
         return try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                           appropriateFor: nil, create: true)
-            .appendingPathComponent("ClipShelf Development", isDirectory: true)
+            .appendingPathComponent(dataDirectoryName, isDirectory: true)
     }
 
     func discardValidationPreferences() {

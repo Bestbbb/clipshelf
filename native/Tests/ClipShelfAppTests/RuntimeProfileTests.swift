@@ -36,4 +36,30 @@ final class RuntimeProfileTests: XCTestCase {
         XCTAssertTrue(profile.includesSearchFixtures)
         XCTAssertFalse(profile.allowsBackgroundIntegrations)
     }
+
+    func testProductionAndDevelopmentUseSeparateDataDirectories() {
+        let release = RuntimeProfile(arguments: ["ClipShelf"], bundleIdentifier: "io.github.bestbbb.clipshelf", distribution: "release")
+        XCTAssertTrue(release.isReleaseDistribution)
+        XCTAssertEqual(release.dataDirectoryName, "ClipShelf")
+        for (identifier, marker) in [("io.github.bestbbb.clipshelf.dev", "release"),
+                                      ("io.github.bestbbb.clipshelf", "development"),
+                                      ("io.github.bestbbb.clipshelf.validation.test", "release"),
+                                      ("invalid/id", "release")] {
+            let development = RuntimeProfile(arguments: ["ClipShelf"], bundleIdentifier: identifier, distribution: marker)
+            XCTAssertFalse(development.isReleaseDistribution)
+            XCTAssertEqual(development.dataDirectoryName, "ClipShelf Development")
+        }
+        XCTAssertFalse(RuntimeProfile(arguments: ["ClipShelf"], bundleIdentifier: nil, distribution: "release").isReleaseDistribution)
+    }
+
+    func testReleaseValidationStillUsesIsolatedProfileWithoutBackgroundIntegrations() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let profile = RuntimeProfile(arguments: ["ClipShelf", "--validation"], temporaryDirectory: root,
+                                     bundleIdentifier: "io.github.bestbbb.clipshelf", distribution: "release")
+        defer { profile.discardValidationPreferences() }
+        XCTAssertTrue(profile.isReleaseDistribution)
+        XCTAssertFalse(profile.allowsBackgroundIntegrations)
+        XCTAssertEqual(try profile.dataDirectory().deletingLastPathComponent().path, root.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+    }
 }

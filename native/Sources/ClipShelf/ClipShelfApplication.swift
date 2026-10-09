@@ -8,7 +8,7 @@ import CloudKit
 import PDFKit
 
 @MainActor
-final class ClipShelfApplication: NSObject, NSApplicationDelegate {
+final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let profile = RuntimeProfile.current
     private let demo = RuntimeProfile.current.mode == .demo
     private let validation = RuntimeProfile.current.mode == .validation
@@ -18,6 +18,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     private var cloudSettings: CloudSyncSettingsController?
     private var sharingSettings: SharingSettingsController?
     private var storageSettings: StorageSettingsController?
+    private var appUpdates: AppUpdateCoordinator?
+    private var updateSettings: UpdateSettingsController?
+    private var updateCheckItems: [NSMenuItem] = []
     private var ownedPublications: OwnedFilePublicationCoordinator?
     private var shareInbox: ShareInboxService?
     private var shareInboxUnavailableReason = "此构建未配置系统分享扩展。"
@@ -75,7 +78,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         let manager = UndoManager(); manager.levelsOfUndo = 10; manager.groupsByEvent = false; return manager
     }()
     private lazy var selectionUndoHistory = SelectionUndoHistory(manager: historyUndo)
-    private var selectionMutationInProgress = false {
+    @UpdateAvailabilityFlag private var selectionMutationInProgress = false {
         didSet {
             if oldValue && !selectionMutationInProgress {
                 // Let the mutation's completion, Undo registration and refresh finish first.
@@ -92,7 +95,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
     private var imageOutputOperationID: UUID?
     private var isTerminating = false
-    private var terminationDecisionPending = false
+    @UpdateAvailabilityFlag private var terminationDecisionPending = false
     private let defaultExclusions = ["com.1password.1password", "com.agilebits.onepassword7",
                                      "com.bitwarden.desktop", "com.apple.Passwords"]
 
@@ -103,6 +106,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         shortcutConfigurationWarning = loadedShortcuts.warning
         configureMenu()
         configurePanel()
+        configureAppUpdates()
         panel.applyShortcuts(shortcutConfiguration, alwaysPlainText: preferences.bool(forKey: "alwaysPlainText"))
         configureStack()
         configureSuggestions()
@@ -217,7 +221,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         statusItem.button?.image = NSImage(systemSymbolName: "clipboard", accessibilityDescription: "ClipShelf 剪贴板")
         let menu = NSMenu()
         menu.autoenablesItems = !validation
-        let title = NSMenuItem(title: validation ? "ClipShelf · 隔离验收" : "ClipShelf · 开发预览", action: nil, keyEquivalent: "")
+        let title = NSMenuItem(title: validation ? "ClipShelf · 隔离验收" : (profile.isReleaseDistribution ? "ClipShelf" : "ClipShelf · 开发预览"), action: nil, keyEquivalent: "")
         menu.addItem(title)
         stateItem = NSMenuItem(title: "记录已暂停", action: nil, keyEquivalent: "")
         menu.addItem(stateItem)
@@ -260,6 +264,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         menu.addItem(item("智能建议…", #selector(showSuggestions)))
         menu.addItem(item("iCloud 同步…", #selector(showCloudSettings)))
         menu.addItem(item("共享板…", #selector(showSharingSettings)))
+        let checkUpdate = item("检查更新…", #selector(checkAppUpdates))
+        menu.addItem(checkUpdate); updateCheckItems.append(checkUpdate)
+        menu.addItem(item("更新设置…", #selector(showUpdateSettings)))
         menu.addItem(.separator())
         let quit = item("退出 ClipShelf", #selector(quitApplication))
         quit.keyEquivalent = "q"
@@ -269,6 +276,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
         let main = NSMenu()
         let appRoot = NSMenuItem()
         let appMenu = NSMenu()
+        let appCheckUpdate = item("检查更新…", #selector(checkAppUpdates))
+        appMenu.addItem(appCheckUpdate); updateCheckItems.append(appCheckUpdate)
+        appMenu.addItem(item("更新设置…", #selector(showUpdateSettings)))
         let appQuit = NSMenuItem(title: "退出 ClipShelf", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appMenu.addItem(appQuit)
         appRoot.submenu = appMenu
@@ -740,6 +750,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     }
 
     private func refresh() {
+        appUpdates?.refreshAvailability()
         stateItem?.title = demo ? "演示模式 · 记录关闭" : (capture.isRunning ? "正在记录" : "记录已暂停")
         recordingItem?.title = capture.isRunning ? "暂停记录" : "开始记录"
         recordingItem?.isEnabled = !demo && !validation && store != nil
@@ -1135,6 +1146,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
             return self.selectionMutationInProgress || self.historyCleanup?.isBusy == true || self.sessionSuspended || self.isTerminating || self.terminationDecisionPending
         }
         controller.onBusyChanged = { [weak self] busy in
+            self?.appUpdates?.refreshAvailability()
             if !busy { DispatchQueue.main.async { [weak self] in self?.historyCleanup?.resumeDeferred() } }
         }
         controller.onMessage = { [weak self] message in self?.setStatus(message) }
@@ -1366,6 +1378,53 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
     @objc private func showSettings() {
         cancelSuggestions()
         panel.dismissForAction { [weak self] in self?.performShowSettings() }
+    }
+
+    private func configureAppUpdates() {
+        let coordinator = AppUpdateCoordinator(allowsBackgroundIntegrations: profile.allowsBackgroundIntegrations)
+        appUpdates = coordinator
+        $selectionMutationInProgress.updater = coordinator
+        $terminationDecisionPending.updater = coordinator
+        coordinator.isRestartBlocked = { [weak self] in
+            guard let self else { return true }
+            return self.sessionSuspended || self.isTerminating || self.terminationDecisionPending ||
+                self.selectionMutationInProgress || self.historyCleanup?.isCommitting == true || self.storageSettings?.isCommitting == true
+        }
+        coordinator.onChange = { [weak self, weak coordinator] in
+            guard let self, let coordinator else { return }
+            self.updateCheckItems.forEach {
+                $0.title = coordinator.menuActionTitle
+                $0.isEnabled = coordinator.canPerformMenuAction
+            }
+            self.updateSettings?.refreshView()
+        }
+        coordinator.start()
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(checkAppUpdates) { return appUpdates?.canPerformMenuAction == true }
+        return true
+    }
+
+    @objc private func checkAppUpdates() {
+        if appUpdates?.hasPendingRestart == true {
+            // Explicit user action only. The real quit event performs the draft
+            // decision; merely exposing this menu item never opens a window or
+            // interrupts typing, suspension, or an in-progress termination.
+            appUpdates?.retryPendingRestart()
+            return
+        }
+        cancelSuggestions()
+        panel.dismissForAction { [weak self] in self?.appUpdates?.checkForUpdates() }
+    }
+
+    @objc private func showUpdateSettings() {
+        cancelSuggestions()
+        panel.dismissForAction { [weak self] in
+            guard let self, let coordinator = self.appUpdates else { return }
+            if self.updateSettings == nil { self.updateSettings = UpdateSettingsController(coordinator: coordinator) }
+            self.updateSettings?.present()
+        }
     }
 
     private func performShowSettings() {
@@ -1770,6 +1829,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         isTerminating = true
+        appUpdates?.stop()
         historyCleanup?.terminate()
         storageSettings?.cancelPending()
         ownedPublications?.stopObserving()

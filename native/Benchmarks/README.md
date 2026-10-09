@@ -46,3 +46,35 @@ swift run -c release ClipShelfHistoryBenchmark --rows 100000 --iterations 30 > B
 原始样本：[v7 10k](results/f03-before-10000.json)、[v7 100k](results/f03-before-100000.json)、[v8 10k](results/f03-after-10000.json)、[v8 100k](results/f03-after-100000.json)。[源文件及结果SHA-256](results/f03-source-fingerprints.json)记录两个实现与相同基准程序，供追溯。
 
 较早的schema v6测量仍保留为[10k](results/history-10000.json)、[100k](results/history-100000.json)及[源码摘要](results/source-fingerprints.json)，不与本次v7/v8对照混算。
+
+## Schema v12 刷新：提交 `08f4998`
+
+2026-10-10 04:19:38–04:21:06（Asia/Taipei），从精确提交 `08f499876cc73bda7a5e1e73b29b32c9e0feee58` 的独立 `git archive` 副本构建 release 基准，按顺序执行 10k × 100 次和 100k × 30 次。它测量的是该提交，不代表后续更新器或发布配置改动已经重测。环境为 Apple M5 Pro、18 核、64 GiB、macOS 26.4.1（25E253）、Xcode 26.5（17F42）、Swift 6.3.2 / Swift 5 language mode。
+
+基准源码与 `e78ef3f9c62152329a41c26fb58c003e47dc8ce9` 逐字一致，SHA-256 为 `f810a72b4a42590f9bc0e155305daa9ac3bf632f837f4a6072904f6673581020`。使用相同 fixture v1，各规模的正文/表示字节数、场景结果条数均一致，程序继续检查每轮 ID 与顺序稳定；重新核对全部原始样本的 nearest-rank p50/p95。运行只使用并清理独立临时数据库，不访问真实资料库、剪贴板或云账号；没有覆盖旧结果。
+
+下表为查询 p95，单位 ms。系统缓存温热、后台负载未隔离，旧数据不是本次在匹配负载下重新测量；小幅差异不能直接归因为代码优化或退化。
+
+| 场景 | 10k v8 | 10k v12 | 100k v8 | 100k v12 |
+| --- | ---: | ---: | ---: | ---: |
+| `latest_300_metadata` | 0.496 | 0.452 | 0.454 | 0.467 |
+| `common_ascii` | 1.693 | 1.581 | 11.790 | 11.619 |
+| `common_chinese` | 1.070 | 0.987 | 5.280 | 5.218 |
+| `rare_mixed_language_full_scan` | 0.098 | 0.095 | 0.323 | 0.287 |
+| `absent_literal_full_scan` | 0.076 | 0.072 | 0.116 | 0.086 |
+| `ocr_only` | 1.011 | 0.974 | 1.990 | 1.887 |
+| `type_source_date_board` | 0.271 | 0.276 | 1.021 | 0.860 |
+| `first_300_after_connection_reopen` | 0.559 | 0.589 | 0.569 | 0.594 |
+
+单次夹具准备、打开连接和首次查询，单位 ms：
+
+| 规模 | v8 写入 | v12 写入 | v8 打开连接 | v12 打开连接 | v8 首次查询 | v12 首次查询 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10,000 | 2548.105 | 2561.876 | 1.504 | 5.744 | 0.602 | 0.667 |
+| 100,000 | 81376.826 | 81447.593 | 1.698 | 38.313 | 0.587 | 0.735 |
+
+**100k 的单次打开连接耗时明显增加，需独立重复采样与语句剖析。** `first_300_after_connection_reopen` 只计连接创建后的查询，不含打开连接成本，因此查询 p95 接近旧值不能证明启动成本没有回归。源码中已有的 cleanup-token 初始化会在当前 schema 开库时执行全表 `INSERT OR IGNORE … SELECT`，这只是可检验候选，尚未证明是上述差异的原因，更不能推断为 schema v12 GC 所致。本次没有运行 GC、额外开库剖析或调整 production 代码。
+
+本轮仍只覆盖同步 `searchMetadata` 和元数据解码，不覆盖 UI/IME/debounce/绘制、菜单 facet 聚合、深页、输出附件或输入到结果稳定延迟，**F03 端到端 p95 ≤ 100 ms 的真实 UI 验收仍未完成**。
+
+保存的证据：[v12 10k 原始样本](results/f03-schema12-10000.json)、[v12 100k 原始样本](results/f03-schema12-100000.json)、[逐项 p50/p95 与历史比较](results/f03-schema12-comparison.json)、[精确源码/环境/命令/时间与 SHA-256](results/f03-schema12-source-fingerprints.json)。复跑时用独立输出名或临时目录，保留这些对应提交的测量结果。

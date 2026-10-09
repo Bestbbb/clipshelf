@@ -13,6 +13,13 @@
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
     <key>CKSharingSupported</key><true/>
+    <key>ClipShelfDistribution</key><string>development</string>
+    <key>SUEnableAutomaticChecks</key><false/>
+    <key>SUAutomaticallyUpdate</key><false/>
+    <key>SUEnableSystemProfiling</key><false/>
+    <key>SUVerifyUpdateBeforeExtraction</key><true/>
+    <key>SURequireSignedFeed</key><true/>
+    <key>SUSignedFeedFailureExpirationInterval</key><integer>0</integer>
     <key>NSAppTransportSecurity</key>
     <dict><key>NSAllowsArbitraryLoadsInWebContent</key><true/></dict>
     <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>

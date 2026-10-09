@@ -1,7 +1,9 @@
 # Building and release status
 
-The app is a native SwiftPM executable bundled by `scripts/build-macos.sh`.
-The build currently targets the host architecture and macOS 14 or newer. The
+The app is a native Swift executable. `scripts/build-macos.sh` bundles the SwiftPM
+development build for the host architecture and macOS 14 or newer; the separate
+`scripts/release-macos.py` pipeline archives a universal app with its Share Extension.
+The
 tested toolchain is Xcode 26.5. `build-app-intents.sh` extracts the three native
 Shortcuts actions into `Contents/Resources/Metadata.appintents`; a Swift executable
 without that metadata is not a complete app bundle for Shortcuts.
@@ -86,9 +88,12 @@ The release build, App Intents extraction, local ad-hoc signature verification,
 and Node bridge syntax check passed. Its [CI run 37956500803](https://github.com/Bestbbb/clipshelf/actions/runs/37956500803)
 also passed, including the independent app and Share Extension build. Those
 results precede the shortcut changes described below. The saved [search benchmark](../native/Benchmarks/README.md)
-measured commit is `e78ef3f` (schema v8), against `45edfd6` (schema v7); it was not
-rerun for the selection, shortcut or boundary/filter changes and does not measure selection, payload output,
-facet aggregation or input-to-render latency.
+retains the `e78ef3f` (schema v8) versus `45edfd6` (schema v7) comparison and now
+adds an independent refresh of exact commit `08f4998` (schema v12). That refresh
+does not cover subsequent updater/release work, selection, payload output,
+facet aggregation or input-to-render latency. Its single connection-open timing
+increased and needs separate repeat measurement/profiling; query timings alone
+cannot establish unchanged startup cost or attribute the difference to GC.
 
 In one Pinboard's manual-order view, drag a card to reorder it. Hold Option while
 dragging to export its original content to another app. Ordinary history view
@@ -107,6 +112,14 @@ The SwiftPM bundle does not embed the inbound Share Extension. The separate
 see [Share Extension setup and validation](SHARE_EXTENSION.md). CI checks that
 project separately without signing. A valid shared App Group and matching team
 signatures are still required to exercise the real system share sheet.
+
+The current local Xcode installation has a platform plug-in loading failure, so
+local Xcode archive/Share Extension validation is blocked. The dedicated CI job
+builds the containing app and extension without signing; its result must be checked
+for the exact commit. A SwiftPM build, older CI pass, or unsigned Xcode build does
+not establish a working Developer ID release. The real identities, profiles,
+update signing key and notarization credentials have not been configured or used
+to run the complete release pipeline here.
 
 Link previews create a temporary WebKit session only after an explicit preview
 action. The app permits HTTP as well as HTTPS in web content through Apple's
@@ -248,15 +261,75 @@ read-only/read-write participants, owner aliases, revocation during a request,
 offline/restart recovery, account changes, missing assets, quotas, and 64 MiB
 multi-asset round trips. See [the owned-file protocol and acceptance gates](SYNC_FILE_ASSETS_PLAN.zh-CN.md).
 
-When a signing identity is supplied, the script requests the hardened runtime
-and a timestamp. Notarization and stapling are separate release steps; they have
-not been completed for this project. A production build must validate entitlements,
+When a signing identity is supplied, the development script requests the hardened
+runtime and a timestamp. It does not perform the complete release pipeline below.
+Notarization and stapling have not been completed for this project. A production build must validate entitlements,
 cloud schema, update migration, Accessibility authorization, Intel/Apple-silicon
 support, and the distribution artifact before publication.
+
+## Application updates and controlled release
+
+The source pins Sparkle **2.10.0**, embeds its framework and required helper/XPC
+bundles, and adds Check for Updates plus update settings. Development bundles and
+`--demo`/`--validation` runs do not construct or start the updater, including when
+settings open; they make no updater network requests. A release run must first
+validate its distribution marker, independent bundle ID, HTTPS feed, canonical
+32-byte Ed25519 public key, versions and all six update policy values. See the
+[configuration generator](../scripts/configure-release.py) and
+[runtime validation](../native/Sources/ClipShelf/UpdateConfiguration.swift).
+
+Automatic checks and automatic downloads default to off. Sparkle owns the user's
+opt-in preferences, last-check date and update UI; the app does not overwrite those
+preferences on each launch. System profiling is disabled. Package verification
+before extraction and signed feeds are mandatory, with zero signed-feed failure
+grace interval. A finished check is not automatically reported as “up to date.”
+The configuration uses Sparkle's documented
+[update and signed-feed controls](https://sparkle-project.org/documentation/customization/).
+
+A downloaded update does not bypass normal termination. Active writes/cleanup
+and session suspension postpone an installation restart; dirty editors retain
+their normal save/discard/cancel flow. The settings window can retry a deferred
+restart. Cancelling quit keeps the updater usable; the app calls its `stop()` only
+from `applicationWillTerminate`. Turning off automatic downloads does not cancel
+an update already downloaded for installation on normal quit. These behaviors
+have synthetic coordinator coverage; actual signed update/relaunch and cross-app
+focus acceptance remain open.
+
+Public configuration preparation and a verified distribution are separate steps:
+
+| Entry point | Effect and required evidence |
+| --- | --- |
+| `python3 scripts/configure-release.py --validate` | Validates public release environment only; no signing identity/profile lookup, Keychain or network access |
+| `python3 scripts/configure-release.py --plist PATH` | Validates, then atomically updates an existing generated app plist; source templates are rejected |
+| `python3 scripts/configure-release.py --prepare DIR` | Requires App Group and profile names, then atomically creates two Info plists, two entitlements, ExportOptions and a public manifest in a new directory; it does not establish provisioning or signatures |
+| `./scripts/build-macos.sh` | Development/host-architecture bundle by default; opting into release metadata also requires an explicit Developer ID identity, but still does not add the full archive/export/notarization process or Share Extension |
+| `python3 scripts/release-macos.py --output DIR` | Full local release-artifact pipeline; requires a clean checkout and real signing/provisioning/update-key/notary inputs, and stops if a validation step fails |
+
+The full pipeline prepares app/extension configuration, runs Xcode archive/export
+for arm64 and x86_64, validates identities, entitlements, App Intents, Sparkle/helper
+signatures and linkage, submits notarization, staples and validates the ticket,
+and checks Gatekeeper assessment. It then packages the stapled app, generates an
+Ed25519-signed archive and signed appcast, independently verifies the archive
+against the embedded public key, and records artifact hashes. The output remains
+local: the script neither publishes a GitHub release/feed nor installs or launches
+the app. Its implemented checks do not constitute a completed real release run.
+
+Use [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) for exact configuration inputs,
+commands, artifact review and still-open acceptance steps. Do not put illustrative
+feed addresses or synthetic keys into a shipping bundle. Developer ID and Sparkle
+signatures serve different purposes; Sparkle documents the required archive/feed
+signing process in [Publishing an update](https://sparkle-project.org/documentation/publishing/).
+The current application strings are largely hardcoded Simplified Chinese;
+language selection/localization remains missing within F13, even though the updater
+framework has its own localized UI.
 
 ## Data and secret handling
 
 The development data directory is `~/Library/Application Support/ClipShelf Development`.
+An explicitly marked release with a valid independent bundle identifier uses
+`~/Library/Application Support/ClipShelf`; switching distributions does not merge
+the development database into that directory. Validation retains its temporary
+database and independent preferences in either distribution.
 Private named pasteboards and temporary databases are used by automated tests.
 Tests do not require the user's clipboard, iCloud, Keychain, or screen content.
 

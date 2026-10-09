@@ -24,7 +24,11 @@ jobs:
       - name: Toolchain
         run: xcodebuild -version
       - name: Native tests with synthetic fixtures
-        run: swift test --package-path native
+        run: swift test --disable-keychain --disable-netrc --package-path native
+      - name: Release configuration, packaging and signature fixture tests
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -v
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-embed-sparkle.py
       - name: Check stdio bridge
         run: node --check scripts/mcp-bridge.mjs
       - name: Build development app and App Intents metadata
@@ -48,4 +52,17 @@ jobs:
         run: >-
           xcodebuild -project native/ClipShelf.xcodeproj -scheme ClipShelf
           -configuration Debug -destination 'generic/platform=macOS'
-          -derivedDataPath build/ShareExtensionValidation CODE_SIGNING_ALLOWED=NO build
+          -derivedDataPath build/ShareExtensionValidation -packageAuthorizationProvider netrc
+          -onlyUsePackageVersionsFromResolvedFile CODE_SIGNING_ALLOWED=NO build
+      - name: Verify containing app resources and Sparkle embedding
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          app = Path('build/ShareExtensionValidation/Build/Products/Debug/ClipShelf.app')
+          assert (app / 'Contents/PlugIns/ClipShelfShare.appex').is_dir()
+          assert (app / 'Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle').is_file()
+          assert (app / 'Contents/Resources/Sparkle-LICENSE.txt').read_bytes() == Path('native/Sources/ClipShelf/Sparkle-LICENSE.txt').read_bytes()
+          linked = subprocess.check_output(['otool', '-L', str(app / 'Contents/MacOS/ClipShelf')], text=True)
+          assert '@rpath/Sparkle.framework/' in linked
+          PY

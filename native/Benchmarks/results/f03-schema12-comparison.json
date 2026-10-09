@@ -1,0 +1,217 @@
+{
+  "codeCommit": "08f499876cc73bda7a5e1e73b29b32c9e0feee58",
+  "historicalCodeCommit": "e78ef3f9c62152329a41c26fb58c003e47dc8ce9",
+  "fixtureSourceIdentical": true,
+  "databaseSchema": 12,
+  "historicalDatabaseSchema": 8,
+  "scales": [
+    {
+      "rows": 10000,
+      "iterations": 100,
+      "generatedAt": "2026-10-09T20:19:42Z",
+      "historicalGeneratedAt": "2026-10-09T15:26:15Z",
+      "fixtureTextBytes": 6405586,
+      "fixtureRepresentationBytes": 4516888,
+      "historicalReportSHA256": "189c978017251d46a7379819b8035aa35dba7d21c496ad80a3ba66752fbd3d89",
+      "currentReportSHA256": "04ab2a9c6b2e5fad84800abb5adc6682b5750fe186bbf0f6a772c12957747f51",
+      "measurements": [
+        {
+          "name": "latest_300_metadata",
+          "resultCount": 300,
+          "historicalP50Milliseconds": 0.439167,
+          "currentP50Milliseconds": 0.414166,
+          "historicalP95Milliseconds": 0.496375,
+          "currentP95Milliseconds": 0.451875,
+          "p95ChangePercent": -8.964996222613951,
+          "currentMaxMilliseconds": 0.478458
+        },
+        {
+          "name": "common_ascii",
+          "resultCount": 300,
+          "historicalP50Milliseconds": 1.616833,
+          "currentP50Milliseconds": 1.529458,
+          "historicalP95Milliseconds": 1.693459,
+          "currentP95Milliseconds": 1.581333,
+          "p95ChangePercent": -6.621122802500679,
+          "currentMaxMilliseconds": 1.614042
+        },
+        {
+          "name": "common_chinese",
+          "resultCount": 300,
+          "historicalP50Milliseconds": 1.006583,
+          "currentP50Milliseconds": 0.948958,
+          "historicalP95Milliseconds": 1.069792,
+          "currentP95Milliseconds": 0.986542,
+          "p95ChangePercent": -7.781886572343044,
+          "currentMaxMilliseconds": 1.009583
+        },
+        {
+          "name": "rare_mixed_language_full_scan",
+          "resultCount": 9,
+          "historicalP50Milliseconds": 0.090958,
+          "currentP50Milliseconds": 0.085458,
+          "historicalP95Milliseconds": 0.097708,
+          "currentP95Milliseconds": 0.095125,
+          "p95ChangePercent": -2.6435911081999497,
+          "currentMaxMilliseconds": 0.124958
+        },
+        {
+          "name": "absent_literal_full_scan",
+          "resultCount": 0,
+          "historicalP50Milliseconds": 0.067958,
+          "currentP50Milliseconds": 0.063666,
+          "historicalP95Milliseconds": 0.075584,
+          "currentP95Milliseconds": 0.071667,
+          "p95ChangePercent": -5.1823137171888245,
+          "currentMaxMilliseconds": 0.098583
+        },
+        {
+          "name": "ocr_only",
+          "resultCount": 300,
+          "historicalP50Milliseconds": 0.984625,
+          "currentP50Milliseconds": 0.925,
+          "historicalP95Milliseconds": 1.011417,
+          "currentP95Milliseconds": 0.974084,
+          "p95ChangePercent": -3.6911580485596063,
+          "currentMaxMilliseconds": 1.041166
+        },
+        {
+          "name": "type_source_date_board",
+          "resultCount": 96,
+          "historicalP50Milliseconds": 0.246375,
+          "currentP50Milliseconds": 0.248,
+          "historicalP95Milliseconds": 0.270625,
+          "currentP95Milliseconds": 0.276375,
+          "p95ChangePercent": 2.124711316397221,
+          "currentMaxMilliseconds": 0.321333
+        },
+        {
+          "name": "first_300_after_connection_reopen",
+          "resultCount": 300,
+          "historicalP50Milliseconds": 0.513584,
+          "currentP50Milliseconds": 0.502167,
+          "historicalP95Milliseconds": 0.559458,
+          "currentP95Milliseconds": 0.58925,
+          "p95ChangePercent": 5.325153988324427,
+          "currentMaxMilliseconds": 0.83675
+        }
+      ],
+      "populationMilliseconds": {
+        "historical": 2548.104958,
+        "current": 2561.875583
+      },
+      "firstConnectionOpenMilliseconds": {
+        "historical": 1.5045,
+        "current": 5.744291
+      },
+      "firstPageMilliseconds": {
+        "historical": 0.60225,
+        "current": 0.666833
+      }
+    },
+    {
+      "rows": 100000,
+      "iterations": 30,
+      "generatedAt": "2026-10-09T20:21:05Z",
+      "historicalGeneratedAt": "2026-10-09T15:27:37Z",
+      "fixtureTextBytes": 64160574,
+      "fixtureRepresentationBytes": 45179028,
+      "historicalReportSHA256": "59706f39810ff5b5eb8069a8e39672036884ab2a556d101d5b70e7f729dc642f",
+      "currentReportSHA256": "c013fe26f234f1d94415fe1ec27889d4cefef11e7ee2cfb6ccb696d40da54507",
+      "measurements": [
+        {
+          "name": "latest_300_metadata",
+          "resultCount": 300,
+          "historicalP50Milliseconds": 0.433334,
+          "currentP50Milliseconds": 0.438208,
+          "historicalP95Milliseconds": 0.453959,
+          "currentP95Milliseconds": 0.467291,
+          "p95ChangePercent": 2.936829096900828,
+          "currentMaxMilliseconds": 0.473958
+        },
+        {
+          "name": "common_ascii",
+          "resultCount": 300,
+          "historicalP50Milliseconds": 11.533208,
+          "currentP50Milliseconds": 11.315,
+          "historicalP95Milliseconds": 11.789792,
+          "currentP95Milliseconds": 11.619334,
+          "p95ChangePercent": -1.4458100702709586,
+          "currentMaxMilliseconds": 11.637792
+        },
+        {
+          "name": "common_chinese",
+          "resultCount": 300,
+          "historicalP50Milliseconds": 5.172709,
+          "currentP50Milliseconds": 5.117792,
+          "historicalP95Milliseconds": 5.279583,
+          "currentP95Milliseconds": 5.21775,
+          "p95ChangePercent": -1.17117204142827,
+          "currentMaxMilliseconds": 5.22975
+        },
+        {
+          "name": "rare_mixed_language_full_scan",
+          "resultCount": 80,
+          "historicalP50Milliseconds": 0.292333,
+          "currentP50Milliseconds": 0.274667,
+          "historicalP95Milliseconds": 0.322667,
+          "currentP95Milliseconds": 0.286833,
+          "p95ChangePercent": -11.105567039703468,
+          "currentMaxMilliseconds": 0.328375
+        },
+        {
+          "name": "absent_literal_full_scan",
+          "resultCount": 0,
+          "historicalP50Milliseconds": 0.101292,
+          "currentP50Milliseconds": 0.082541,
+          "historicalP95Milliseconds": 0.116375,
+          "currentP95Milliseconds": 0.085875,
+          "p95ChangePercent": -26.208378088077332,
+          "currentMaxMilliseconds": 0.088375
+        },
+        {
+          "name": "ocr_only",
+          "resultCount": 300,
+          "historicalP50Milliseconds": 1.9045,
+          "currentP50Milliseconds": 1.838167,
+          "historicalP95Milliseconds": 1.990333,
+          "currentP95Milliseconds": 1.887208,
+          "p95ChangePercent": -5.181293783502561,
+          "currentMaxMilliseconds": 1.892833
+        },
+        {
+          "name": "type_source_date_board",
+          "resultCount": 300,
+          "historicalP50Milliseconds": 0.867042,
+          "currentP50Milliseconds": 0.84,
+          "historicalP95Milliseconds": 1.02125,
+          "currentP95Milliseconds": 0.860167,
+          "p95ChangePercent": -15.773121175030603,
+          "currentMaxMilliseconds": 0.874541
+        },
+        {
+          "name": "first_300_after_connection_reopen",
+          "resultCount": 300,
+          "historicalP50Milliseconds": 0.527875,
+          "currentP50Milliseconds": 0.542625,
+          "historicalP95Milliseconds": 0.56875,
+          "currentP95Milliseconds": 0.5935,
+          "p95ChangePercent": 4.351648351648363,
+          "currentMaxMilliseconds": 0.601834
+        }
+      ],
+      "populationMilliseconds": {
+        "historical": 81376.825583,
+        "current": 81447.592916
+      },
+      "firstConnectionOpenMilliseconds": {
+        "historical": 1.6985,
+        "current": 38.313292
+      },
+      "firstPageMilliseconds": {
+        "historical": 0.587291,
+        "current": 0.735375
+      }
+    }
+  ]
+}

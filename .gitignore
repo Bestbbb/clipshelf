@@ -8,3 +8,4 @@ test-results/
 native/.build/
 native/.swiftpm/
 build/
+__pycache__/

@@ -33,9 +33,7 @@ final class ClipboardIntentRuntime {
         if loadOnDemand { enabled = UserDefaults.standard.bool(forKey: "shortcutsEnabled") }
         guard enabled else { throw ClipboardIntentError.permissionRequired }
         if store == nil, loadOnDemand {
-            let root = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
-                                                  appropriateFor: nil, create: true)
-                .appendingPathComponent("ClipShelf Development", isDirectory: true)
+            let root = try RuntimeProfile.current.dataDirectory()
             store = try HistoryStore(databaseURL: root.appendingPathComponent("history.sqlite"), recordsLocalOrigin: true)
         }
         guard let store else { throw ClipboardIntentError.unavailable }
