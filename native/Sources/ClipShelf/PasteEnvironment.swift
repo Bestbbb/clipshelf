@@ -10,7 +10,14 @@ struct PasteModifiers: OptionSet, Sendable {
 }
 
 enum PasteForeground { case target, clipShelf, other }
-enum PasteFocusState { case ready, differentWindow, differentElement }
+enum PasteFocusState { case ready, differentWindow, differentElement, differentSelection }
+
+struct PasteDispatch {
+    enum Method: String, Codable, Sendable { case menu, keyboard }
+    let method: Method
+    /// Acceptance by the system is not confirmation of insertion by the input.
+    let send: () -> Bool
+}
 
 /// All process-global input and accessibility operations live behind this seam.
 /// Tests supply an entirely in-memory implementation, including the clock.
@@ -32,6 +39,8 @@ protocol PasteEnvironment: AnyObject {
     func restoreFocusedElement(_ target: PasteCoordinator.Target)
     func focusState(for target: PasteCoordinator.Target) -> PasteFocusState
     var heldModifiers: PasteModifiers { get }
+    var focusSettleInterval: TimeInterval { get }
+    func preparePaste(for target: PasteCoordinator.Target, allowMenu: Bool) -> PasteDispatch?
     func prepareCommandV() -> (() -> Void)?
     func waitForReadiness() async throws
 }
@@ -39,6 +48,11 @@ protocol PasteEnvironment: AnyObject {
 extension PasteEnvironment {
     func destinationChoices() -> [PasteCoordinator.Target] { [] }
     func isLauncherSurface(_ target: PasteCoordinator.Target) -> Bool { false }
+    var focusSettleInterval: TimeInterval { 0.08 }
+    func preparePaste(for target: PasteCoordinator.Target, allowMenu: Bool) -> PasteDispatch? {
+        guard let send = prepareCommandV() else { return nil }
+        return PasteDispatch(method: .keyboard, send: { send(); return true })
+    }
 }
 
 struct PasteClipboardWrite {
@@ -125,8 +139,9 @@ final class PasteSystemEnvironment: PasteEnvironment {
     private static func snapshot(_ pid: pid_t) -> PasteCoordinator.Target? {
         guard let application = NSRunningApplication(processIdentifier: pid), !application.isTerminated else { return nil }
         let app = AXUIElementCreateApplication(application.processIdentifier)
+        let input = Self.focusedElement(app: app, pid: pid)
         return PasteCoordinator.Target(application: application, window: Self.attribute(app, kAXFocusedWindowAttribute),
-                                             focusedElement: Self.attribute(app, kAXFocusedUIElementAttribute))
+                                       focusedElement: input, selectedRange: input.flatMap(Self.selectedRange))
     }
     func processIdentifier(of target: PasteCoordinator.Target) -> pid_t { target.application.processIdentifier }
     func isRunning(_ target: PasteCoordinator.Target) -> Bool { !target.application.isTerminated }
@@ -144,6 +159,9 @@ final class PasteSystemEnvironment: PasteEnvironment {
     func restoreFocusedElement(_ target: PasteCoordinator.Target) {
         if let element = target.focusedElement {
             _ = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            if var range = target.selectedRange, let value = AXValueCreate(.cfRange, &range) {
+                _ = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value)
+            }
         }
     }
     func focusState(for target: PasteCoordinator.Target) -> PasteFocusState {
@@ -157,9 +175,15 @@ final class PasteSystemEnvironment: PasteEnvironment {
         guard let original = target.window, let current = Self.attribute(app, kAXFocusedWindowAttribute),
               CFEqual(original, current) else { traceState = .differentWindow; return .differentWindow }
         if let original = target.focusedElement {
-            guard let current = Self.attribute(app, kAXFocusedUIElementAttribute), CFEqual(original, current) else {
+            guard let current = Self.focusedElement(app: app, pid: target.application.processIdentifier), CFEqual(original, current) else {
                 traceState = .differentElement
                 return .differentElement
+            }
+            if let expected = target.selectedRange {
+                guard let actual = Self.selectedRange(current), actual.location == expected.location, actual.length == expected.length else {
+                    traceState = .differentSelection
+                    return .differentSelection
+                }
             }
         }
         return .ready
@@ -178,6 +202,16 @@ final class PasteSystemEnvironment: PasteEnvironment {
         return { events.down.post(tap: .cghidEventTap); events.up.post(tap: .cghidEventTap) }
     }
 
+    func preparePaste(for target: PasteCoordinator.Target, allowMenu: Bool) -> PasteDispatch? {
+        if allowMenu, let command = PasteMenuCommand.find(in: AXUIElementCreateApplication(target.application.processIdentifier)) {
+            return PasteDispatch(method: .menu, send: {
+                AXUIElementPerformAction(command, kAXPressAction as CFString) == .success
+            })
+        }
+        guard let send = prepareCommandV() else { return nil }
+        return PasteDispatch(method: .keyboard, send: { send(); return true })
+    }
+
     /// Build without posting so release-state regressions can be checked without
     /// touching the desktop. Synthetic input must not mutate the hardware table.
     static func commandVEvents(restoring flags: CGEventFlags) -> (down: CGEvent, up: CGEvent)? {
@@ -194,6 +228,28 @@ final class PasteSystemEnvironment: PasteEnvironment {
         return (down, up)
     }
     func waitForReadiness() async throws { try await Task.sleep(nanoseconds: 15_000_000) }
+    private static func focusedElement(app: AXUIElement, pid: pid_t) -> AXUIElement? {
+        // Some apps expose the current input only through system-wide focus.
+        // Never borrow an element from another process as a destination.
+        guard let element = attribute(app, kAXFocusedUIElementAttribute) ??
+            attribute(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute) else { return nil }
+        var actualPID: pid_t = 0
+        guard AXUIElementGetPid(element, &actualPID) == .success, actualPID == pid else { return nil }
+        return element
+    }
+    private static func selectedRange(_ element: AXUIElement) -> CFRange? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &value) == .success else { return nil }
+        return decodeSelectedRange(value)
+    }
+    static func decodeSelectedRange(_ value: CFTypeRef?) -> CFRange? {
+        guard let value, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        let axValue = value as! AXValue
+        var range = CFRange(location: 0, length: 0)
+        guard AXValueGetType(axValue) == .cfRange, AXValueGetValue(axValue, .cfRange, &range),
+              range.location >= 0, range.length >= 0, range.location <= Int.max - range.length else { return nil }
+        return range
+    }
     private static func attribute(_ element: AXUIElement, _ name: String) -> AXUIElement? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success,

@@ -59,6 +59,14 @@ final class ValidationTraceTests: XCTestCase {
         XCTAssertNil(ValidationTrace.encodedLine(event: .pasteCompleted, timestamp: .nan))
     }
 
+    func testPasteMethodUsesOnlyTheDispatchSchema() throws {
+        let data = try XCTUnwrap(ValidationTrace.encodedLine(event: .pasteDispatch,
+            timestamp: 42, state: .dispatched, method: .menu))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(Set(object.keys), ["timestamp", "event", "state", "method"])
+        XCTAssertEqual(object["method"] as? String, "menu")
+    }
+
     func testDiagnosticFlagEnablesTraceWithoutValidationMode() {
         XCTAssertTrue(ValidationTrace.isEnabled(arguments: ["ClipShelf", "--diagnostic-trace"]))
         XCTAssertFalse(ValidationTrace.isEnabled(arguments: ["--diagnostic-trace=true"]))

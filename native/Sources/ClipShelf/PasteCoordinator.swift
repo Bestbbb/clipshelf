@@ -11,9 +11,15 @@ final class PasteCoordinator {
         let application: NSRunningApplication
         let window: AXUIElement?
         let focusedElement: AXUIElement?
+        let selectedRange: CFRange?
+
+        init(application: NSRunningApplication, window: AXUIElement?, focusedElement: AXUIElement?, selectedRange: CFRange? = nil) {
+            self.application = application; self.window = window
+            self.focusedElement = focusedElement; self.selectedRange = selectedRange
+        }
     }
 
-    /// Dispatched means the key pair was submitted, not that the destination app
+    /// Dispatched means a paste command was submitted, not that the destination app
     /// has confirmed insertion. Only this outcome may consume a Paste Stack item.
     enum Outcome: Equatable { case dispatched, copiedOnly, cancelled, failed, busy }
 
@@ -144,6 +150,7 @@ final class PasteCoordinator {
     private func waitAndDispatch(_ request: Attempt, target: Target, writtenCount: Int, allowHeldCommand: Bool) async {
         let deadline = environment.uptime + 0.9
         var lastFocus: PasteFocusState?
+        var readySince: TimeInterval?
         while contextIsCurrent(request) {
             guard environment.uptime < deadline else { break }
             guard clipboardIsCurrent(writtenCount, request: request), targetIsCurrent(target, request: request) else { return }
@@ -151,7 +158,14 @@ final class PasteCoordinator {
                 let focus = environment.focusState(for: target)
                 lastFocus = focus
                 if focus == .ready {
-                    guard let dispatch = environment.prepareCommandV() else {
+                    let since = readySince ?? environment.uptime
+                    readySince = since
+                    if environment.uptime - since < environment.focusSettleInterval {
+                        do { try await environment.waitForReadiness() }
+                        catch { finish(request, .cancelled, failure: .waitCancelled); return }
+                        continue
+                    }
+                    guard let dispatch = environment.preparePaste(for: target, allowMenu: !allowHeldCommand) else {
                         finish(request, .copiedOnly, message: L10n.text("无法创建粘贴按键；内容已复制。"), failure: .eventCreationFailed); return
                     }
                     // Preparing an event is not permission to send it. Recheck the
@@ -159,17 +173,28 @@ final class PasteCoordinator {
                     // final boundary, including callbacks that changed context.
                     guard contextIsCurrent(request), clipboardIsCurrent(writtenCount, request: request),
                           targetIsCurrent(target, request: request) else { return }
-                    guard environment.foreground(for: target) == .target, modifiersAreReady(allowHeldCommand),
+                    guard environment.uptime < deadline, environment.foreground(for: target) == .target, modifiersAreReady(allowHeldCommand),
                           environment.focusState(for: target) == .ready else {
                         finish(request, .cancelled, message: L10n.text("目标已改变；内容已复制，请手动粘贴。"), failure: .finalReadinessChanged); return
                     }
                     guard attempt === request, clipboardIsCurrent(writtenCount, request: request) else { return }
                     request.dispatching = true
-                    dispatch()
-                    trace(.pasteDispatch, target: target, state: .dispatched)
+                    let accepted = dispatch.send()
+                    guard accepted else {
+                        request.dispatching = false
+                        // AX failure can be ambiguous. Never send a second action after it.
+                        finish(request, .copiedOnly, message: L10n.text("内容已复制，请切回目标应用按 ⌘V。"), failure: .eventDispatchFailed)
+                        return
+                    }
+                    ValidationTrace.emit(.pasteDispatch, pid: target.application.processIdentifier,
+                        bundleID: target.application.bundleIdentifier, hasTargetWindow: target.window != nil,
+                        hasInputElement: target.focusedElement != nil, state: .dispatched, method: dispatch.method)
                     finish(request, .dispatched, message: L10n.text("已发出粘贴操作。"))
                     return
                 }
+                readySince = nil
+            } else {
+                readySince = nil
             }
             // AX focus restoration can settle later than application activation.
             // Wait for the original window/field instead of failing the first poll.
@@ -183,7 +208,7 @@ final class PasteCoordinator {
         let message: String
         switch lastFocus {
         case .differentWindow: message = L10n.text("原窗口焦点未恢复；内容已复制。")
-        case .differentElement: message = L10n.text("原输入位置未恢复；内容已复制，请手动粘贴。")
+        case .differentElement, .differentSelection: message = L10n.text("原输入位置未恢复；内容已复制，请手动粘贴。")
         default: message = L10n.text("目标或修饰键尚未就绪；内容已复制，请手动粘贴。")
         }
         finish(request, .copiedOnly, message: message, failure: .deadline)

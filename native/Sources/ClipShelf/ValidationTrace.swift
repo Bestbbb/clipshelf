@@ -24,6 +24,7 @@ enum ValidationTrace {
     enum State: String, Codable, Sendable {
         case requested, visible, hidden, captured, unavailable, prepared, ready
         case differentWindow = "different_window", differentElement = "different_element"
+        case differentSelection = "different_selection"
         case dispatched, copiedOnly = "copied_only", cancelled, failed, busy
     }
 
@@ -31,6 +32,7 @@ enum ValidationTrace {
         case writeFailed = "write_failed", restoreUnavailable = "restore_unavailable"
         case activationFailed = "activation_failed", windowRaiseFailed = "window_raise_failed"
         case eventCreationFailed = "event_creation_failed", contextChanged = "context_changed"
+        case eventDispatchFailed = "event_dispatch_failed"
         case clipboardChanged = "clipboard_changed", changedForeground = "changed_foreground"
         case permissionOrProcessUnavailable = "permission_or_process_unavailable"
         case deadline, waitCancelled = "wait_cancelled", explicitCancellation = "explicit_cancellation"
@@ -48,6 +50,7 @@ enum ValidationTrace {
         let failure: Failure?
         let status: Int32?
         let shortcut: Shortcut?
+        let method: PasteDispatch.Method?
     }
 
     static let enabled = isEnabled(arguments: CommandLine.arguments)
@@ -61,11 +64,12 @@ enum ValidationTrace {
     static func encodedLine(event: Event, timestamp: TimeInterval, pid: Int32? = nil,
                             bundleID: String? = nil, hasTargetWindow: Bool? = nil,
                             hasInputElement: Bool? = nil, state: State? = nil,
-                            failure: Failure? = nil, status: Int32? = nil, shortcut: Shortcut? = nil) -> Data? {
+                            failure: Failure? = nil, status: Int32? = nil, shortcut: Shortcut? = nil,
+                            method: PasteDispatch.Method? = nil) -> Data? {
         guard timestamp.isFinite else { return nil }
         let entry = Entry(timestamp: timestamp, event: event, pid: pid, bundleID: bundleID,
                           hasTargetWindow: hasTargetWindow, hasInputElement: hasInputElement,
-                          state: state, failure: failure, status: status, shortcut: shortcut)
+                          state: state, failure: failure, status: status, shortcut: shortcut, method: method)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         guard var data = try? encoder.encode(entry) else { return nil }
@@ -75,10 +79,11 @@ enum ValidationTrace {
 
     static func emit(_ event: Event, pid: Int32? = nil, bundleID: String? = nil,
                      hasTargetWindow: Bool? = nil, hasInputElement: Bool? = nil,
-                     state: State? = nil, failure: Failure? = nil, status: Int32? = nil, shortcut: Shortcut? = nil) {
+                     state: State? = nil, failure: Failure? = nil, status: Int32? = nil, shortcut: Shortcut? = nil,
+                     method: PasteDispatch.Method? = nil) {
         guard enabled, let data = encodedLine(event: event, timestamp: Date().timeIntervalSince1970,
             pid: pid, bundleID: bundleID, hasTargetWindow: hasTargetWindow,
-            hasInputElement: hasInputElement, state: state, failure: failure, status: status, shortcut: shortcut) else { return }
+            hasInputElement: hasInputElement, state: state, failure: failure, status: status, shortcut: shortcut, method: method) else { return }
         try? FileHandle.standardError.write(contentsOf: data)
     }
 }
