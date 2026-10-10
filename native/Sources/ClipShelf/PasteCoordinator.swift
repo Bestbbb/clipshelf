@@ -32,6 +32,7 @@ final class PasteCoordinator {
 
     var onClipboardWrite: (() -> Void)?
     var onResult: ((String) -> Void)?
+    var onFailureMessage: ((String) -> Void)?
     var publications: OwnedFilePublicationCoordinator?
     private var attempt: Attempt?
     private let clipboard: PasteClipboard
@@ -52,11 +53,16 @@ final class PasteCoordinator {
         guard environment.activate(target), environment.hasWindow(target), environment.raiseWindow(target) else { return }
         environment.restoreFocusedElement(target)
     }
-    func captureTarget() -> Target? {
+    func captureTarget(forApplicationLaunch: Bool = false) -> Target? {
         let target = environment.captureTarget()
+        if forApplicationLaunch, let target, environment.isLauncherSurface(target) {
+            ValidationTrace.emit(.destinationChoiceRequired, bundleID: target.application.bundleIdentifier, state: .unavailable)
+            return nil
+        }
         Self.outcomeLogger.notice("captured bundle=\(target?.application.bundleIdentifier ?? "none", privacy: .public) window=\(target?.window != nil, privacy: .public) input=\(target?.focusedElement != nil, privacy: .public)")
         return target
     }
+    func destinationChoices() -> [Target] { environment.destinationChoices() }
 
     @discardableResult
     func copy(_ record: ClipboardRecord, plainText: Bool = false) -> Bool { copy([record], plainText: plainText) }
@@ -230,6 +236,7 @@ final class PasteCoordinator {
         // Never log clipboard data, window titles, paths or input contents.
         Self.outcomeLogger.notice("outcome=\(state.rawValue, privacy: .public) failure=\(failure?.rawValue ?? "none", privacy: .public) target=\(request.target != nil, privacy: .public) bundle=\(request.target?.application.bundleIdentifier ?? "none", privacy: .public) window=\(request.target?.window != nil, privacy: .public) input=\(request.target?.focusedElement != nil, privacy: .public)")
         if let message { onResult?(message) }
+        if let message, outcome != .dispatched { onFailureMessage?(message) }
         if outcome == .dispatched { request.onDispatched?() }
         request.onCompleted?(outcome)
     }

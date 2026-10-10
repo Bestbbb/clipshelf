@@ -7,8 +7,10 @@ Mac feature set and its smooth cross-app workflow.
 The user still found the app unusable after the latest fixes. It has not met the
 daily-use goal or full Paste for Mac parity and is not a validated replacement.
 An additional local diagnostic run is recorded in the
-[core-flow rerun](docs/CORE_FLOW_RERUN.zh-CN.md). Controlled text flows passed
-through the global shortcut callback, but the user's last failure remains unresolved.
+[core-flow rerun](docs/CORE_FLOW_RERUN.zh-CN.md). A later user trace showed app
+launches capturing Finder as the paste destination. The focused local fixes and
+their limited verification are recorded in the
+[launcher diagnosis](docs/LAUNCHER_FLOW_DIAGNOSIS.zh-CN.md).
 
 Some automated text and Pinboard workflows produced passing observations, but
 those results did not establish usability through the user's normal entry points.

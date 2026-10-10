@@ -161,6 +161,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     var onDismiss: (() -> Void)?
     var onPauseToggle: (() -> Void)?
     var onPermissions: (() -> Void)?
+    var onSelectPasteDestination: ((Int32) -> Void)?
     var isVisible: Bool { window?.isVisible == true }
     private(set) var shortcutConfiguration = KeyboardShortcutConfiguration.defaults
     private(set) var alwaysPlainText = false
@@ -208,20 +209,44 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private let searchField = NSSearchField()
     private let statusLabel = NSTextField(labelWithString: "")
     private let pasteButton = NSButton(title: "", target: nil, action: nil)
+    private let destinationPopup = NSPopUpButton()
     private var canPasteToDestination = false
+    private var requiresDestinationChoice = false
     private var trackingMenus: Set<ObjectIdentifier> = []
     private var menuTrackingObservers: [NSObjectProtocol] = []
 
-    func setPasteDestination(name: String?, available: Bool) {
+    func setPasteDestination(name: String?, available: Bool, requiresChoice: Bool = false) {
+        requiresDestinationChoice = requiresChoice
         canPasteToDestination = available && name != nil
-        pasteButton.title = canPasteToDestination ? L10n.text("粘贴到 \(name!)") : L10n.text("复制")
-        pasteButton.toolTip = canPasteToDestination
+        pasteButton.title = requiresChoice ? L10n.text("粘贴") : canPasteToDestination ? L10n.text("粘贴到 \(name!)") : L10n.text("复制")
+        pasteButton.toolTip = requiresChoice ? L10n.text("从应用图标打开时，请先选择接收内容的应用。") : canPasteToDestination
             ? L10n.text("单击选择，双击粘贴；回车粘贴，Shift 回车以纯文本粘贴。")
             : L10n.text("内容已复制，请切回目标应用按 ⌘V。")
     }
 
+    func setPasteDestinations(_ choices: [(pid: Int32, name: String)], selectedPID: Int32?) {
+        destinationPopup.removeAllItems()
+        destinationPopup.addItem(withTitle: L10n.text("选择粘贴目标…"))
+        destinationPopup.item(at: 0)?.tag = -1
+        destinationPopup.item(at: 0)?.isEnabled = false
+        for choice in choices {
+            destinationPopup.addItem(withTitle: choice.name)
+            destinationPopup.lastItem?.tag = Int(choice.pid)
+        }
+        if let selectedPID { destinationPopup.selectItem(withTag: Int(selectedPID)) }
+        destinationPopup.isHidden = choices.isEmpty
+    }
+
+    func requestPasteDestinationChoice() { destinationPopup.performClick(nil) }
+
+    @objc private func selectPasteDestination() {
+        guard let item = destinationPopup.selectedItem, item.tag > 0 else { return }
+        onSelectPasteDestination?(Int32(item.tag))
+    }
+
     @objc private func performPrimaryPaste() {
-        if canPasteToDestination { pasteSelection(plain: false) }
+        if requiresDestinationChoice { requestPasteDestinationChoice() }
+        else if canPasteToDestination { pasteSelection(plain: false) }
         else { copySelection() }
     }
     private var baseStatus = ""
@@ -1047,13 +1072,20 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         pasteButton.font = .systemFont(ofSize: 12, weight: .semibold)
         pasteButton.setAccessibilityIdentifier("shelf.paste")
         pasteButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        destinationPopup.target = self
+        destinationPopup.action = #selector(selectPasteDestination)
+        destinationPopup.controlSize = .small
+        destinationPopup.setAccessibilityIdentifier("shelf.destination")
+        destinationPopup.setAccessibilityLabel(L10n.text("选择粘贴目标…"))
+        destinationPopup.isHidden = true
+        destinationPopup.widthAnchor.constraint(lessThanOrEqualToConstant: 190).isActive = true
         setPasteDestination(name: nil, available: false)
         retryLoadingButton.target = self
         retryLoadingButton.action = #selector(retryPageLoading)
         retryLoadingButton.bezelStyle = .inline
         retryLoadingButton.controlSize = .small
         retryLoadingButton.isHidden = true
-        let footer = NSStackView(views: [pasteButton, statusLabel, retryLoadingButton, NSView(), countLabel, previousPageButton, loadMoreButton, hints])
+        let footer = NSStackView(views: [pasteButton, destinationPopup, statusLabel, retryLoadingButton, NSView(), countLabel, previousPageButton, loadMoreButton, hints])
         footer.orientation = .horizontal
         footer.alignment = .centerY
         footer.spacing = 16

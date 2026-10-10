@@ -31,6 +31,7 @@ private final class PasteFakeEnvironment: PasteEnvironment {
     var activationSucceeds = true
     var raiseSucceeds = true
     var eventCreationSucceeds = true
+    var launcherSurface = false
     var activates = 0, raises = 0, focusRestores = 0, prepares = 0, dispatches = 0
     var onActivate: (() -> Void)?
     var onRaise: (() -> Void)?
@@ -42,6 +43,8 @@ private final class PasteFakeEnvironment: PasteEnvironment {
     var target: PasteCoordinator.Target { .init(application: .current, window: nil, focusedElement: nil) }
     func requestPermission() { XCTFail("Tests must not request system permissions") }
     func captureTarget() -> PasteCoordinator.Target? { target }
+    func isLauncherSurface(_ target: PasteCoordinator.Target) -> Bool { launcherSurface }
+    func destinationChoices() -> [PasteCoordinator.Target] { [target] }
     func processIdentifier(of target: PasteCoordinator.Target) -> pid_t { targetPID }
     func isRunning(_ target: PasteCoordinator.Target) -> Bool { running }
     func hasWindow(_ target: PasteCoordinator.Target) -> Bool { windowAvailable }
@@ -93,6 +96,35 @@ private final class PasteHarness {
 }
 
 final class PasteCoordinatorTests: XCTestCase {
+    @MainActor func testApplicationLaunchDoesNotTreatFinderNavigationAsADestination() {
+        let h = PasteHarness()
+        h.environment.launcherSurface = true
+        XCTAssertNil(h.coordinator.captureTarget(forApplicationLaunch: true))
+        XCTAssertNotNil(h.coordinator.captureTarget(), "The shortcut still captures Finder for file pasting")
+        h.environment.launcherSurface = false
+        XCTAssertNotNil(h.coordinator.captureTarget(forApplicationLaunch: true))
+        XCTAssertEqual(h.coordinator.destinationChoices().count, 1)
+        XCTAssertEqual(h.clipboard.writes, 0)
+    }
+
+    @MainActor func testFailureAfterDismissalEmitsVisibleFeedbackButSuccessDoesNot() async {
+        let h = PasteHarness()
+        var failures: [String] = []
+        h.coordinator.onFailureMessage = { failures.append($0) }
+        h.environment.activationSucceeds = false
+        h.paste()
+        await h.settle()
+        XCTAssertEqual(h.dismissed, 1)
+        XCTAssertEqual(h.outcomes, [.copiedOnly])
+        XCTAssertEqual(failures.count, 1)
+        XCTAssertEqual(failures, h.messages)
+        h.environment.activationSucceeds = true
+        h.paste()
+        await h.settle()
+        XCTAssertEqual(h.outcomes, [.copiedOnly, .dispatched])
+        XCTAssertEqual(failures.count, 1)
+    }
+
     @MainActor func testNormalPathCopiesDismissesAndDispatchesExactlyOnce() async {
         let h = PasteHarness()
         h.paste()

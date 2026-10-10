@@ -51,6 +51,30 @@ import ClipShelfCore
 }
 
 @MainActor final class PanelEntranceInteractionTests: XCTestCase {
+    func testDestinationPickerSelectsAnExplicitApplicationAndOwnsItsReturnKey() throws {
+        let h = EntranceHarness(); defer { h.close() }
+        h.panel.show(records: [ClipboardRecord(text: "synthetic picker")])
+        h.panel.setPasteDestinations([(200, "TextEdit"), (201, "Chrome")], selectedPID: nil)
+        h.panel.setPasteDestination(name: nil, available: false, requiresChoice: true)
+        func picker(_ view: NSView) -> NSPopUpButton? {
+            if let popup = view as? NSPopUpButton, popup.accessibilityIdentifier() == "shelf.destination" { return popup }
+            return view.subviews.lazy.compactMap(picker).first
+        }
+        let popup = try XCTUnwrap(picker(h.panel.window!.contentView!))
+        var selected: Int32?
+        h.panel.onSelectPasteDestination = { selected = $0 }
+        XCTAssertFalse(popup.isHidden)
+        XCTAssertEqual(popup.selectedItem?.tag, -1)
+        popup.selectItem(withTag: 201)
+        XCTAssertTrue(popup.sendAction(popup.action, to: popup.target))
+        XCTAssertEqual(selected, 201)
+        let menu = try XCTUnwrap(popup.menu)
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: menu)
+        XCTAssertFalse(h.key(36)); XCTAssertFalse(h.key(53))
+        NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: menu)
+        XCTAssertTrue(h.panel.isVisible)
+    }
+
     func testNativeMenuOwnsReturnAndEscapeUntilTrackingEnds() throws {
         let h = EntranceHarness(); defer { h.close() }
         let record = ClipboardRecord(text: "menu must not paste")

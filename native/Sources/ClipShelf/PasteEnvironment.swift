@@ -21,6 +21,8 @@ protocol PasteEnvironment: AnyObject {
     var ownProcessIdentifier: pid_t { get }
     func requestPermission()
     func captureTarget() -> PasteCoordinator.Target?
+    func destinationChoices() -> [PasteCoordinator.Target]
+    func isLauncherSurface(_ target: PasteCoordinator.Target) -> Bool
     func processIdentifier(of target: PasteCoordinator.Target) -> pid_t
     func isRunning(_ target: PasteCoordinator.Target) -> Bool
     func hasWindow(_ target: PasteCoordinator.Target) -> Bool
@@ -32,6 +34,11 @@ protocol PasteEnvironment: AnyObject {
     var heldModifiers: PasteModifiers { get }
     func prepareCommandV() -> (() -> Void)?
     func waitForReadiness() async throws
+}
+
+extension PasteEnvironment {
+    func destinationChoices() -> [PasteCoordinator.Target] { [] }
+    func isLauncherSurface(_ target: PasteCoordinator.Target) -> Bool { false }
 }
 
 struct PasteClipboardWrite {
@@ -100,6 +107,19 @@ final class PasteSystemEnvironment: PasteEnvironment {
         ValidationTrace.emit(.targetCaptured, pid: application.processIdentifier, bundleID: application.bundleIdentifier,
                              hasTargetWindow: target.window != nil, hasInputElement: target.focusedElement != nil, state: .captured)
         return target
+    }
+
+    func destinationChoices() -> [PasteCoordinator.Target] {
+        NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular && $0.processIdentifier != ownProcessIdentifier && !$0.isTerminated }
+            .sorted { ($0.localizedName ?? "").localizedCaseInsensitiveCompare($1.localizedName ?? "") == .orderedAscending }
+            .compactMap { Self.snapshot($0.processIdentifier) }
+            .filter { $0.window != nil }
+    }
+
+    func isLauncherSurface(_ target: PasteCoordinator.Target) -> Bool {
+        let role = target.focusedElement.flatMap { Self.stringAttribute($0, kAXRoleAttribute) }
+        return PasteLaunchPolicy.requiresDestinationChoice(bundleID: target.application.bundleIdentifier, focusedRole: role)
     }
 
     private static func snapshot(_ pid: pid_t) -> PasteCoordinator.Target? {
@@ -179,5 +199,10 @@ final class PasteSystemEnvironment: PasteEnvironment {
         guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success,
               let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
         return (value as! AXUIElement)
+    }
+    private static func stringAttribute(_ element: AXUIElement, _ name: String) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
+        return value as? String
     }
 }

@@ -7,6 +7,8 @@ enum ValidationTrace {
     enum Event: String, Codable, Sendable {
         case hotkeyRegistered = "hotkey_registered", hotkeyReceived = "hotkey_received"
         case invocationBlocked = "invocation_blocked"
+        case destinationChoiceRequired = "destination_choice_required"
+        case destinationSelected = "destination_selected"
         case invocation, reopen
         case panelShown = "panel_shown", panelDismissed = "panel_dismissed"
         case panelEntranceStarted = "panel_entrance_started"

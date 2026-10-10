@@ -81,6 +81,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     private var records: [ClipboardRecord] = []
     private var metadata: [ClipboardRecordMetadata] = []
     private var target: PasteCoordinator.Target?
+    private var pasteDestinationChoices: [PasteCoordinator.Target] = []
+    private var requiresPasteDestinationChoice = false
+    private let pasteFeedback = PasteFeedbackController()
     private var statusMessage: String?
     private var activationObserver: NSObjectProtocol?
     private var lifecycleObservers: [NSObjectProtocol] = []
@@ -201,6 +204,10 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         configureCaptureIngestion()
         capture.onStatus = { [weak self] message in self?.setStatus(message) }
         paste.onResult = { [weak self] message in self?.setStatus(message) }
+        paste.onFailureMessage = { [weak self] message in
+            guard let self, self.interactionLifecycle.isAllowed, !self.panel.isVisible else { return }
+            self.pasteFeedback.show(message, on: NSScreen.main)
+        }
         globalShortcuts.onPressed = { [weak self] action, chord in
             guard let self else { return }
             guard self.interactionLifecycle.isAllowed else {
@@ -429,6 +436,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         panel.onPaste = { [weak self] record, plain in
             guard let self, self.interactionLifecycle.isAllowed else { return }
             if self.demo { self.setStatus(L10n.text("演示：已选择「\(record.title)」；不会写入剪贴板。")); return }
+            guard !self.requiresPasteDestinationChoice else { self.panel.requestPasteDestinationChoice(); return }
             self.paste.paste(record, plainText: self.outputAsPlainText([record], requested: plain), target: self.target) { self.panel.dismiss() }
         }
         panel.onCopy = { [weak self] record in
@@ -441,6 +449,17 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         }
         panel.onPauseToggle = { [weak self] in self?.toggleRecording() }
         panel.onPermissions = { [weak self] in self?.enableDirectPaste() }
+        panel.onSelectPasteDestination = { [weak self] pid in
+            guard let self, self.panel.isVisible,
+                  let selected = self.pasteDestinationChoices.first(where: { $0.application.processIdentifier == pid }),
+                  !selected.application.isTerminated else { return }
+            self.target = selected
+            self.requiresPasteDestinationChoice = false
+            self.panel.setPasteDestination(name: selected.application.localizedName,
+                                           available: self.paste.hasPermission && selected.window != nil)
+            ValidationTrace.emit(.destinationSelected, pid: pid, bundleID: selected.application.bundleIdentifier, state: .captured)
+            self.setStatus(L10n.text("单击选择，双击粘贴；回车粘贴，Shift 回车以纯文本粘贴。"))
+        }
         panel.onDismiss = { [weak self] in
             ValidationTrace.emit(.panelDismissed, state: .hidden)
             self?.paste.returnToTargetIfIdle(self?.target)
@@ -449,6 +468,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         }
         panel.onPasteRecords = { [weak self] selected, plain in
             guard let self, !self.demo, self.interactionLifecycle.isAllowed else { return }
+            guard !self.requiresPasteDestinationChoice else { self.panel.requestPasteDestinationChoice(); return }
             self.paste.paste(selected, plainText: self.outputAsPlainText(selected, requested: plain), target: self.target) { self.panel.dismiss() }
         }
         panel.onCopyRecords = { [weak self] selected in
@@ -617,6 +637,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         if suspended { suspensionReasons.insert(reason) } else { suspensionReasons.remove(reason) }
         sessionSuspended = !suspensionReasons.isEmpty
         if sessionSuspended {
+            pasteFeedback.hide()
             historyCleanup?.cancelPending()
             storageSettings?.suspend()
             languageSettings?.suspend()
@@ -944,12 +965,13 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
 
     @objc private func openFromMenu() { togglePanel() }
 
-    private func togglePanel() {
+    private func togglePanel(forApplicationLaunch: Bool = false) {
         ValidationTrace.emit(.invocation, state: panel.isVisible ? .visible : .hidden)
-        interactionLifecycle.prepareForInvocation { self.performTogglePanel() }
+        interactionLifecycle.prepareForInvocation { self.performTogglePanel(forApplicationLaunch: forApplicationLaunch) }
     }
 
-    private func performTogglePanel() {
+    private func performTogglePanel(forApplicationLaunch: Bool = false) {
+        pasteFeedback.hide()
         if let window = cleanupConfirmation?.window {
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
@@ -960,11 +982,18 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             showError(L10n.text("历史数据库未能打开"), detail: L10n.text("原有文件会保留。请检查本机磁盘和数据目录权限后重新启动。"))
             return
         }
-        target = paste.captureTarget()
+        target = paste.captureTarget(forApplicationLaunch: forApplicationLaunch)
+        requiresPasteDestinationChoice = forApplicationLaunch && target == nil && paste.hasPermission
+        pasteDestinationChoices = requiresPasteDestinationChoice ? paste.destinationChoices() : []
+        if pasteDestinationChoices.isEmpty { requiresPasteDestinationChoice = false }
+        panel.setPasteDestinations(pasteDestinationChoices.map { ($0.application.processIdentifier, $0.application.localizedName ?? "ClipShelf") },
+                                   selectedPID: target?.application.processIdentifier)
         panel.setPasteDestination(name: target?.application.localizedName,
-                                  available: paste.hasPermission && target?.window != nil)
+                                  available: paste.hasPermission && target?.window != nil,
+                                  requiresChoice: requiresPasteDestinationChoice)
         if !demo, !preferences.bool(forKey: "hasSeenWelcome"), !showWelcome() { return }
-        statusMessage = demo ? L10n.text("演示模式 · 合成内容 · 不读取或写入系统剪贴板") : nil
+        statusMessage = demo ? L10n.text("演示模式 · 合成内容 · 不读取或写入系统剪贴板")
+            : requiresPasteDestinationChoice ? L10n.text("从应用图标打开时，请先选择接收内容的应用。") : nil
         let pointer = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(pointer, $0.frame, false) } ?? NSScreen.main
         if demo { panel.show(records: records, on: screen, status: statusText) }
@@ -974,7 +1003,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         ValidationTrace.emit(.reopen, state: panel.isVisible ? .visible : .hidden)
-        if !panel.isVisible { togglePanel() }
+        if !panel.isVisible { togglePanel(forApplicationLaunch: true) }
         return true
     }
 
@@ -2221,6 +2250,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
 
     func applicationWillTerminate(_ notification: Notification) {
         isTerminating = true
+        pasteFeedback.hide()
         interactionLifecycle.stopObserving()
         appUpdates?.stop()
         historyCleanup?.terminate()
