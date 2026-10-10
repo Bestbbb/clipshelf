@@ -21,6 +21,7 @@ enum ClipboardCodecError: LocalizedError {
 enum ClipboardCodec {
     enum SnapshotPolicy: Sendable { case passiveCapture, explicitImport }
     nonisolated static let maximumCaptureBytes = 64 * 1_024 * 1_024
+    nonisolated static let maximumOutputBytes = 512 * 1_024 * 1_024
 
     static func snapshot(from pasteboard: NSPasteboard, sourceApp: String?, sourceBundleID: String?,
                          policy: SnapshotPolicy = .passiveCapture) throws -> ClipboardCaptureSnapshot? {
@@ -105,31 +106,30 @@ enum ClipboardCodec {
                                rtf: rtf, html: html, parts: snapshot.parts)
     }
 
-    static func items(for records: [ClipboardRecord], plainText: Bool) throws -> [NSPasteboardItem] {
+    static func items(for records: [ClipboardRecord], plainText: Bool,
+                      encodeCombinedRTF: ((NSAttributedString) throws -> Data)? = nil,
+                      maximumCombinedBytes: Int = maximumOutputBytes) throws -> [NSPasteboardItem] {
         guard !records.isEmpty else { throw ClipboardCodecError.noContent }
         if plainText {
-            guard records.allSatisfy(supportsPlainText) else { throw ClipboardCodecError.noContent }
+            var contents: [String] = []
+            var byteCount = 0
+            for record in records {
+                guard let text = ClipboardTextProjection.text(in: record) else { throw ClipboardCodecError.noContent }
+                let separatorBytes = contents.isEmpty ? 0 : 1
+                guard separatorBytes <= maximumOutputBytes - byteCount,
+                      text.utf8.count <= maximumOutputBytes - byteCount - separatorBytes else {
+                    throw HistoryStoreError.selectionPayloadTooLarge
+                }
+                byteCount += separatorBytes + text.utf8.count
+                contents.append(text)
+            }
             let item = NSPasteboardItem()
-            item.setString(records.map(\.text).joined(separator: "\n"), forType: .string)
+            item.setString(contents.joined(separator: "\n"), forType: .string)
             mark(item)
             return [item]
         }
-        if records.count > 1, records.allSatisfy({ [.text, .link, .color].contains($0.kind) && !$0.parts.flatMap(\.representations).contains(where: { ["com.adobe.pdf", "public.pdf"].contains($0.typeIdentifier) }) }) {
-            let item = NSPasteboardItem()
-            item.setString(records.map(\.text).joined(separator: "\n"), forType: .string)
-            let combined = NSMutableAttributedString(string: "")
-            for (index, record) in records.enumerated() {
-                if index > 0 { combined.append(NSAttributedString(string: "\n")) }
-                if let data = record.rtf, let attributed = NSAttributedString(rtf: data, documentAttributes: nil) {
-                    combined.append(attributed)
-                } else { combined.append(NSAttributedString(string: record.text)) }
-            }
-            if let rtf = try? combined.data(from: NSRange(location: 0, length: combined.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) {
-                item.setData(rtf, forType: .rtf)
-            }
-            mark(item)
-            return [item]
-        }
+        if let combined = combinedTextItem(for: records, encodeRTF: encodeCombinedRTF,
+                                           maximumBytes: maximumCombinedBytes) { return [combined] }
         var result: [NSPasteboardItem] = []
         for record in records {
             if !record.parts.isEmpty {
@@ -141,22 +141,91 @@ enum ClipboardCodec {
                             guard let url = ClipboardFileAccess.url(from: representation.data),
                                   ClipboardFileAccess.availability(of: url) == .available else { throw ClipboardCodecError.unavailableFile }
                         }
-                        item.setData(representation.data, forType: type)
+                        guard item.setData(representation.data, forType: type) else { throw ClipboardCodecError.noContent }
                     }
                     mark(item)
                     result.append(item)
                 }
             } else {
                 let item = NSPasteboardItem()
-                item.setString(record.text, forType: .string)
-                if let rtf = record.rtf { item.setData(rtf, forType: .rtf) }
-                if let html = record.html { item.setData(html, forType: .html) }
+                guard item.setString(record.text, forType: .string) else { throw ClipboardCodecError.noContent }
+                if let rtf = record.rtf, !item.setData(rtf, forType: .rtf) { throw ClipboardCodecError.noContent }
+                if let html = record.html, !item.setData(html, forType: .html) { throw ClipboardCodecError.noContent }
                 mark(item)
                 result.append(item)
             }
         }
         guard !result.isEmpty else { throw ClipboardCodecError.noContent }
         return result
+    }
+
+    /// Combining is allowed only when every record is one complete ordinary text object.
+    /// One unsupported record keeps the entire selection in its original object order.
+    private static func combinedTextItem(for records: [ClipboardRecord],
+                                         encodeRTF: ((NSAttributedString) throws -> Data)?,
+                                         maximumBytes: Int) -> NSPasteboardItem? {
+        guard records.count > 1 else { return nil }
+        let byteLimit = min(max(0, maximumBytes), maximumOutputBytes)
+        let combined = NSMutableAttributedString(string: "")
+        for (index, record) in records.enumerated() {
+            guard let text = combinableText(in: record) else { return nil }
+            if index > 0 { combined.append(NSAttributedString(string: "\n")) }
+            combined.append(text)
+        }
+        let textByteCount = combined.string.utf8.count
+        guard textByteCount <= byteLimit else { return nil }
+        let rtf: Data
+        do {
+            if let encodeRTF { rtf = try encodeRTF(combined) }
+            else {
+                rtf = try combined.data(from: NSRange(location: 0, length: combined.length),
+                                        documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
+            }
+        } catch { return nil } // Keep original rich payloads rather than silently dropping RTF.
+        // Encoding can grow past the selection's original-byte preflight. This bounds
+        // published UTF-8 plus RTF bytes, not the conversion's peak resident memory.
+        guard rtf.count <= byteLimit - textByteCount else { return nil }
+        let item = NSPasteboardItem()
+        guard item.setString(combined.string, forType: .string), item.setData(rtf, forType: .rtf) else { return nil }
+        mark(item)
+        return item
+    }
+
+    private static func combinableText(in record: ClipboardRecord) -> NSAttributedString? {
+        guard record.html == nil else { return nil }
+        let text: String
+        let rtf: Data?
+        if record.parts.isEmpty {
+            text = record.text; rtf = record.rtf
+        } else {
+            guard record.parts.count == 1 else { return nil }
+            let representations = record.parts[0].representations
+            let types = Set(representations.map(\.typeIdentifier))
+            guard !representations.isEmpty, types.count == representations.count,
+                  types.isSubset(of: [NSPasteboard.PasteboardType.string.rawValue,
+                                     NSPasteboard.PasteboardType.rtf.rawValue]) else { return nil }
+            // The part is authoritative: a stale top-level RTF projection cannot replace it.
+            rtf = representations.first { $0.typeIdentifier == NSPasteboard.PasteboardType.rtf.rawValue }?.data
+            if let bytes = representations.first(where: { $0.typeIdentifier == NSPasteboard.PasteboardType.string.rawValue })?.data {
+                guard let decoded = String(data: bytes, encoding: .utf8), decoded == record.text else { return nil }
+                text = decoded
+            } else {
+                guard rtf != nil else { return nil }
+                text = record.text // Verified against the decoded RTF below, never used as a fallback.
+            }
+        }
+        guard let rtf else { return NSAttributedString(string: text) }
+        // Reuse the existing conservative RTF control-word boundary before native decoding;
+        // an attachment ignored by the native importer must not disappear during combination.
+        let richPart = ClipboardPart(representations: [.init(typeIdentifier: "public.rtf", data: rtf)])
+        guard (try? ClipboardPartEdit.validateEditablePart(richPart)) != nil,
+              let rich = NSAttributedString(rtf: rtf, documentAttributes: nil), rich.string == text,
+              !rich.string.contains("\u{FFFC}") else { return nil }
+        var hasAttachment = false
+        rich.enumerateAttribute(.attachment, in: NSRange(location: 0, length: rich.length)) { value, _, stop in
+            if value != nil { hasAttachment = true; stop.pointee = true }
+        }
+        return hasAttachment ? nil : rich
     }
 
     private static func mark(_ item: NSPasteboardItem) {
@@ -168,8 +237,6 @@ enum ClipboardCodec {
     }
 
     static func supportsPlainText(_ record: ClipboardRecord) -> Bool {
-        guard record.kind != .image && record.kind != .file else { return false }
-        let types = Set(record.parts.flatMap(\.representations).map(\.typeIdentifier))
-        return types.isDisjoint(with: [NSPasteboard.PasteboardType.pdf.rawValue, "public.pdf"]) || types.contains(NSPasteboard.PasteboardType.string.rawValue)
+        ClipboardTextProjection.text(in: record) != nil
     }
 }

@@ -435,6 +435,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         panel.onPauseToggle = { [weak self] in self?.toggleRecording() }
         panel.onPermissions = { [weak self] in self?.enableDirectPaste() }
         panel.onDismiss = { [weak self] in
+            ValidationTrace.emit(.panelDismissed, state: .hidden)
             self?.target = nil
             self?.pageQueries.cancel()
         }
@@ -568,12 +569,16 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         ) { [weak self] notification in
             MainActor.assumeIsolated {
                 guard let self, let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+                ValidationTrace.emit(.workspaceActivated, pid: app.processIdentifier, bundleID: app.bundleIdentifier,
+                                     state: self.panel.isVisible ? .visible : .hidden)
                 self.stackGestures.invalidate()
                 self.capture.noteFrontmostApplication(bundleID: app.bundleIdentifier)
                 self.paste.applicationDidActivate(processIdentifier: app.processIdentifier)
                 guard app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
                 if let pid = self.suggestionTargetPID, app.processIdentifier != pid { self.cancelSuggestions() }
                 if self.panel.isVisible, self.panel.hasOpenEditor || app.processIdentifier != self.target?.application.processIdentifier {
+                    ValidationTrace.emit(.workspaceHidesPanel, pid: app.processIdentifier, bundleID: app.bundleIdentifier,
+                                         state: .hidden)
                     self.paste.cancel()
                     self.panel.hidePreservingDraft()
                 }
@@ -582,6 +587,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, !self.panel.contains(screenPoint: NSEvent.mouseLocation) else { return }
+                ValidationTrace.emit(.outsideClick, state: self.panel.isVisible ? .visible : .hidden)
                 self.cancelPendingInteraction(); self.panel.hidePreservingDraft(); self.cancelSuggestions()
             }
         }
@@ -894,6 +900,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     @objc private func openFromMenu() { togglePanel() }
 
     private func togglePanel() {
+        ValidationTrace.emit(.invocation, state: panel.isVisible ? .visible : .hidden)
         interactionLifecycle.prepareForInvocation { self.performTogglePanel() }
     }
 
@@ -915,9 +922,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         let screen = NSScreen.screens.first { NSMouseInRect(pointer, $0.frame, false) } ?? NSScreen.main
         if demo { panel.show(records: records, on: screen, status: statusText) }
         else { panel.show(metadata: [], on: screen, status: statusText) }
+        ValidationTrace.emit(.panelShown, state: panel.isVisible ? .visible : .hidden)
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        ValidationTrace.emit(.reopen, state: panel.isVisible ? .visible : .hidden)
         if !panel.isVisible { togglePanel() }
         return true
     }
@@ -1247,6 +1256,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     }
 
     private func cancelPendingInteraction() {
+        ValidationTrace.emit(.interactionCancelled, state: .requested)
         stackGestures.invalidate()
         stack.cancelPendingPastes()
         paste.cancel()

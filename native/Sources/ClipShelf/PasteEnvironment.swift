@@ -69,10 +69,16 @@ final class PasteSystemEnvironment: PasteEnvironment {
     }
     func captureTarget() -> PasteCoordinator.Target? {
         guard let application = NSWorkspace.shared.frontmostApplication,
-              application.processIdentifier != ownProcessIdentifier else { return nil }
+              application.processIdentifier != ownProcessIdentifier else {
+            ValidationTrace.emit(.targetCaptured, state: .unavailable)
+            return nil
+        }
         let app = AXUIElementCreateApplication(application.processIdentifier)
-        return .init(application: application, window: Self.attribute(app, kAXFocusedWindowAttribute),
-                     focusedElement: Self.attribute(app, kAXFocusedUIElementAttribute))
+        let target = PasteCoordinator.Target(application: application, window: Self.attribute(app, kAXFocusedWindowAttribute),
+                                             focusedElement: Self.attribute(app, kAXFocusedUIElementAttribute))
+        ValidationTrace.emit(.targetCaptured, pid: application.processIdentifier, bundleID: application.bundleIdentifier,
+                             hasTargetWindow: target.window != nil, hasInputElement: target.focusedElement != nil, state: .captured)
+        return target
     }
     func processIdentifier(of target: PasteCoordinator.Target) -> pid_t { target.application.processIdentifier }
     func isRunning(_ target: PasteCoordinator.Target) -> Bool { !target.application.isTerminated }
@@ -93,11 +99,18 @@ final class PasteSystemEnvironment: PasteEnvironment {
         }
     }
     func focusState(for target: PasteCoordinator.Target) -> PasteFocusState {
+        var traceState = ValidationTrace.State.ready
+        defer {
+            ValidationTrace.emit(.focusChecked, pid: target.application.processIdentifier,
+                                 bundleID: target.application.bundleIdentifier, hasTargetWindow: target.window != nil,
+                                 hasInputElement: target.focusedElement != nil, state: traceState)
+        }
         let app = AXUIElementCreateApplication(target.application.processIdentifier)
         guard let original = target.window, let current = Self.attribute(app, kAXFocusedWindowAttribute),
-              CFEqual(original, current) else { return .differentWindow }
+              CFEqual(original, current) else { traceState = .differentWindow; return .differentWindow }
         if let original = target.focusedElement {
             guard let current = Self.attribute(app, kAXFocusedUIElementAttribute), CFEqual(original, current) else {
+                traceState = .differentElement
                 return .differentElement
             }
         }

@@ -229,16 +229,25 @@ final class ClipboardPartEditPlanTests: XCTestCase {
         XCTAssertEqual(saved.parts[1], original.parts[1])
     }
 
-    func testEditedMultipartRecordCombinedWithAnotherRecordOutputsEveryObjectInRTF() throws {
+    func testEditedMultipartRecordWithAnotherRecordPreservesEveryOriginalObject() throws {
         let original = ClipboardRecord(text: "first\nsecond", parts: [textPart("first", extra: [
             .init(typeIdentifier: "public.rtf", data: try rich("first"))]), textPart("second")])
         let saved = try ClipboardEditPlan.makePartEdit(original: original, partIndex: 1,
             contents: NSAttributedString(string: "changed second")).applying(to: original)
         XCTAssertNil(saved.rtf)
         let objects = try ClipboardCodec.items(for: [saved, ClipboardRecord(text: "another record")], plainText: false)
-        XCTAssertEqual(objects.count, 1)
-        XCTAssertEqual(objects[0].string(forType: .string), "first\nchanged second\nanother record")
-        let data = try XCTUnwrap(objects[0].data(forType: .rtf))
-        XCTAssertEqual(try XCTUnwrap(NSAttributedString(rtf: data, documentAttributes: nil)).string, "first\nchanged second\nanother record")
+        XCTAssertEqual(objects.count, 3)
+        for (item, part) in zip(objects, saved.parts) {
+            for representation in part.representations {
+                XCTAssertEqual(item.data(forType: .init(representation.typeIdentifier)), representation.data)
+            }
+        }
+        XCTAssertEqual(objects[0].string(forType: .string), "first")
+        XCTAssertEqual(objects[1].string(forType: .string), "changed second")
+        XCTAssertEqual(objects[2].string(forType: .string), "another record")
+        let firstRTF = try XCTUnwrap(objects[0].data(forType: .rtf))
+        let firstContents = try XCTUnwrap(NSAttributedString(rtf: firstRTF, documentAttributes: nil))
+        XCTAssertTrue((firstContents.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?
+            .fontDescriptor.symbolicTraits.contains(.bold) == true)
     }
 }

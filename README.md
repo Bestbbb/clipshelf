@@ -36,6 +36,12 @@ To inspect the interface using synthetic samples without clipboard recording:
 open build/ClipShelf.app --args --demo
 ```
 
+For isolated paste acceptance, `--validation` creates synthetic records in a
+temporary library and disables clipboard recording. Adding `--validation-trace`
+prints structured focus/paste events to stderr without clipboard contents,
+window titles, file paths or credentials. These diagnostics are off by default;
+selecting Copy or Paste in validation mode still writes the system clipboard.
+
 Quit an existing ClipShelf instance before switching to or from demo mode. The
 build script uses an ad-hoc signature unless `CODESIGN_IDENTITY` is provided;
 the development bundle is **not notarized**. Native data is kept separately in
@@ -62,6 +68,12 @@ an unsaved draft asks whether to keep editing or discard it. Unsupported embedde
 attachments stay read-only, and original-format output preserves the other objects.
 Edit Undo also checks the saved content, so a backup that reuses the same record
 ID and revision cannot be overwritten by a stale Undo action.
+
+Multi-selection merges only complete ordinary text objects, preserving supported
+RTF formatting. A selection containing other formats keeps every original object
+and representation in order. Explicit plain-text conversion reads actual text or
+link addresses from each object; it does not paste display summaries as content.
+Receiving applications still decide which offered representations they accept.
 
 Storage Management reports library files, shared caches and the share inbox
 separately, including unavailable scopes. Core writes and backups check volume

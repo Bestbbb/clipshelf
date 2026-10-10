@@ -85,8 +85,8 @@ enum ClipboardEditPlan {
             index == partIndex ? edited.text : summaryText(in: part)
         }
         // Like capture, only a single object's formats can describe the whole record.
-        // Multi-record output must fall back to the complete aggregate text, not the
-        // first object's RTF, which would silently omit all of its sibling objects.
+        // Keep the aggregate projection separate from per-object output; the first
+        // object's RTF cannot describe the complete contents of a multi-object record.
         return ClipboardPartEdit(partIndex: partIndex, replacement: replacement,
                                  text: summaries.joined(separator: "\n"),
                                  rtf: parts.count == 1 ? edited.rtf : nil,
