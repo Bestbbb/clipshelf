@@ -217,6 +217,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private var preferredCompactHeight: CGFloat = 338
     private var applyingPresentationGeometry = false
     private var presentedVisibleFrame: NSRect?
+    private let presentationMotion: PanelPresentationMotion
+    private var screenParametersObserver: NSObjectProtocol?
     /// The application persists preferences in its own profile; isolated controllers never write defaults.
     var onPreferredHeightChange: ((Bool, CGFloat) -> Void)?
     /// Tests provide synthetic screens without changing the system display configuration.
@@ -333,8 +335,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private var earlierArrow: String { layoutDirection == .rightToLeft ? "\u{F703}" : "\u{F702}" }
     private var laterArrow: String { layoutDirection == .rightToLeft ? "\u{F702}" : "\u{F703}" }
 
-    init(layoutDirection: NSUserInterfaceLayoutDirection? = nil) {
+    init(layoutDirection: NSUserInterfaceLayoutDirection? = nil, presentationMotion: PanelPresentationMotion? = nil) {
         self.layoutDirection = layoutDirection ?? InterfaceLayout.direction
+        self.presentationMotion = presentationMotion ?? PanelPresentationMotion()
         let panel = ShelfPanel(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 430), styleMask: [.borderless, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isReleasedWhenClosed = false
         panel.level = .floating
@@ -343,13 +346,20 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
-        panel.animationBehavior = .utilityWindow
+        panel.animationBehavior = .none
         panel.title = L10n.text("ClipShelf 剪贴板历史")
         panel.minSize = NSSize(width: 720, height: 338)
         super.init(window: panel)
         panel.delegate = self
         thumbnailCache.totalCostLimit = 32 * 1_024 * 1_024
         buildInterface()
+        screenParametersObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
+                                                                           object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.isVisible else { return }
+                self.positionShelf(on: self.window?.screen)
+            }
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -379,7 +389,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                 detailWindow.minSize = NSSize(width: min(440, frame.width), height: min(320, frame.height))
                 detailWindow.setFrame(frame, display: false)
             }
-            window?.makeKeyAndOrderFront(nil); installEventMonitor()
+            if let window { presentationMotion.present(window: window, animated: false) }
+            installEventMonitor()
             presentDetail(detailWindow)
             detailWindow.makeFirstResponder(detailEditor)
             // Suspension retires the old read without a completion. Reload the
@@ -433,7 +444,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         resultPresentation = usesRemoteQuery ? .loading : .ready
         reloadResults(resetScroll: true)
         positionShelf(on: screen)
-        window?.makeKeyAndOrderFront(nil)
+        if let window { presentationMotion.present(window: window) }
         window?.makeFirstResponder(searchField)
         installEventMonitor()
         issueQuery(resetLimit: true)
@@ -519,6 +530,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func positionShelf(on screen: NSScreen?) {
         guard let window else { return }
+        presentationMotion.cancelPreservingFrame()
         let visible = PanelPresentationGeometry.usable(visibleFrame(on: screen))
         presentedVisibleFrame = visible
         let frame = PanelPresentationGeometry.shelf(in: visible,
@@ -638,7 +650,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         filterPopover = nil
         insertionLine.isHidden = true
         detailWindow?.close()
-        window?.orderOut(nil)
+        if let window { presentationMotion.hide(window: window) }
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor); self.eventMonitor = nil }
         onDismiss?()
     }
@@ -673,7 +685,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         detailWindow?.orderOut(nil)
         linkPreview?.dismiss(); imagePreview?.dismiss(); filePreview?.dismiss()
         filterPopover?.close(); filterPopover = nil
-        window?.orderOut(nil)
+        if let window { presentationMotion.hide(window: window) }
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor); self.eventMonitor = nil }
         onDismiss?()
     }
@@ -2324,6 +2336,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func showDetail(_ record: ClipboardRecord, editing: Bool) {
+        presentationMotion.finish()
         guard isVisible else { return }
         cardViews.forEach { $0.cancelPendingDrag() }
         invalidateOutputContext()
@@ -2575,6 +2588,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     func showFileReferences(_ record: ClipboardRecord, preferUnavailable: Bool = false) {
         guard isVisible else { return }
+        presentationMotion.finish()
         cardViews.forEach { $0.cancelPendingDrag() }
         invalidateOutputContext()
         if detailWindow != nil {
@@ -2652,6 +2666,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     func windowWillClose(_ notification: Notification) {
         guard let closing = notification.object as? NSWindow else { return }
         if closing === window {
+            presentationMotion.cancelPreservingFrame()
             if detailIsDirty || detailSaveID != nil { hidePreservingDraft() }
             filePreview?.dismiss()
             cardViews.forEach { $0.cancelPendingDrag() }
@@ -2686,12 +2701,24 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     func windowDidResize(_ notification: Notification) {
         guard let resized = notification.object as? NSWindow, resized === window else { return }
+        if !applyingPresentationGeometry { presentationMotion.cancelPreservingFrame() }
         if isVisible, !applyingPresentationGeometry {
             let height = PanelPresentationGeometry.preferredHeight(resized.frame.height, compact: compactMode)
             if compactMode { preferredCompactHeight = height } else { preferredNormalHeight = height }
             onPreferredHeightChange?(compactMode, height)
         }
         updateCardLayout()
+    }
+
+    func windowWillStartLiveResize(_ notification: Notification) {
+        guard notification.object as? NSWindow === window else { return }
+        presentationMotion.cancelPreservingFrame()
+    }
+
+    func windowDidChangeScreen(_ notification: Notification) {
+        guard notification.object as? NSWindow === window, isVisible, !applyingPresentationGeometry else { return }
+        guard PanelPresentationGeometry.usable(visibleFrame(on: window?.screen)) != presentedVisibleFrame else { return }
+        positionShelf(on: window?.screen)
     }
 
     private func updateCardLayout() {
@@ -2716,6 +2743,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func presentDetail(_ detail: NSPanel) {
+        presentationMotion.finish()
         InterfaceLayout.apply(to: detail.contentView, direction: layoutDirection)
         if let presentDetailPanel { presentDetailPanel(detail, window) }
         else {
@@ -2888,7 +2916,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         guard detailIsDirty else { detail.close(); continuation(); return }
         guard detailDiscardID == nil else { onCancel?(); return }
         if detailHidden {
-            detailHidden = false; window?.makeKeyAndOrderFront(nil); installEventMonitor(); presentDetail(detail)
+            detailHidden = false
+            if let window { presentationMotion.present(window: window, animated: false) }
+            installEventMonitor(); presentDetail(detail)
         }
         let token = UUID(), session = detailSession
         detailDiscardID = token
@@ -3037,4 +3067,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     @objc private func togglePause() { onPauseToggle?() }
     @objc private func openPermissions() { onPermissions?() }
     @objc private func closePanel() { dismiss() }
+
+    deinit {
+        if let screenParametersObserver { NotificationCenter.default.removeObserver(screenParametersObserver) }
+    }
 }

@@ -77,8 +77,17 @@ public final class HistoryStore: @unchecked Sendable {
     static let columns = "id, text, source_app, source_bundle_id, copied_at, rtf, html, parts, renamed_title, ocr_text, pinboard_id, is_in_history, revision, content_kind, pinboard_order, origin_device_id, origin_device_name, origin_device_conflict"
     private static let metadataColumns = "id, text, source_app, source_bundle_id, copied_at, NULL, NULL, parts, renamed_title, ocr_text, pinboard_id, is_in_history, revision, content_kind, pinboard_order, origin_device_id, origin_device_name, origin_device_conflict"
 
-    public init(databaseURL: URL, recordsLocalOrigin: Bool = false,
-                spaceCoordinator: StorageSpaceCoordinator? = nil) throws {
+    public convenience init(databaseURL: URL, recordsLocalOrigin: Bool = false,
+                            spaceCoordinator: StorageSpaceCoordinator? = nil) throws {
+        try self.init(databaseURL: databaseURL, recordsLocalOrigin: recordsLocalOrigin,
+                      spaceCoordinator: spaceCoordinator, configureConnection: nil)
+    }
+
+    /// Connection-local instrumentation can observe initialization without a process-global hook.
+    /// Throwing after all properties are initialized follows the same deinit/close path as migration.
+    init(databaseURL: URL, recordsLocalOrigin: Bool = false,
+         spaceCoordinator: StorageSpaceCoordinator? = nil,
+         configureConnection: ((OpaquePointer) throws -> Void)?) throws {
         guard databaseURL.isFileURL, !databaseURL.path.utf8.contains(0) else {
             throw HistoryStoreError.invalidDatabaseURL
         }
@@ -112,6 +121,7 @@ public final class HistoryStore: @unchecked Sendable {
         try execute("PRAGMA foreign_keys = ON")
         try execute("PRAGMA journal_mode = WAL")
         try execute("PRAGMA secure_delete = ON")
+        try configureConnection?(database)
         try migrate()
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: databaseURL.path)
     }
@@ -742,16 +752,20 @@ public final class HistoryStore: @unchecked Sendable {
     }
 
     func migrate() throws {
-        let version: Int = try {
+        func schemaVersion() throws -> Int {
             let versionStatement = try prepare("PRAGMA user_version")
             defer { sqlite3_finalize(versionStatement) }
             try check(sqlite3_step(versionStatement), allowingRow: true)
             return Int(sqlite3_column_int(versionStatement, 0))
-        }()
-        if (1...12).contains(version) { try recoveryDatabaseBackup(reason: "migration-v\(version)") }
+        }
+        let observedVersion = try schemaVersion()
+        if (1...12).contains(observedVersion) { try recoveryDatabaseBackup(reason: "migration-v\(observedVersion)") }
         suppressSyncCapture = true
         defer { suppressSyncCapture = false }
         try transaction {
+            // A different connection may have finished initialization or migration while this
+            // connection made its recovery backup or waited for BEGIN IMMEDIATE's writer lock.
+            let version = try schemaVersion()
             switch version {
             case 0:
                 try createPinboardTable()
@@ -817,18 +831,49 @@ public final class HistoryStore: @unchecked Sendable {
             try execute("CREATE INDEX IF NOT EXISTS clipboard_pinboard ON clipboard_records(pinboard_id)")
             try execute("CREATE INDEX IF NOT EXISTS clipboard_date ON clipboard_records(copied_at)")
             try execute("CREATE INDEX IF NOT EXISTS clipboard_pinboard_order ON clipboard_records(pinboard_id, pinboard_order, id)")
-            try createSyncSchema()
+            try createSyncSchema(previousVersion: version)
             try createSharingSchema()
             try createOwnedFilesSchema()
             try execute("CREATE TABLE IF NOT EXISTS pinboard_local_order(board_id TEXT PRIMARY KEY REFERENCES pinboards(id) ON DELETE CASCADE, position INTEGER NOT NULL)")
             try initializeSearchIndex()
-            try initializeHistoryCleanupTokens()
+            try initializeHistoryCleanupTokens(previousVersion: version)
             try createOwnedSyncSchema(markLegacy: version < 11)
             try createOwnedStorageSchema(protectLegacy: version > 0 && version < 12)
             try initializeContentQuotaSchema(previousVersion: version)
             try execute("PRAGMA user_version = 13")
             syncSchemaReady = true
         }
+    }
+
+    /// Validate only schema metadata, not every stored row, on a normal connection open.
+    /// Backfill completion is recorded by user_version in the same transaction as installation.
+    /// A nil nullability requirement accepts either declaration (for SQLite's legacy TEXT PK).
+    func requireStartupTable(_ table: String,
+                             columns: [(name: String, type: String, notNull: Bool?)],
+                             primaryKey: [String]) throws {
+        guard try syncScalar("SELECT type FROM sqlite_master WHERE name = ? COLLATE NOCASE", [table]) == "table" else {
+            throw HistoryStoreError.invalidStoredRecord
+        }
+        // All names here are fixed source-code identifiers, never user-controlled SQL.
+        let statement = try prepare("PRAGMA table_info(\(table))")
+        defer { sqlite3_finalize(statement) }
+        var found: [String: (type: String, notNull: Bool, key: Int)] = [:]
+        while true {
+            let status = sqlite3_step(statement)
+            if status == SQLITE_DONE { break }
+            try check(status, allowingRow: true)
+            guard let name = textColumn(statement, 1), let type = textColumn(statement, 2) else {
+                throw HistoryStoreError.invalidStoredRecord
+            }
+            found[name.lowercased()] = (type.uppercased(), sqlite3_column_int(statement, 3) != 0,
+                                       Int(sqlite3_column_int(statement, 5)))
+        }
+        for column in columns {
+            guard let actual = found[column.name], actual.type == column.type,
+                  column.notNull == nil || column.notNull == actual.notNull else { throw HistoryStoreError.invalidStoredRecord }
+        }
+        let keys = found.filter { $0.value.key > 0 }.sorted { $0.value.key < $1.value.key }.map(\.key)
+        guard keys == primaryKey else { throw HistoryStoreError.invalidStoredRecord }
     }
 
     func latestRecord() throws -> ClipboardRecord? {

@@ -157,7 +157,14 @@ extension HistoryStore {
     }
 
     /// Local schema v10. Independent of backup v3 and sync wire representations.
-    func initializeHistoryCleanupTokens() throws {
+    func initializeHistoryCleanupTokens(previousVersion: Int) throws {
+        if previousVersion >= 10 {
+            // Every production record mutation maintains its token in the same SQLite transaction.
+            // Missing schema is not an unfinished migration: reinstalling a lost UPDATE trigger
+            // would conceal mutations for which an already-issued confirmation has no new token.
+            try requireHistoryCleanupSchema()
+            return
+        }
         try execute("""
             CREATE TABLE IF NOT EXISTS history_cleanup_tokens (
                 record_id TEXT PRIMARY KEY REFERENCES clipboard_records(id) ON DELETE CASCADE,
@@ -173,7 +180,73 @@ extension HistoryStore {
             CREATE TRIGGER IF NOT EXISTS history_cleanup_delete AFTER DELETE ON clipboard_records BEGIN
                 DELETE FROM history_cleanup_tokens WHERE record_id = OLD.id;
             END;
-            INSERT OR IGNORE INTO history_cleanup_tokens(record_id, token) SELECT id, randomblob(16) FROM clipboard_records;
             """)
+        try requireHistoryCleanupSchema()
+        // Only pre-v10 records need a baseline. Never rotate tokens on an ordinary reopen.
+        try execute("INSERT OR IGNORE INTO history_cleanup_tokens(record_id, token) SELECT id, randomblob(16) FROM clipboard_records")
+    }
+
+    private func requireHistoryCleanupSchema() throws {
+        try requireStartupTable("history_cleanup_tokens", columns: [
+            ("record_id", "TEXT", nil), ("token", "BLOB", true)
+        ], primaryKey: ["record_id"])
+        let foreignKeys = try prepare("PRAGMA foreign_key_list(history_cleanup_tokens)")
+        defer { sqlite3_finalize(foreignKeys) }
+        var hasCascade = false
+        while true {
+            let status = sqlite3_step(foreignKeys)
+            if status == SQLITE_DONE { break }
+            try check(status, allowingRow: true)
+            if textColumn(foreignKeys, 2)?.lowercased() == "clipboard_records",
+               textColumn(foreignKeys, 3)?.lowercased() == "record_id",
+               textColumn(foreignKeys, 4)?.lowercased() == "id",
+               textColumn(foreignKeys, 6)?.uppercased() == "CASCADE" { hasCascade = true }
+        }
+        guard hasCascade else { throw HistoryStoreError.invalidStoredRecord }
+        for event in ["insert", "update", "delete"] {
+            let name = "history_cleanup_" + event
+            guard try syncScalar("SELECT tbl_name FROM sqlite_master WHERE type = 'trigger' AND name = ? COLLATE NOCASE", [name])?.lowercased() == "clipboard_records",
+                  let sql = try syncScalar("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ? COLLATE NOCASE", [name]),
+                  try Self.validCleanupTrigger(sql, event: event) else { throw HistoryStoreError.invalidStoredRecord }
+        }
+    }
+
+    /// Check the small, known token-mutation grammar rather than comparing DDL text. Whitespace,
+    /// comments, identifier quoting, case, IF NOT EXISTS and FOR EACH ROW are not semantic changes.
+    /// A WHEN clause, UPDATE OF, wrong key, fixed token or empty body must not pass this check.
+    private static func validCleanupTrigger(_ sql: String, event: String) throws -> Bool {
+        let prefix = "CREATE TRIGGER history_cleanup_\(event) AFTER \(event) ON clipboard_records BEGIN "
+        let bodies: [String]
+        if event == "delete" {
+            bodies = ["DELETE FROM history_cleanup_tokens WHERE record_id = OLD.id",
+                      "DELETE FROM history_cleanup_tokens WHERE OLD.id = record_id"]
+        } else {
+            bodies = [
+                "INSERT INTO history_cleanup_tokens(record_id, token) VALUES (NEW.id, randomblob(16)) ON CONFLICT(record_id) DO UPDATE SET token = excluded.token",
+                "INSERT OR REPLACE INTO history_cleanup_tokens(record_id, token) VALUES (NEW.id, randomblob(16))"
+            ]
+        }
+        let actual = try cleanupSchemaTokens(sql)
+        return try bodies.contains { try cleanupSchemaTokens(prefix + $0 + "; END") == actual }
+    }
+
+    private static func cleanupSchemaTokens(_ sql: String) throws -> [String] {
+        let expression = try NSRegularExpression(pattern: #"/\*[\s\S]*?\*/|--[^\r\n]*|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[(?:[^\]]|\]\])*\]|[A-Za-z_][A-Za-z_0-9]*|[0-9]+|[^\s]"#)
+        let source = sql as NSString
+        var tokens = expression.matches(in: sql, range: NSRange(location: 0, length: source.length)).compactMap { match -> String? in
+            var token = source.substring(with: match.range)
+            if token.hasPrefix("/*") || token.hasPrefix("--") || token == ";" { return nil }
+            if let quote = token.first, ["\"", "`", "["].contains(String(quote)) {
+                token = String(token.dropFirst().dropLast())
+                let delimiter = quote == "[" ? "]" : String(quote)
+                token = token.replacingOccurrences(of: delimiter + delimiter, with: delimiter)
+            }
+            return token.lowercased()
+        }
+        if tokens.starts(with: ["create", "trigger", "if", "not", "exists"]) { tokens.removeSubrange(2..<5) }
+        if let index = tokens.indices.first(where: { index in
+            index + 2 < tokens.count && Array(tokens[index...index + 2]) == ["for", "each", "row"]
+        }) { tokens.removeSubrange(index..<index + 3) }
+        return tokens
     }
 }

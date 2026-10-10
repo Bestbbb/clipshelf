@@ -135,14 +135,16 @@ func run() throws -> Report {
         }
         measurements.append(Samples(name: name, resultCount: expected.count, times: times))
     }
-    var reopenTimes: [Double] = []
+    var reopenTimes: [Double] = [], connectionTimes: [Double] = []
     for _ in 0..<iterations {
-        let reopened = try HistoryStore(databaseURL: databaseURL)
+        let (reopened, connectionTime) = try measured { try HistoryStore(databaseURL: databaseURL) }
         let (page, time) = try measured { try reopened.searchMetadata(HistoryQuery(limit: 300)) }
         guard page.count == 300 else { throw BenchmarkError.unexpectedResult("reopened page") }
         reopenTimes.append(time)
+        connectionTimes.append(connectionTime)
     }
     measurements.append(Samples(name: "first_300_after_connection_reopen", resultCount: 300, times: reopenTimes))
+    measurements.append(Samples(name: "connection_reopen_including_schema_checks", resultCount: rows, times: connectionTimes))
     return Report(generatedAt: Date(), operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
                   processorCount: ProcessInfo.processInfo.processorCount, physicalMemoryBytes: ProcessInfo.processInfo.physicalMemory,
                   fixtureVersion: 1, rows: rows, fixtureTextBytes: textBytes, fixtureRepresentationBytes: representationBytes,
@@ -152,6 +154,7 @@ func run() throws -> Report {
                           "Metadata queries do not load representation files. Fixture images measure storage metadata and are not rendering fixtures.",
                           "Five warmups per scenario; nearest-rank percentiles; all raw timing samples retained.",
                           "Database connection reopen is measured with the operating system file cache warm; this is not a cold disk benchmark.",
+                          "Connection reopen includes HistoryStore initialization and schema checks; the separate first-page sample starts after initialization. Reopen samples have no additional warmup.",
                           "Measures synchronous core query and metadata decoding only. UI debounce, IME, rendering, animation, and end-to-end 100 ms acceptance are outside this measurement.",
                           "Only this benchmark's temporary database is touched; synthetic fixture and files are removed on exit."],
                   measurements: measurements)

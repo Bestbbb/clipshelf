@@ -1,4 +1,4 @@
-# 历史元数据检索基准
+# 历史查询与开库基准
 
 2026-10-09 在 Apple M5 Pro、macOS 26.4.1（25E253）、Swift 6.3.2 / Swift 5 language mode 上执行 release 构建。对照基线为提交 `45edfd6`（schema v7），优化后为 schema v8。基线从该提交的独立临时源码副本构建；两边使用完全相同的夹具 v1 和基准程序。每次运行只创建并清理专用临时目录，不接触用户历史、真实剪贴板或云账号。
 
@@ -78,3 +78,23 @@ swift run -c release ClipShelfHistoryBenchmark --rows 100000 --iterations 30 > B
 本轮仍只覆盖同步 `searchMetadata` 和元数据解码，不覆盖 UI/IME/debounce/绘制、菜单 facet 聚合、深页、输出附件或输入到结果稳定延迟，**F03 端到端 p95 ≤ 100 ms 的真实 UI 验收仍未完成**。
 
 保存的证据：[v12 10k 原始样本](results/f03-schema12-10000.json)、[v12 100k 原始样本](results/f03-schema12-100000.json)、[逐项 p50/p95 与历史比较](results/f03-schema12-comparison.json)、[精确源码/环境/命令/时间与 SHA-256](results/f03-schema12-source-fingerprints.json)。复跑时用独立输出名或临时目录，保留这些对应提交的测量结果。
+
+
+## Schema v13 开库回填：同夹具重开对照
+
+2026-10-10 在同一台 Apple M5 Pro、64 GiB、macOS 26.4.1（25E253）、Swift 6.3.2 上重新测量。基线为精确提交 `d7d134b93a78383e083cd991c31430e3b5e531ca` 的独立源码副本；优化版为本次提交中的 Core 实现。两边均为 schema13、release 构建，使用逐字相同的基准程序和 fixture v1。这里新增独立计时项 `connection_reopen_including_schema_checks`，包含 `HistoryStore` 初始化和 schema 检查；`first_300_after_connection_reopen` 仍只计完成开库后的查询。
+
+每种规模、每个版本各记录30次重开，保留全部样本并复算 nearest-rank p50/p95。重开不额外预热，OS文件缓存温热；查询场景仍先预热5次。两边的正文/表示字节量及所有场景结果条数相同，每轮查询继续验证ID及顺序。运行顺序为基线100k、基线10k、优化10k、优化100k；用于报告的计时阶段未与本任务的其他构建、测试或基准重叠，系统后台负载未隔离。一次与100k建库开始阶段重叠的预备10k测量已排除并重跑。
+
+下表为打开已有资料库的耗时，单位ms；不含提前逐条生成合成数据的时间。
+
+| 条目数 | 基线p50 | 优化p50 | 基线p95 | 优化p95 |
+| --- | ---: | ---: | ---: | ---: |
+| 10,000 | 4.679 | 1.178 | 5.108 | 1.388 |
+| 100,000 | 37.362 | 1.156 | 39.776 | 1.408 |
+
+重开后单独读取首批300条的p95分别为：10k基线0.618、优化0.569；100k基线0.679、优化0.565。优化版当前schema重开不再执行三条全表回填，改为必要结构检查；连接级SQL trace回归检查实际初始化语句。旧schema7/10之前的迁移仍执行对应回填，取得写锁后重读版本，避免并发连接已升级后仍按旧版本操作。迁移、损坏拒绝、清理确认与同步内容/排序头分叉另由功能测试覆盖。
+
+这是同一夹具下的开库对照，不用旧schema12的单次38.313ms估算本轮收益。夹具未启用云同步，不代表大同步日志、旧库迁移、冷磁盘或其他机器；仍未包含真实剪贴板、菜单聚合、IME、UI debounce、绘制、动画及跨App切换。**本结果不能证明120ms面板唤起或100ms搜索端到端指标通过。**
+
+原始样本：[基线10k](results/f03-startup-schema13-before-10000.json)、[基线100k](results/f03-startup-schema13-before-100000.json)、[优化10k](results/f03-startup-schema13-after-10000.json)、[优化100k](results/f03-startup-schema13-after-100000.json)。[源码、二进制、结果SHA-256及环境](results/f03-startup-schema13-source-fingerprints.json)保留完整Core输入摘要、相同基准程序摘要与复算值。复跑基线时，从`d7d134b`独立副本构建，并复制本次基准源文件；两边均使用`--iterations 30`，为结果选择新的输出文件名。

@@ -6,6 +6,9 @@ enum ValidationTrace {
     enum Event: String, Codable, Sendable {
         case invocation, reopen
         case panelShown = "panel_shown", panelDismissed = "panel_dismissed"
+        case panelEntranceStarted = "panel_entrance_started"
+        case panelEntranceCompleted = "panel_entrance_completed"
+        case panelEntranceCancelled = "panel_entrance_cancelled"
         case workspaceActivated = "workspace_activated", workspaceHidesPanel = "workspace_hides_panel"
         case outsideClick = "outside_click", interactionCancelled = "interaction_cancelled"
         case targetCaptured = "target_captured", pastePrepared = "paste_prepared"

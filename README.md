@@ -24,6 +24,11 @@ the welcome flow lets you start or postpone capture. Open the panel with **⌘�
 or from the menu bar. Direct paste requires Accessibility
 permission; without it, the app copies the selected content for manual pasting.
 
+The shelf enters with a short upward motion and fade, while search and keyboard
+selection are available immediately. Reduce Motion skips the entrance animation.
+Dismissal remains immediate, including during an unfinished animation; reopening
+cannot revive an earlier transition or lose a preserved editing draft.
+
 The interface supports 16 languages, including English, Simplified/Traditional
 Chinese, Japanese, Korean and Hebrew with right-to-left navigation.
 Choose **Language…** from the menu or welcome dialog; saving takes effect on the

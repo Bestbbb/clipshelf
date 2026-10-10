@@ -169,7 +169,10 @@ extension HistoryStore {
         }
     }
 
-    func createSyncSchema() throws {
+    func createSyncSchema(previousVersion: Int) throws {
+        // These heads diverge after v7: a later ordering operation is not a content head.
+        // Do not silently reconstruct a missing current-schema table from sync_heads.
+        if previousVersion >= 7 { try requireSyncHeadSchema() }
         try execute("""
             CREATE TABLE IF NOT EXISTS sync_configuration (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), account_id TEXT, generation INTEGER NOT NULL DEFAULT 0);
             INSERT OR IGNORE INTO sync_configuration(singleton) VALUES (1);
@@ -188,12 +191,15 @@ extension HistoryStore {
             CREATE INDEX IF NOT EXISTS sync_outbox_account ON sync_outbox(account_id);
             CREATE INDEX IF NOT EXISTS sync_inbox_account ON sync_inbox(account_id);
             """)
-        try execute("""
-            INSERT OR IGNORE INTO sync_content_heads SELECT * FROM sync_heads;
-            INSERT OR IGNORE INTO sync_order_heads(account_id, entity_id, operation_id, board_id)
-            SELECT account_id, entity_id, operation_id, pinboard_id FROM sync_heads
-            JOIN clipboard_records ON clipboard_records.id = sync_heads.entity_id WHERE entity_kind = 'clipboard';
-            """)
+        if previousVersion < 7 {
+            try requireSyncHeadSchema()
+            try execute("""
+                INSERT OR IGNORE INTO sync_content_heads SELECT * FROM sync_heads;
+                INSERT OR IGNORE INTO sync_order_heads(account_id, entity_id, operation_id, board_id)
+                SELECT account_id, entity_id, operation_id, pinboard_id FROM sync_heads
+                JOIN clipboard_records ON clipboard_records.id = sync_heads.entity_id WHERE entity_kind = 'clipboard';
+                """)
+        }
         for (table, kind) in [("clipboard_records", "clipboard"), ("pinboards", "pinboard")] {
             for (event, action, row) in [("INSERT", "upsert", "NEW"), ("UPDATE", "upsert", "NEW"), ("DELETE", "delete", "OLD")] {
                 try execute("""
@@ -204,6 +210,19 @@ extension HistoryStore {
                     """)
             }
         }
+    }
+
+    private func requireSyncHeadSchema() throws {
+        for table in ["sync_heads", "sync_content_heads"] {
+            try requireStartupTable(table, columns: [
+                ("account_id", "TEXT", true), ("entity_kind", "TEXT", true),
+                ("entity_id", "TEXT", true), ("operation_id", "TEXT", true), ("revision", "INTEGER", true)
+            ], primaryKey: ["account_id", "entity_kind", "entity_id"])
+        }
+        try requireStartupTable("sync_order_heads", columns: [
+            ("account_id", "TEXT", true), ("entity_id", "TEXT", true),
+            ("operation_id", "TEXT", true), ("board_id", "TEXT", false)
+        ], primaryKey: ["account_id", "entity_id"])
     }
 
     func syncConfigurationWithoutLock() throws -> SyncConfiguration {
