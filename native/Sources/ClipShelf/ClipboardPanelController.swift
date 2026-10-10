@@ -133,7 +133,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     var onStepSelection: (([ClipboardSelectionReference], UUID, Bool, @escaping (Result<[ClipboardSelectionReference], Error>) -> Void) -> Void)?
     var onCreatePinboard: ((String, String) -> Void)?
     var onUpdatePinboard: ((Pinboard) -> Void)?
-    var onReorderPinboards: (([UUID]) -> Void)?
+    /// Saves a complete list against the exact order at gesture start. Completes on main.
+    var onReorderPinboards: (([UUID], [UUID], @escaping (Result<[Pinboard], Error>) -> Void) -> Void)?
     var onDeletePinboard: ((Pinboard) -> Void)?
     var onMoveRecords: (([ClipboardRecord], UUID?) -> Void)?
     /// Atomically moves these IDs before an anchor; completion must return on main.
@@ -215,7 +216,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private let compactButton = NSButton(title: L10n.text("紧凑"), target: nil, action: nil)
     private var compactMode = false
     private var preferredNormalHeight: CGFloat = 430
-    private var preferredCompactHeight: CGFloat = 338
+    private var preferredCompactHeight: CGFloat = PanelPresentationGeometry.minimumHeight
     private var applyingPresentationGeometry = false
     private var presentedVisibleFrame: NSRect?
     private let presentationMotion: PanelPresentationMotion
@@ -228,6 +229,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private var resultPresentation = ResultPresentation.ready
     private let retryLoadingButton = NSButton(title: L10n.text("重试读取"), target: nil, action: nil)
     private let boardPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private lazy var boardTabs = PinboardTabStrip(layoutDirection: layoutDirection)
+    private var pinboardListGeneration = UUID()
+    private var pinboardReorderRequestID: UUID?
     private let multiBoardButton = NSButton(title: L10n.text("多板筛选…"), target: nil, action: nil)
     private let clearFiltersButton = NSButton(title: L10n.text("清除条件"), target: nil, action: nil)
     private let allFiltersButton = NSButton(title: L10n.text("全部筛选…"), target: nil, action: nil)
@@ -350,7 +354,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         panel.hasShadow = true
         panel.animationBehavior = .none
         panel.title = L10n.text("ClipShelf 剪贴板历史")
-        panel.minSize = NSSize(width: 720, height: 338)
+        panel.minSize = NSSize(width: 720, height: PanelPresentationGeometry.minimumHeight)
         super.init(window: panel)
         panel.delegate = self
         thumbnailCache.totalCostLimit = 32 * 1_024 * 1_024
@@ -620,7 +624,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             preferredHeight: compactMode ? preferredCompactHeight : preferredNormalHeight)
         applyingPresentationGeometry = true
         defer { applyingPresentationGeometry = false }
-        window.minSize = NSSize(width: min(720, frame.width), height: min(338, frame.height))
+        window.minSize = NSSize(width: min(720, frame.width), height: min(PanelPresentationGeometry.minimumHeight, frame.height))
         window.maxSize = NSSize(width: visible.width, height: visible.height)
         window.setFrame(frame, display: isVisible)
         updateCardLayout()
@@ -633,6 +637,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     func setPinboards(_ pinboards: [Pinboard]) {
+        if self.pinboards != pinboards { pinboardListGeneration = UUID() }
         self.pinboards = pinboards
         allFiltersController?.updateOptions(filterOptions)
         boardPopup.removeAllItems()
@@ -714,6 +719,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         cancelBoundaryNavigation()
         closeAllFilters(restoreFocus: false)
         cardViews.forEach { $0.cancelPendingDrag() }
+        boardTabs.cancelDrag()
         heldShortcutModifiers = []
         cardViews.forEach(updateShortcutLabel)
         pageRequestID = nil
@@ -760,6 +766,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         queryPending = false
         refreshAfterPageLoad = false
         cancelBoundaryNavigation(); closeAllFilters(restoreFocus: false)
+        boardTabs.cancelDrag()
         cardViews.forEach { $0.cancelPendingDrag() }; invalidateOutputContext()
         retireDiscardPrompt()
         if detailColorWell?.isActive == true { NSColorPanel.shared.orderOut(nil) }
@@ -831,6 +838,10 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         boardPopup.target = self
         boardPopup.action = #selector(boardChanged)
         boardPopup.setAccessibilityLabel(L10n.text("分组"))
+        boardTabs.onSelect = { [weak self] id in self?.navigateToBoard(id) }
+        boardTabs.onReorder = { [weak self] ids, expectedOrder in
+            self?.reorderPinboards(ids: ids, expectedOrder: expectedOrder)
+        }
         let boardActions = NSPopUpButton(frame: .zero, pullsDown: true)
         boardActions.addItem(withTitle: L10n.text("分组操作"))
         for (title, action) in [(L10n.text("新建分组…"), #selector(createBoard)), (L10n.text("编辑当前分组…"), #selector(renameBoard)), (L10n.text("将当前分组前移"), #selector(moveBoardEarlier)), (L10n.text("将当前分组后移"), #selector(moveBoardLater)), (L10n.text("删除当前分组…"), #selector(deleteBoard))] {
@@ -897,10 +908,12 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         let boardRow = NSStackView(views: [boardPopup, multiBoardButton, boardActions, devicePopup, spacer, clearFiltersButton])
         let filterRow = NSStackView(views: [typePopup, sourcePopup, datePopup, orderPopup, orderingActions, allFiltersButton, NSView(), previousPageButton, loadMoreButton])
         for row in [boardRow, filterRow] { row.orientation = .horizontal; row.alignment = .centerY; row.spacing = 10 }
-        let filters = NSStackView(views: [boardRow, filterRow])
+        let filters = NSStackView(views: [boardTabs, boardRow, filterRow])
         filters.orientation = .vertical
         filters.alignment = .leading
         filters.spacing = 6
+        boardTabs.widthAnchor.constraint(equalTo: filters.widthAnchor).isActive = true
+        boardTabs.heightAnchor.constraint(equalToConstant: 32).isActive = true
         boardRow.widthAnchor.constraint(equalTo: filters.widthAnchor).isActive = true
         filterRow.widthAnchor.constraint(equalTo: filters.widthAnchor).isActive = true
         [boardPopup, typePopup, sourcePopup, devicePopup, datePopup, boardActions, orderPopup, orderingActions].forEach { $0.controlSize = .small; $0.font = .systemFont(ofSize: 11) }
@@ -984,7 +997,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             filters.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 22),
             filters.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -22),
             filters.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 13),
-            filters.heightAnchor.constraint(equalToConstant: 50),
+            filters.heightAnchor.constraint(equalToConstant: 88),
             boardPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 110),
             sourcePopup.widthAnchor.constraint(lessThanOrEqualToConstant: 200),
             scrollView.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 22),
@@ -1509,6 +1522,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func updateFilterControls() {
+        boardTabs.setPinboards(pinboards, selectedIDs: boardScope.queryIDs)
+        boardTabs.isSaving = pinboardReorderRequestID != nil
         let count = boardScope.filteredIDs.count
         multiBoardButton.title = count == 0 ? L10n.text("多板筛选…") : L10n.text("已筛选 \(count) 个分组…")
         multiBoardButton.toolTip = pinboards.filter { boardScope.filteredIDs.contains($0.id) }.map(\.name).joined(separator: "、")
@@ -2263,7 +2278,16 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         updateFilterControls()
     }
 
-    @objc private func boardChanged() { selectedBoardID = boardPopup.selectedItem?.representedObject as? UUID; manualOrder = selectedBoardID != nil; issueQuery(resetLimit: true) }
+    @objc private func boardChanged() { navigateToBoard(boardPopup.selectedItem?.representedObject as? UUID) }
+
+    private func navigateToBoard(_ id: UUID?) {
+        guard id == nil || pinboards.contains(where: { $0.id == id }) else { return }
+        selectedBoardID = id
+        if let id, let index = pinboards.firstIndex(where: { $0.id == id }) { boardPopup.selectItem(at: index + 1) }
+        else { boardPopup.selectItem(at: 0) }
+        manualOrder = id != nil
+        issueQuery(resetLimit: true)
+    }
     @objc private func typeChanged() { selectedKind = (typePopup.selectedItem?.representedObject as? String).flatMap(ClipboardContentKind.init(rawValue:)); issueQuery(resetLimit: true) }
     @objc private func sourceChanged() { selectedSourceID = sourcePopup.selectedItem?.representedObject as? String; issueQuery(resetLimit: true) }
     @objc private func deviceChanged() {
@@ -2395,7 +2419,34 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         guard let index = pinboards.firstIndex(where: { $0.id == boardScope.singleBoardID }), pinboards.indices.contains(index + offset) else { return }
         var reordered = pinboards
         reordered.swapAt(index, index + offset)
-        onReorderPinboards?(reordered.map(\.id))
+        reorderPinboards(ids: reordered.map(\.id), expectedOrder: pinboards.map(\.id))
+    }
+
+    private func reorderPinboards(ids: [UUID], expectedOrder: [UUID]) {
+        guard isVisible, pinboardReorderRequestID == nil, let save = onReorderPinboards,
+              expectedOrder == pinboards.map(\.id), ids != expectedOrder,
+              Set(ids).count == ids.count, Set(ids) == Set(expectedOrder) else { return }
+        let requestID = UUID(), session = viewGeneration, generation = pinboardListGeneration
+        let scope = scopeGeneration
+        pinboardReorderRequestID = requestID
+        boardTabs.isSaving = true
+        save(ids, expectedOrder) { [weak self] result in
+            guard let self, self.pinboardReorderRequestID == requestID else { return }
+            self.pinboardReorderRequestID = nil
+            self.boardTabs.isSaving = false
+            // Never reapply a stale list over a rename, remote reorder, or a new panel session.
+            guard self.isVisible, self.viewGeneration == session,
+                  self.pinboardListGeneration == generation else { return }
+            switch result {
+            case .success(let boards):
+                self.setPinboards(boards)
+            case .failure:
+                if self.scopeGeneration == scope {
+                    self.reorderStatus = L10n.text("分组列表已改变，顺序未保存；请刷新后重试。")
+                    self.updateStatus(self.baseStatus)
+                }
+            }
+        }
     }
     @objc private func deleteBoard() {
         guard let board = pinboards.first(where: { $0.id == boardScope.singleBoardID }) else { return }
@@ -2409,8 +2460,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             guard let content = recordFromMenu(menuItem), !selection.isInvalid, !queryPending else { return false }
             return content.hasImageFileParts || (selectedIDs.contains(content.id) && selectedIDs.count > 1)
         case #selector(renameBoard), #selector(deleteBoard): return boardScope.singleBoardID != nil
-        case #selector(moveBoardEarlier): return pinboards.firstIndex(where: { $0.id == boardScope.singleBoardID }).map { $0 > 0 } ?? false
-        case #selector(moveBoardLater): return pinboards.firstIndex(where: { $0.id == boardScope.singleBoardID }).map { $0 + 1 < pinboards.count } ?? false
+        case #selector(moveBoardEarlier): return pinboardReorderRequestID == nil && (pinboards.firstIndex(where: { $0.id == boardScope.singleBoardID }).map { $0 > 0 } ?? false)
+        case #selector(moveBoardLater): return pinboardReorderRequestID == nil && (pinboards.firstIndex(where: { $0.id == boardScope.singleBoardID }).map { $0 + 1 < pinboards.count } ?? false)
         case #selector(moveItemsEarlier), #selector(moveItemsLater), #selector(reorderEarlierFromMenu(_:)), #selector(reorderLaterFromMenu(_:)): return canReorderItems && !selectedIDs.isEmpty
         default: return true
         }
@@ -2853,7 +2904,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private func updateCardLayout() {
         guard let layout = resultsView.collectionViewLayout as? NSCollectionViewFlowLayout else { return }
         window?.contentView?.layoutSubtreeIfNeeded()
-        let height = max(120, scrollView.contentView.bounds.height - 15)
+        // A screen smaller than the preferred minimum still bounds the shelf.
+        // Keep the native flow item inside that viewport, including its insets.
+        let height = max(1, scrollView.contentView.bounds.height - 15)
         layout.itemSize = NSSize(width: compactMode ? 190 : 222, height: height)
         resultsView.setFrameSize(NSSize(width: max(scrollView.contentView.bounds.width, resultsView.frame.width), height: scrollView.contentView.bounds.height))
         layout.invalidateLayout()

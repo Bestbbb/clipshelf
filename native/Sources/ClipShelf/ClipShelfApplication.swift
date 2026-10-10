@@ -60,6 +60,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     private var suggestionGeneration: UInt64 = 0
     private var suggestionTargetPID: pid_t?
     private let pageQueries = HistoryPageQueryCoordinator<HistoryPanelReadResult>()
+    private var pinboardReadGeneration = UUID()
+    private var pinboardReorderInProgress = false
     private var ocrCleanupTask: Task<Void, Never>?
     private var ocrCleanupRequested = false
     private var pausedUntil: Date?
@@ -504,10 +506,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             do { try self.store?.updatePinboard(board); self.reload() }
             catch { self.setStatus(L10n.text("无法更新分组，请重试。")) }
         }
-        panel.onReorderPinboards = { [weak self] ids in
-            guard let self, !self.demo, self.mutationIsAvailable() else { return }
-            do { try self.store?.reorderPinboards(ids: ids); self.reload() }
-            catch { self.setStatus(L10n.text("分组列表已改变，顺序未保存；请刷新后重试。")); self.reload() }
+        panel.onReorderPinboards = { [weak self] ids, expectedOrder, completion in
+            guard let self, !self.demo else {
+                completion(.failure(HistoryStoreError.recordNotFound)); return
+            }
+            self.reorderPinboards(ids: ids, expectedOrder: expectedOrder, completion: completion)
         }
         panel.onReorderRecords = { [weak self] boardID, ids, beforeID, revisions, completion in
             guard let self, !self.demo else {
@@ -722,6 +725,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     private func loadPage(_ request: PanelPageRequest,
                           completion: @escaping (Result<PanelHistoryPage, Error>) -> Void) {
         guard let store else { completion(.failure(HistoryStoreError.recordNotFound)); return }
+        let boardGeneration = pinboardReadGeneration
         pageQueries.submit(read: { cancellation in
             func checkCancellation() throws {
                 try Task.checkCancellation()
@@ -747,7 +751,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             switch result {
             case .success(let result):
                 self.metadata = result.page.records
-                self.panel.setPinboards(result.pinboards)
+                // A list-order write does not invalidate the content page. Finish its
+                // callback, but never let an older list read undo the saved tab order.
+                if !self.pinboardReorderInProgress, self.pinboardReadGeneration == boardGeneration {
+                    self.panel.setPinboards(result.pinboards)
+                }
                 self.panel.setSources(result.sources)
                 self.panel.setDevices(result.devices, localDeviceID: result.localDeviceID)
                 completion(.success(PanelHistoryPage(records: result.page.records, offset: result.page.offset,
@@ -767,6 +775,29 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         Task { @MainActor in
             do { completion(.success(try await Task.detached(priority: .userInitiated) { try operation(store) }.value)) }
             catch { completion(.failure(error)) }
+        }
+    }
+
+    private func reorderPinboards(ids: [UUID], expectedOrder: [UUID],
+                                  completion: @escaping (Result<[Pinboard], Error>) -> Void) {
+        guard let store else { completion(.failure(HistoryStoreError.recordNotFound)); return }
+        guard !isDataMutationInProgress else { completion(.failure(SelectionOperationError.busy)); return }
+        selectionMutationInProgress = true
+        pinboardReorderInProgress = true
+        pinboardReadGeneration = UUID()
+        Task { @MainActor in
+            let result = await Task.detached(priority: .userInitiated) {
+                Result {
+                    try store.reorderPinboards(ids: ids, expectedOrder: expectedOrder)
+                }
+            }.value
+            selectionMutationInProgress = false
+            pinboardReorderInProgress = false
+            pinboardReadGeneration = UUID()
+            completion(result)
+            // Read the current query, including any search/navigation done during
+            // the save. Existing page callbacks still finish, so none stay pending.
+            reload()
         }
     }
 

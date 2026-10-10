@@ -99,6 +99,11 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     private let detailLabel = NSTextField(labelWithString: "")
     private let shortcutLabel = NSTextField(labelWithString: "")
     private let previewImage = NSImageView()
+    private let shortTitleLabel = NSTextField(labelWithString: "")
+    private var normalLayoutConstraints: [NSLayoutConstraint] = []
+    private var layoutIsConfigured = false
+    private var usesShortLayout = true
+    private var showsQuickPasteLabel = false
     private var tracking: NSTrackingArea?
     private var isHovered = false { didSet { updateAppearance() } }
 
@@ -135,7 +140,16 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         bodyLabel.lineBreakMode = .byTruncatingTail
         bodyLabel.cell?.wraps = true
         bodyLabel.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
-        for label in [sourceLabel, bodyLabel, detailLabel, shortcutLabel] {
+        shortTitleLabel.stringValue = record.title
+        shortTitleLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        shortTitleLabel.textColor = .labelColor
+        shortTitleLabel.alignment = .center
+        shortTitleLabel.maximumNumberOfLines = 1
+        shortTitleLabel.lineBreakMode = .byTruncatingTail
+        shortTitleLabel.setAccessibilityIdentifier("clipboard.short-title")
+        shortTitleLabel.wantsLayer = true
+        shortTitleLabel.layer?.masksToBounds = true
+        for label in [sourceLabel, bodyLabel, detailLabel, shortcutLabel, shortTitleLabel] {
             label.isSelectable = false
             label.isEditable = false
         }
@@ -173,7 +187,10 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
             child.translatesAutoresizingMaskIntoConstraints = false
             addSubview(child)
         }
-        NSLayoutConstraint.activate([
+        // The short title uses a bounded frame, so even a one-point viewport
+        // never forces an intrinsic text height or a negative image height.
+        addSubview(shortTitleLabel)
+        normalLayoutConstraints = [
             accent.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 15),
             accent.topAnchor.constraint(equalTo: topAnchor, constant: 18),
             accent.widthAnchor.constraint(equalToConstant: 4),
@@ -194,14 +211,54 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
             detailLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 15),
             detailLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -15),
             detailLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -15)
-        ])
+        ]
         setAccessibilityLabel("\(sourceLabel.stringValue)，\(kind)，\(record.text.prefix(140))")
         setAccessibilityHelp(L10n.text("单击选择，双击粘贴；回车粘贴，Shift 回车以纯文本粘贴。"))
         InterfaceLayout.apply(to: self)
+        layoutIsConfigured = true
+        applyLayoutMode(for: bounds.height)
         updateAppearance()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        // Retire the tall-card constraints before AppKit receives a short frame.
+        if layoutIsConfigured, newSize.height < 120 { applyLayoutMode(for: newSize.height) }
+        super.setFrameSize(newSize)
+        if layoutIsConfigured {
+            applyLayoutMode(for: newSize.height)
+            needsLayout = true
+        }
+    }
+
+    override func layout() {
+        if layoutIsConfigured { applyLayoutMode(for: bounds.height) }
+        super.layout()
+        guard usesShortLayout else { return }
+        let inset = min(15, max(0, bounds.width / 4))
+        let height = min(max(0, bounds.height), max(0, shortTitleLabel.intrinsicContentSize.height))
+        shortTitleLabel.frame = NSRect(x: bounds.minX + inset, y: bounds.midY - height / 2,
+                                      width: max(0, bounds.width - inset * 2), height: height)
+    }
+
+    private func applyLayoutMode(for height: CGFloat) {
+        let shortened = height < 120
+        if shortened {
+            NSLayoutConstraint.deactivate(normalLayoutConstraints)
+        } else if usesShortLayout {
+            NSLayoutConstraint.activate(normalLayoutConstraints)
+        }
+        usesShortLayout = shortened
+        accent.isHidden = shortened
+        sourceLabel.isHidden = shortened
+        shortcutLabel.isHidden = shortened || !showsQuickPasteLabel
+        detailLabel.isHidden = shortened
+        let showsPreview = record.kind == .image || record.kind == .color
+        bodyLabel.isHidden = shortened || showsPreview
+        previewImage.isHidden = shortened || !showsPreview
+        shortTitleLabel.isHidden = !shortened
+    }
 
     private static func contentKind(_ record: ClipboardCardContent) -> String {
         if record.hasPDF { return L10n.text("PDF 文稿") }
@@ -239,7 +296,8 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
 
     func setQuickPasteLabel(_ value: String?) {
         shortcutLabel.stringValue = value ?? ""
-        shortcutLabel.isHidden = value == nil
+        showsQuickPasteLabel = value != nil
+        shortcutLabel.isHidden = usesShortLayout || !showsQuickPasteLabel
         shortcutLabel.setAccessibilityLabel(value.map { "Quick Paste \($0)" })
     }
 

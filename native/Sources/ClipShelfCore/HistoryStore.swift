@@ -445,8 +445,18 @@ public final class HistoryStore: @unchecked Sendable {
 
     /// Personal sidebar order is atomic and does not mutate a shared board or require write permission.
     /// The complete ID list prevents a stale UI from silently dropping newly received boards.
-    public func reorderPinboards(ids: [UUID]) throws {
-        try synchronized { try transaction { try reorderPinboardsWithoutLock(ids: ids) } }
+    /// An expected order additionally rejects a concurrent reorder of the same board set.
+    @discardableResult
+    public func reorderPinboards(ids: [UUID], expectedOrder: [UUID]? = nil) throws -> [Pinboard] {
+        try synchronized {
+            try transaction {
+                if let expectedOrder, try orderedPinboardsWithoutLock().map(\.id) != expectedOrder {
+                    throw HistoryStoreError.invalidPinboardOrder
+                }
+                try reorderPinboardsWithoutLock(ids: ids)
+                return try orderedPinboardsWithoutLock()
+            }
+        }
     }
 
     func reorderPinboardsWithoutLock(ids: [UUID]) throws {

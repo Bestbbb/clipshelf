@@ -64,6 +64,25 @@ import XCTest
 }
 
 @MainActor final class FileReferencePreviewTests: XCTestCase {
+    func testInitialReadFailureEndsLoadingAndExplicitRetryRestartsIt() throws {
+        let h = FilePreviewHarness(); defer { h.controller.dismiss() }
+        func strings() -> [String] {
+            func walk(_ view: NSView) -> [String] {
+                (view as? NSTextField).map { [$0.stringValue] } ?? []
+                    + view.subviews.flatMap(walk)
+            }
+            return h.controller.window?.contentView.map(walk) ?? []
+        }
+        XCTAssertTrue(strings().contains("正在读取文件位置…"))
+        h.reads.last?.1(.failure(ClipboardFileRepairError.invalidReference))
+        XCTAssertFalse(strings().contains("正在读取文件位置…"))
+        XCTAssertTrue(strings().contains("文件位置无效，请刷新后重试。"))
+        h.controller.refresh()
+        XCTAssertTrue(strings().contains("正在读取文件位置…"))
+        h.load()
+        XCTAssertFalse(strings().contains("正在读取文件位置…"))
+    }
+
     func testAllSlotsAndInvalidRowsRemainVisibleWithoutOpeningOrPicking() throws {
         let h = FilePreviewHarness(FilePreviewHarness.fixture(statuses: [.available, .missing, .unreadable, .invalidURL, .unsafeProjection]), preferUnavailable: true)
         defer { h.controller.dismiss() }

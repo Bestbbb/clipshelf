@@ -9,7 +9,17 @@ import XCTest
     override var isVisible: Bool { logicallyVisible }
     override func makeKeyAndOrderFront(_ sender: Any?) { logicallyVisible = true }
     override func makeKey() {}
-    override func orderOut(_ sender: Any?) { logicallyVisible = false }
+    override func orderFront(_ sender: Any?) { logicallyVisible = true }
+    override func orderFrontRegardless() { logicallyVisible = true }
+    override func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
+        // AppKit may order an attached child directly, bypassing makeKeyAndOrderFront.
+        // Preserve logical test visibility without ever ordering onto the desktop.
+        if place == .out { super.order(place, relativeTo: otherWin) }
+    }
+    override func orderOut(_ sender: Any?) {
+        logicallyVisible = false
+        super.orderOut(sender)
+    }
 }
 
 @MainActor final class PanelCallbackHarness {

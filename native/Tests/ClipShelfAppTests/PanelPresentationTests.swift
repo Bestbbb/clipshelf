@@ -114,7 +114,7 @@ import ClipShelfLocalization
         XCTAssertEqual(h.savedHeights.last?.0, false)
         XCTAssertEqual(h.savedHeights.last?.1, 590)
         h.panel.setCompactMode(true)
-        XCTAssertEqual(h.panel.window?.frame.height, 360)
+        XCTAssertEqual(h.panel.window?.frame.height, 376)
         try h.resize(height: 390)
         XCTAssertEqual(h.savedHeights.last?.0, true)
         XCTAssertEqual(h.savedHeights.last?.1, 390)
@@ -174,7 +174,8 @@ import ClipShelfLocalization
 
     func testGeometryUsesVisibleOriginsAndBoundsAndRejectsInvalidSavedHeights() {
         XCTAssertEqual(PanelPresentationGeometry.preferredHeight(.nan, compact: false), 430)
-        XCTAssertEqual(PanelPresentationGeometry.preferredHeight(-1, compact: true), 338)
+        XCTAssertEqual(PanelPresentationGeometry.preferredHeight(-1, compact: true), 376)
+        XCTAssertEqual(PanelPresentationGeometry.preferredHeight(338, compact: true), 376)
         for visible in [NSRect(x: -1200, y: 45, width: 1024, height: 650),
                         NSRect(x: 2400, y: -700, width: 600, height: 390)] {
             let shelf = PanelPresentationGeometry.shelf(in: visible, preferredHeight: 900)

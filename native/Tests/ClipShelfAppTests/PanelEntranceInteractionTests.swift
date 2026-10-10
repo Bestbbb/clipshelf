@@ -114,7 +114,7 @@ import ClipShelfCore
             switch change {
             case 0:
                 h.panel.setCompactMode(true)
-                XCTAssertEqual(window.frame.height, 338)
+                XCTAssertEqual(window.frame.height, 376)
             case 1:
                 h.panel.windowWillStartLiveResize(Notification(name: NSWindow.willStartLiveResizeNotification, object: window))
                 var frame = window.frame; frame.size.height = 510

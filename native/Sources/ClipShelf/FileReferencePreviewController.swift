@@ -433,7 +433,13 @@ final class FileReferencePreviewController: NSWindowController, NSWindowDelegate
         repair.title = file?.isOwned == true ? L10n.text("从已保存原件重建打开副本") : L10n.text("重新定位…")
         repair.isEnabled = usable && file.map { $0.isOwned ? ($0.status == .missing && onRestoreOwned != nil) : (snapshot?.isReadOnly == false && onRelocate != nil) } == true
         guard let file else {
-            path.stringValue = snapshot == nil ? L10n.text("正在读取文件位置…") : L10n.text("此条目没有文件引用。")
+            if requestID != nil {
+                path.stringValue = L10n.text("正在读取文件位置…")
+            } else {
+                path.stringValue = snapshot == nil
+                    ? L10n.text("文件位置无效，请刷新后重试。")
+                    : L10n.text("此条目没有文件引用。")
+            }
             explanation.stringValue = L10n.text("文件与文件夹按原剪贴板对象顺序显示。")
             return
         }
