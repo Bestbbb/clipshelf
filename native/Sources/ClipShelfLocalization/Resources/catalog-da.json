@@ -645,6 +645,7 @@
   "搜索剪贴板历史": "Søg i udklipshistorik",
   "撤销": "Tilbagekald",
   "撤销失败": "Tilladelsen kunne ikke tilbagekaldes",
+  "撤销未完成，已保留重试机会：{0}": "Handlingen kunne ikke fortrydes. Du kan prøve igen: {0}",
   "操作…": "Handlinger…",
   "操作回执对应的条目已变化，请关闭后重新打开。": "Emnet knyttet til resultatet er ændret. Luk det, og åbn det igen.",
   "操作已完成。": "Handlingen er fuldført.",

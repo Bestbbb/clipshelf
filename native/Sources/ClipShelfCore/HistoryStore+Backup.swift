@@ -90,11 +90,15 @@ extension HistoryStore {
                 for var record in backup.records.reversed() {
                     let originalID = record.id
                     let bindings = sourceBindings[originalID] ?? []
-                    if remapIdentities { record.id = UUID() }
+                    if remapIdentities {
+                        record.pinboardOrderIdentity = record.pinboardOrderIdentity ?? record.id
+                        record.id = UUID()
+                    }
                     record.pinboardID = record.pinboardID.flatMap { boardIDs[$0] }
                     if let current = try itemWithoutLock(id: record.id) {
                         if try matchesBackupRecord(current, incoming: record, bindings: bindings, assets: sourceAssets) { continue }
                         // Keep both versions on a merge conflict instead of silently replacing either.
+                        record.pinboardOrderIdentity = record.pinboardOrderIdentity ?? record.id
                         record.id = UUID()
                     }
                     var mappedBindings: [OwnedFileBinding] = []
@@ -156,7 +160,7 @@ extension HistoryStore {
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         // Include the outer envelope's base64 expansion before loading any attachment bytes.
         try preflightBackupPayload(pinboardBytes: encoder.encode(boards).count)
-        let statement = try prepare("SELECT \(Self.columns) FROM clipboard_records ORDER BY rowid DESC")
+        let statement = try prepare("SELECT \(Self.columns) FROM clipboard_records ORDER BY local_history_order DESC")
         defer { sqlite3_finalize(statement) }
         let records = try readRecords(statement)
         let owned = try backupOwnedFilesWithoutLock(records: records)
@@ -201,7 +205,7 @@ extension HistoryStore {
         var digests = Set<String>()
         for record in backup.records {
             databaseBytes = try HistoryWriteBudget.adding(databaseBytes,
-                HistoryWriteBudget.databaseBytes(for: record, pageAllowance: 4_096))
+                HistoryWriteBudget.databaseBytes(for: record, pageAllowance: 12_288))
             for part in record.parts {
                 for representation in part.representations {
                     let digest = RepresentationStorage.digest(representation.data)

@@ -256,7 +256,7 @@ final class ContentQuotaTests: XCTestCase {
         let expected = try original.contentQuotaStatus()
         try removeQuotaSchema(original)
         let migrated = try store()
-        XCTAssertEqual(try migrated.syncScalar("PRAGMA user_version", []), "13")
+        XCTAssertEqual(try migrated.syncScalar("PRAGMA user_version", []), "14")
         XCTAssertEqual(try migrated.contentQuotaStatus(), expected)
         XCTAssertEqual(try store().contentQuotaStatus(), expected)
     }

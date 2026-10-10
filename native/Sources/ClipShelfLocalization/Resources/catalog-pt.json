@@ -645,6 +645,7 @@
   "搜索剪贴板历史": "Buscar no histórico da área de transferência",
   "撤销": "Revogar",
   "撤销失败": "Não foi possível revogar a autorização",
+  "撤销未完成，已保留重试机会：{0}": "Não foi possível concluir a ação de desfazer. Você pode tentar novamente: {0}",
   "操作…": "Ações…",
   "操作回执对应的条目已变化，请关闭后重新打开。": "O item associado a este resultado mudou. Feche e abra novamente.",
   "操作已完成。": "Operação concluída.",

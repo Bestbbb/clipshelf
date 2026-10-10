@@ -491,6 +491,87 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                    retainedSelection: retained, allowMissingAnchorFallback: true)
     }
 
+    /// Capture the user's current view before asynchronous Undo. The committed
+    /// references can have new IDs; never reuse the deleted selection or select a
+    /// surviving subset that no longer matches this query.
+    func captureUndoPresentation() -> ([ClipboardSelectionReference]) -> Void {
+        let session = viewGeneration, scope = scopeGeneration, generation = selection.generation
+        let page = queryGeneration, output = outputActionGeneration
+        var consumed = false
+        return { [weak self] references in
+            guard let self, !consumed else { return }
+            consumed = true
+            guard self.isVisible, self.viewGeneration == session, self.scopeGeneration == scope,
+                  self.selection.generation == generation, self.queryGeneration == page,
+                  self.outputActionGeneration == output, self.canPresentUndoSelection,
+                  !references.isEmpty else { return }
+            self.cancelBoundaryNavigation()
+            self.invalidateOutputContext()
+            self.selection.beginChange()
+            let request = UUID(), stagedGeneration = self.selection.generation
+            let stagedOutput = self.outputActionGeneration
+            var acceptedSnapshot = false
+            self.selectionRequestID = request
+            self.validationRequestID = nil; self.pendingActionID = nil
+            self.requestSelectionSnapshot { [weak self] result in
+                guard let self, !acceptedSnapshot else { return }
+                guard self.isVisible, self.viewGeneration == session, self.scopeGeneration == scope,
+                      self.selection.generation == stagedGeneration, self.selectionRequestID == request,
+                      self.queryGeneration == page, self.outputActionGeneration == stagedOutput,
+                      self.canPresentUndoSelection else {
+                    if self.selectionRequestID == request { self.selectionRequestID = nil }
+                    return
+                }
+                acceptedSnapshot = true
+                do {
+                    var candidate = PanelSelectionState()
+                    try candidate.selectAll(references)
+                    try candidate.installUniverse(try result.get().references)
+                    guard let first = candidate.references.first else { self.selectionRequestID = nil; return }
+                    candidate.moveFocus(to: first.id)
+                    if self.onPageRequest != nil {
+                        self.selectionRequestID = nil
+                        let navigation = UUID()
+                        self.boundaryNavigationID = navigation
+                        let intent = PanelBoundaryNavigation(id: navigation, generation: self.selection.generation,
+                                                             selection: candidate)
+                        self.issueQuery(resetLimit: false, preserveStatus: true,
+                                        anchor: PanelPageAnchor(recordID: first.id, displacement: 0),
+                                        boundaryNavigation: intent)
+                    } else {
+                        self.validateReferences(candidate.references) { [weak self] validation in
+                            guard let self else { return }
+                            guard self.isVisible, self.viewGeneration == session, self.scopeGeneration == scope,
+                                  self.selection.generation == stagedGeneration, self.selectionRequestID == request,
+                                  self.queryGeneration == page, self.outputActionGeneration == stagedOutput,
+                                  self.canPresentUndoSelection else {
+                                if self.selectionRequestID == request { self.selectionRequestID = nil }
+                                return
+                            }
+                            self.selectionRequestID = nil
+                            switch validation {
+                            case .success:
+                                self.selection = candidate; self.selectionStatus = nil
+                                self.updateSelectionAppearance(focusResults: true, revealID: first.id)
+                            case .failure(let error): self.selectionFailed(error)
+                            }
+                        }
+                    }
+                } catch {
+                    self.selectionRequestID = nil
+                    self.selectionFailed(error)
+                    self.refreshPage()
+                }
+            }
+        }
+    }
+
+    private var canPresentUndoSelection: Bool {
+        !isEditingSearch && window?.attachedSheet == nil && detailWindow == nil && filePreview == nil
+            && multipartPreview == nil && imagePreview == nil && linkPreview == nil
+            && allFiltersController == nil && filterPopover?.isShown != true
+    }
+
     private func updateContents(_ contents: [ClipboardCardContent], status: String?) {
         queryPending = false
         resultPresentation = .ready
@@ -1329,7 +1410,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func isCurrentBoundary(_ intent: PanelBoundaryNavigation) -> Bool {
         isVisible && boundaryNavigationID == intent.id && selection.generation == intent.generation
-            && !isEditingSearch && allFiltersController == nil && filterPopover?.isShown != true
+            && canPresentUndoSelection
     }
 
     private func moveToBoundary(_ boundary: HistoryPageBoundary, extending: Bool) {

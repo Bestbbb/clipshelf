@@ -108,7 +108,7 @@ final class SearchIndexTests: XCTestCase {
         let migrated = try store()
         XCTAssertEqual(try migrated.searchMetadata(HistoryQuery(text: "迁移中文")).map(\.id), [record.id])
         XCTAssertEqual(try migrated.pendingSyncOperations(accountID: "account"), operations)
-        XCTAssertEqual(try migrated.syncScalar("PRAGMA user_version", []), "13")
+        XCTAssertEqual(try migrated.syncScalar("PRAGMA user_version", []), "14")
         let backup = directory.appendingPathComponent("search.clipshelfbackup")
         try migrated.exportBackup(to: backup)
         let restored = try store("restored")

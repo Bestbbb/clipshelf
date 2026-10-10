@@ -23,9 +23,9 @@ extension HistoryStore {
         let sync = try syncConfigurationWithoutLock(), sharing = try sharingConfigurationWithoutLock()
         let bindings = try ownedFileBindingsWithoutLock(recordID: record.id)
         let updated = try updateWithoutLock(record: record, current: original, preserveOCR: preserveOCR)
-        return HistorySelectionEditUndo(original: original,
+        return HistorySelectionEditUndo(original: original, originalReference: reference,
                                         expected: ClipboardSelectionReference(id: updated.id, revision: updated.revision),
-                                        expectedContentFingerprint: ClipboardEditFingerprint.digest(updated),
+                                        expectedContentFingerprint: ClipboardEditFingerprint.digest(updated), fingerprintIdentity: updated.id,
                                         storeIdentity: selectionStoreIdentity,
                                         syncConfiguration: sync, sharingConfiguration: sharing, ownedFileBindings: bindings,
                                         ownedAssetLease: try retainOwnedAssetsWithoutLock(Set(bindings.map(\.assetID)).union(capturedOwnedIDsWithoutLock([original])), purpose: .undo))
@@ -40,7 +40,7 @@ extension HistoryStore {
                 let items = try selectionItems([undo.expected])
                 try requireEditableSelection(items)
                 guard let current = try itemWithoutLock(id: undo.expected.id) else { throw HistoryStoreError.recordNotFound }
-                guard ClipboardEditFingerprint.digest(current) == undo.expectedContentFingerprint else { throw HistoryStoreError.staleRevision }
+                guard ClipboardEditFingerprint.digest(current, canonicalIdentity: undo.fingerprintIdentity) == undo.expectedContentFingerprint else { throw HistoryStoreError.staleRevision }
                 var original = undo.original
                 original.revision = undo.expected.revision
                 // This is the exact original authenticated by this store's Undo token,
@@ -49,7 +49,7 @@ extension HistoryStore {
                 try setOwnedFileBindingsWithoutLock(undo.ownedFileBindings, record: restored)
                 let reference = ClipboardSelectionReference(id: restored.id, revision: restored.revision)
                 return HistorySelectionUndoReceipt(references: [reference], storeIdentity: selectionStoreIdentity,
-                                                   before: [ClipboardSelectionReference(id: undo.original.id, revision: undo.original.revision)],
+                                                   before: [undo.originalReference],
                                                    after: [reference])
             }
         }
@@ -60,12 +60,18 @@ extension HistoryStore {
         guard undo.storeIdentity == selectionStoreIdentity, receipt.storeIdentity == selectionStoreIdentity else {
             throw HistoryStoreError.invalidSelection
         }
-        let index = receipt.before.firstIndex(of: undo.expected)
-        return HistorySelectionEditUndo(original: undo.original,
-                                        expected: index.map { receipt.after[$0] } ?? undo.expected,
+        var original = undo.original
+        if let replacement = receipt.identityChanges[original.id] {
+            original.pinboardOrderIdentity = original.pinboardOrderIdentity ?? original.id
+            original.id = replacement
+        }
+        return HistorySelectionEditUndo(original: original,
+                                        originalReference: receipt.rebasedHistorical(undo.originalReference),
+                                        expected: receipt.rebased(undo.expected),
                                         expectedContentFingerprint: undo.expectedContentFingerprint,
+                                        fingerprintIdentity: undo.fingerprintIdentity,
                                         storeIdentity: undo.storeIdentity,
                                         syncConfiguration: undo.syncConfiguration, sharingConfiguration: undo.sharingConfiguration,
-                                        ownedFileBindings: undo.ownedFileBindings, ownedAssetLease: undo.ownedAssetLease)
+                                        ownedFileBindings: undo.ownedFileBindings.map { receipt.rebased($0) }, ownedAssetLease: undo.ownedAssetLease)
     }
 }

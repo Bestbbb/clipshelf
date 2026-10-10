@@ -645,6 +645,7 @@
   "搜索剪贴板历史": "Search clipboard history",
   "撤销": "Revoke",
   "撤销失败": "Could Not Revoke Authorization",
+  "撤销未完成，已保留重试机会：{0}": "Undo did not finish. You can try again: {0}",
   "操作…": "Actions…",
   "操作回执对应的条目已变化，请关闭后重新打开。": "The item associated with this result has changed. Close and reopen it.",
   "操作已完成。": "Operation completed.",

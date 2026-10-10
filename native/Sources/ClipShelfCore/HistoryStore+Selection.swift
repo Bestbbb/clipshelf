@@ -14,6 +14,7 @@ extension HistoryStore {
                     if status == SQLITE_DONE { break }
                     try check(status, allowingRow: true)
                     guard let id = textColumn(statement, 0).flatMap(UUID.init(uuidString:)) else { throw HistoryStoreError.invalidStoredRecord }
+                    try requireHistoryOrderColumn(statement, at: 2)
                     references.append(ClipboardSelectionReference(id: id, revision: Int(sqlite3_column_int64(statement, 1))))
                 }
                 switch scope {
@@ -70,13 +71,10 @@ extension HistoryStore {
             try transaction(allowReclamation: true) {
                 let items = try selectionItems(references)
                 try requireEditableSelection(items)
+                try preflightSelectionPayload(references, maximumBytes: 512 * 1_024 * 1_024)
+                let states = try captureDeletedRecordStatesWithoutLock(references)
                 let owned = try references.flatMap { try ownedFileBindingsWithoutLock(recordID: $0.id) }
                 let retention = try retainOwnedAssetsWithoutLock(Set(owned.map(\.assetID)).union(ownedAssetIDsReferencedByRecordMetadata(recordIDs: Set(references.map(\.id)))), purpose: .undo)
-                let undo = HistorySelectionDeleteUndo(storeIdentity: selectionStoreIdentity, references: references,
-                                                      syncConfiguration: try syncConfigurationWithoutLock(),
-                                                      sharingConfiguration: try sharingConfigurationWithoutLock(),
-                                                      consumption: HistorySelectionUndoConsumption(),
-                                                      ownedFileBindings: owned, ownedAssetLease: retention)
                 let statement = try prepare("DELETE FROM clipboard_records WHERE id = ?")
                 defer { sqlite3_finalize(statement) }
                 for item in items {
@@ -84,7 +82,16 @@ extension HistoryStore {
                     try bind(item.id.uuidString, at: 1, to: statement)
                     try stepToCompletion(statement)
                 }
-                return undo
+                var boards: [UUID: [HistorySelectionPlacement]] = [:]
+                for boardID in Set(items.compactMap(\.boardID)) {
+                    boards[boardID] = try orderedItems(boardID: boardID).map(\.selectionPlacement)
+                }
+                return HistorySelectionDeleteUndo(storeIdentity: selectionStoreIdentity, references: references,
+                                                  syncConfiguration: try syncConfigurationWithoutLock(),
+                                                  sharingConfiguration: try sharingConfigurationWithoutLock(),
+                                                  consumption: HistorySelectionUndoConsumption(),
+                                                  ownedFileBindings: owned, ownedAssetLease: retention,
+                                                  records: states, boardPlacements: boards)
             }
         }
     }
@@ -169,25 +176,19 @@ extension HistoryStore {
         guard older.storeIdentity == selectionStoreIdentity, receipt.storeIdentity == selectionStoreIdentity else {
             throw HistoryStoreError.invalidSelection
         }
-        let transitions = Dictionary(uniqueKeysWithValues: zip(receipt.before, receipt.after).map { ($0, $1) })
-        func rebased(_ references: [ClipboardSelectionReference]) -> [ClipboardSelectionReference] {
-            references.map { transitions[$0] ?? $0 }
-        }
-        return HistorySelectionMoveUndo(references: rebased(older.references), storeIdentity: older.storeIdentity,
-                                        placements: older.placements, expected: rebased(older.expected), before: older.before,
-                                        boardPlacements: older.boardPlacements,
+        return HistorySelectionMoveUndo(references: older.references.map { receipt.rebased($0) }, storeIdentity: older.storeIdentity,
+                                        placements: older.placements.map { receipt.rebased($0) },
+                                        expected: older.expected.map { receipt.rebased($0) },
+                                        before: older.before.map { receipt.rebasedHistorical($0) },
+                                        boardPlacements: older.boardPlacements.mapValues { $0.map { receipt.rebased($0) } },
                                         syncConfiguration: older.syncConfiguration, sharingConfiguration: older.sharingConfiguration)
     }
 
-    /// Restores a deleted batch without replacing any live ID or silently dropping a missing board.
-    /// Cloud tombstones remain authoritative: a synced deletion cannot be undone under the same ID.
+    /// Restores the authenticated deleted content and placement. Synced tombstones stay intact;
+    /// their restored content receives a new entity identity and its own initial sync operation.
     @discardableResult
     public func restoreDeletedSelection(_ originals: [ClipboardRecord], undo: HistorySelectionDeleteUndo) throws -> HistorySelectionUndoReceipt {
-        guard undo.storeIdentity == selectionStoreIdentity,
-              originals.map({ ClipboardSelectionReference(id: $0.id, revision: $0.revision) }) == undo.references else {
-            throw HistoryStoreError.invalidSelection
-        }
-        for record in originals { try validate(record) }
+        try validateDeletedSelectionOriginals(originals, undo: undo)
         return try synchronized {
             guard !undo.consumption.consumed else { throw HistoryStoreError.invalidSelection }
             let receipt = try transaction {
@@ -198,21 +199,69 @@ extension HistoryStore {
                     }
                     guard record.isInHistory || record.pinboardID != nil else { throw HistoryStoreError.invalidStoredRecord }
                 }
-                for boardID in Set(originals.compactMap(\.pinboardID)) { try requireEditableOrderingBoard(boardID) }
-                var restored: [ClipboardSelectionReference] = []
-                // In a history selection originals are newest-first. Reinsert in reverse so the
-                // restored batch retains that relative history order; explicit pinboard ranks remain intact.
-                for original in originals.reversed() {
-                    var record = original; record.revision += 1
-                    try insert(record)
-                    try setOwnedFileBindingsWithoutLock(undo.ownedFileBindings.filter { $0.recordID == record.id }, record: record)
+                for (boardID, expected) in undo.boardPlacements {
+                    try requireEditableOrderingBoard(boardID)
+                    guard try orderedItems(boardID: boardID).map(\.selectionPlacement) == expected else { throw HistoryStoreError.staleRevision }
                 }
-                for original in originals { restored.append(ClipboardSelectionReference(id: original.id, revision: original.revision + 1)) }
+                var restored: [ClipboardSelectionReference] = []
+                for original in originals {
+                    guard let state = undo.records[original.id] else { throw HistoryStoreError.invalidSelection }
+                    try requireDeletedRecordNamespaceWithoutLock(id: original.id, state: state)
+                    var record = original
+                    if try syncScalar("SELECT entity_id FROM sync_tombstones WHERE entity_kind = 'clipboard' AND entity_id = ? LIMIT 1", [original.id.uuidString]) != nil {
+                        record.pinboardOrderIdentity = original.pinboardOrderIdentity ?? original.id
+                        record.id = UUID(); record.revision = 1
+                    } else {
+                        record.revision += 1
+                    }
+                    try insert(record, historyOrder: state.historyOrder)
+                    try restoreDeletedRecordNamespaceWithoutLock(record: record, state: state)
+                    let bindings = undo.ownedFileBindings.filter { $0.recordID == original.id }.map {
+                        OwnedFileBinding(recordID: record.id, partIndex: $0.partIndex,
+                                         representationIndex: $0.representationIndex, assetID: $0.assetID)
+                    }
+                    try setOwnedFileBindingsWithoutLock(bindings, record: record)
+                    restored.append(ClipboardSelectionReference(id: record.id, revision: record.revision))
+                }
                 return HistorySelectionUndoReceipt(references: restored, storeIdentity: selectionStoreIdentity,
                                                    before: undo.references, after: restored)
             }
             undo.consumption.consumed = true
             return receipt
+        }
+    }
+
+    /// Rebase token identities only through a committed store receipt. Saved board ranks, payload
+    /// digests, namespace choices and original local history positions are never recomputed.
+    public func rebaseSelectionDeleteUndo(_ undo: HistorySelectionDeleteUndo,
+                                         after receipt: HistorySelectionUndoReceipt) throws -> HistorySelectionDeleteUndo {
+        guard undo.storeIdentity == selectionStoreIdentity, receipt.storeIdentity == selectionStoreIdentity else {
+            throw HistoryStoreError.invalidSelection
+        }
+        return HistorySelectionDeleteUndo(storeIdentity: undo.storeIdentity,
+                                          references: undo.references.map { receipt.rebased($0) },
+                                          syncConfiguration: undo.syncConfiguration, sharingConfiguration: undo.sharingConfiguration,
+                                          consumption: undo.consumption,
+                                          ownedFileBindings: undo.ownedFileBindings.map { receipt.rebased($0) },
+                                          ownedAssetLease: undo.ownedAssetLease,
+                                          records: Dictionary(uniqueKeysWithValues: undo.records.map {
+                                              (receipt.identityChanges[$0.key] ?? $0.key, $0.value)
+                                          }),
+                                          boardPlacements: undo.boardPlacements.mapValues { $0.map { receipt.rebased($0) } })
+    }
+
+    /// Rebase the caller's retained originals using their matching pre-rebase token. Authenticating
+    /// these bytes avoids treating a mutable UI snapshot as the original content of an Undo.
+    public func rebaseDeletedSelectionOriginals(_ originals: [ClipboardRecord], undo: HistorySelectionDeleteUndo,
+                                               after receipt: HistorySelectionUndoReceipt) throws -> [ClipboardRecord] {
+        try validateDeletedSelectionOriginals(originals, undo: undo)
+        guard receipt.storeIdentity == selectionStoreIdentity else { throw HistoryStoreError.invalidSelection }
+        return originals.map { original in
+            let reference = receipt.rebased(ClipboardSelectionReference(id: original.id, revision: original.revision))
+            var record = original
+            if reference.id != original.id { record.pinboardOrderIdentity = original.pinboardOrderIdentity ?? original.id }
+            record.id = reference.id; record.revision = reference.revision
+            return record
         }
     }
 
@@ -263,7 +312,7 @@ extension HistoryStore {
     }
 
     func selectionItems(_ references: [ClipboardSelectionReference]) throws -> [OrderedItem] {
-        guard references.allSatisfy({ $0.revision > 0 && $0.revision < Int.max }),
+        guard references.allSatisfy({ $0.historicalIdentity == nil && $0.revision > 0 && $0.revision < Int.max }),
               Set(references.map(\.id)).count == references.count else { throw HistoryStoreError.invalidSelection }
         let items = try selectionItemsByID(references.map(\.id))
         guard zip(items, references).allSatisfy({ $0.revision == $1.revision }) else { throw HistoryStoreError.staleRevision }
@@ -271,7 +320,7 @@ extension HistoryStore {
     }
 
     func selectionItemsByID(_ ids: [UUID]) throws -> [OrderedItem] {
-        let statement = try prepare("SELECT id, pinboard_id, pinboard_order, revision, is_in_history FROM clipboard_records WHERE id = ?")
+        let statement = try prepare("SELECT id, pinboard_id, pinboard_order, revision, is_in_history, pinboard_order_identity FROM clipboard_records WHERE id = ?")
         defer { sqlite3_finalize(statement) }
         var items: [OrderedItem] = []; items.reserveCapacity(ids.count)
         for id in ids {
@@ -324,5 +373,5 @@ extension HistoryStore {
 
 private extension HistoryStore.OrderedItem {
     var selectionReference: ClipboardSelectionReference { ClipboardSelectionReference(id: id, revision: revision) }
-    var selectionPlacement: HistorySelectionPlacement { HistorySelectionPlacement(id: id, boardID: boardID, rank: rank, isInHistory: inHistory) }
+    var selectionPlacement: HistorySelectionPlacement { HistorySelectionPlacement(id: id, boardID: boardID, rank: rank, orderIdentity: orderIdentity ?? id, isInHistory: inHistory) }
 }

@@ -96,7 +96,7 @@ extension HistoryStore {
             """
         if let ids { sql += " WHERE r.id IN (\(Array(repeating: "?", count: ids.count).joined(separator: ",")))" }
         else { sql += " WHERE r.is_in_history = 1" + (cutoff == nil ? "" : " AND r.copied_at < ?") }
-        sql += " ORDER BY r.rowid"
+        sql += " ORDER BY r.local_history_order"
         let statement = try prepare(sql)
         defer { sqlite3_finalize(statement) }
         if let ids { for (index, id) in ids.enumerated() { try bind(id.uuidString, at: Int32(index + 1), to: statement) } }
@@ -230,7 +230,7 @@ extension HistoryStore {
         return try bodies.contains { try cleanupSchemaTokens(prefix + $0 + "; END") == actual }
     }
 
-    private static func cleanupSchemaTokens(_ sql: String) throws -> [String] {
+    static func cleanupSchemaTokens(_ sql: String) throws -> [String] {
         let expression = try NSRegularExpression(pattern: #"/\*[\s\S]*?\*/|--[^\r\n]*|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[(?:[^\]]|\]\])*\]|[A-Za-z_][A-Za-z_0-9]*|[0-9]+|[^\s]"#)
         let source = sql as NSString
         var tokens = expression.matches(in: sql, range: NSRange(location: 0, length: source.length)).compactMap { match -> String? in

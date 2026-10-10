@@ -87,6 +87,36 @@ private final class WeakSelectionUndoTicket {
         entries.removeAll { $0.value == nil || $0.value === ticket }
     }
 
+    /// An asynchronous failed transaction has consumed the UndoManager action,
+    /// but has not consumed the store capability. Restore it as the latest action.
+    @discardableResult
+    func retainForRetry(_ ticket: SelectionUndoTicket,
+                        handler: @escaping @MainActor (SelectionUndoTicket) -> Void) -> Bool {
+        remove(ticket)
+        return register(ticket.action, handler: handler)
+    }
+
+    static func isRetryableFailure(_ error: Error) -> Bool {
+        if let failure = StorageWriteFailure.classify(error) {
+            switch failure {
+            case .capacityUnavailable, .insufficientSpace, .destinationChanged, .coordinationUnavailable, .diskFull: return true
+            case .invalidRequirement, .releasedLease: return false
+            }
+        }
+        if let quota = error as? ContentQuotaError {
+            switch quota {
+            case .exceeded, .measurementUnavailable, .stalePolicy: return true
+            case .invalidLimit: return false
+            }
+        }
+        if case HistoryStoreError.database(let code, _) = error {
+            // SQLite BUSY, LOCKED, NOMEM, IOERR, FULL and CANTOPEN can recover
+            // without changing the captured content or authorization generations.
+            return [Int32(5), 6, 7, 10, 13, 14].contains(code & 0xff)
+        }
+        return false
+    }
+
     /// Retire whole atomic actions that depend on any cleaned-up record. Each
     /// ticket is its own UndoManager target; unrelated groups stay in order.
     @discardableResult
@@ -98,8 +128,8 @@ private final class WeakSelectionUndoTicket {
             switch ticket.action {
             case .move(let undo):
                 intersects = !undo.affectedRecordIDs.isDisjoint(with: recordIDs)
-            case .deletion(let originals, _):
-                intersects = originals.contains { recordIDs.contains($0.id) }
+            case .deletion(_, let undo):
+                intersects = !undo.affectedRecordIDs.isDisjoint(with: recordIDs)
             case .edit(let undo):
                 intersects = recordIDs.contains(undo.original.id)
             }
@@ -122,7 +152,9 @@ private final class WeakSelectionUndoTicket {
                 switch ticket.action {
                 case .move(let undo): ticket.action = .move(try store.rebaseSelectionMoveUndo(undo, after: receipt))
                 case .edit(let undo): ticket.action = .edit(try store.rebaseSelectionEditUndo(undo, after: receipt))
-                case .deletion: continue
+                case .deletion(let originals, let undo):
+                    let updated = try store.rebaseDeletedSelectionOriginals(originals, undo: undo, after: receipt)
+                    ticket.action = .deletion(updated, try store.rebaseSelectionDeleteUndo(undo, after: receipt))
                 }
             }
             catch { remove(ticket); invalidated += 1 }

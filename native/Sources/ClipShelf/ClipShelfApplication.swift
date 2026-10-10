@@ -821,6 +821,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         guard !isDataMutationInProgress else { return }
         selectionMutationInProgress = true
         let action = ticket.action
+        let presentUndo = panel.captureUndoPresentation()
         Task { @MainActor in
             defer { selectionMutationInProgress = false }
             do {
@@ -835,10 +836,17 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                 if selectionUndoHistory.rebaseActions(using: store, receipt: receipt) > 0 {
                     setStatus(L10n.text("已撤销；部分更早的撤销记录已失效。"))
                 }
-                reload()
+                requestOCRCleanup(store: store)
+                refresh()
+                presentUndo(receipt.references)
             } catch {
-                selectionUndoHistory.remove(ticket)
-                setStatus(L10n.text("本次撤销已失效，相关内容、分组或同步状态已改变；没有部分恢复。"))
+                if SelectionUndoHistory.isRetryableFailure(error),
+                   selectionUndoHistory.retainForRetry(ticket, handler: { [weak self] in self?.undoSelection($0, store: store) }) {
+                    setStatus(L10n.text("撤销未完成，已保留重试机会：\(error.localizedDescription)"))
+                } else {
+                    selectionUndoHistory.remove(ticket)
+                    setStatus(L10n.text("本次撤销已失效，相关内容、分组或同步状态已改变；没有部分恢复。"))
+                }
                 reload()
             }
         }

@@ -5,7 +5,7 @@ extension HistoryStore {
     static let minimumPinboardRank = Int64.min / 4
     static let maximumPinboardRank = Int64.max / 4
     static let pinboardRankSpacing: Int64 = 1_048_576
-    static let pinboardOrderingSQL = "pinboard_order IS NULL ASC, pinboard_order ASC, CASE WHEN pinboard_order IS NULL THEN rowid END DESC, id ASC"
+    static let pinboardOrderingSQL = "pinboard_order IS NULL ASC, pinboard_order ASC, CASE WHEN pinboard_order IS NULL THEN local_history_order END DESC, coalesce(pinboard_order_identity, id) ASC, id ASC"
 
     struct OrderedItem {
         let id: UUID
@@ -13,6 +13,7 @@ extension HistoryStore {
         let rank: Int64?
         let revision: Int
         let inHistory: Bool
+        let orderIdentity: UUID?
     }
 
     /// Moves only the supplied IDs. Unloaded items remain in the board and retain relative order.
@@ -150,7 +151,7 @@ extension HistoryStore {
     }
 
     func orderedItems(boardID: UUID) throws -> [OrderedItem] {
-        let statement = try prepare("SELECT id, pinboard_id, pinboard_order, revision, is_in_history FROM clipboard_records WHERE pinboard_id = ? ORDER BY \(Self.pinboardOrderingSQL)")
+        let statement = try prepare("SELECT id, pinboard_id, pinboard_order, revision, is_in_history, pinboard_order_identity FROM clipboard_records WHERE pinboard_id = ? ORDER BY \(Self.pinboardOrderingSQL)")
         defer { sqlite3_finalize(statement) }
         try bind(boardID.uuidString, at: 1, to: statement)
         var items: [OrderedItem] = []
@@ -163,7 +164,7 @@ extension HistoryStore {
     }
 
     func orderingItem(id: UUID) throws -> OrderedItem {
-        let statement = try prepare("SELECT id, pinboard_id, pinboard_order, revision, is_in_history FROM clipboard_records WHERE id = ?")
+        let statement = try prepare("SELECT id, pinboard_id, pinboard_order, revision, is_in_history, pinboard_order_identity FROM clipboard_records WHERE id = ?")
         defer { sqlite3_finalize(statement) }
         try bind(id.uuidString, at: 1, to: statement)
         let status = sqlite3_step(statement)
@@ -176,7 +177,8 @@ extension HistoryStore {
         guard let id = textColumn(statement, 0).flatMap(UUID.init(uuidString:)) else { throw HistoryStoreError.invalidStoredRecord }
         return OrderedItem(id: id, boardID: textColumn(statement, 1).flatMap(UUID.init(uuidString:)),
                            rank: sqlite3_column_type(statement, 2) == SQLITE_NULL ? nil : sqlite3_column_int64(statement, 2),
-                           revision: Int(sqlite3_column_int64(statement, 3)), inHistory: sqlite3_column_int(statement, 4) != 0)
+                           revision: Int(sqlite3_column_int64(statement, 3)), inHistory: sqlite3_column_int(statement, 4) != 0,
+                           orderIdentity: try decodePinboardOrderIdentity(statement, at: 5))
     }
 
     func checkOrderingRevisions(_ expected: [UUID: Int]) throws {

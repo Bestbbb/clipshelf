@@ -5,9 +5,9 @@ import Foundation
 /// a second base64-encoded copy of a potentially 512 MiB edit/Undo payload. Revision is checked
 /// separately and may change only through a store-authenticated Undo receipt.
 enum ClipboardEditFingerprint {
-    static func digest(_ record: ClipboardRecord) -> String {
+    static func digest(_ record: ClipboardRecord, canonicalIdentity: UUID? = nil) -> String {
         var writer = Writer()
-        writer.string(record.id.uuidString)
+        writer.string((canonicalIdentity ?? record.id).uuidString)
         writer.string(record.text); writer.string(record.sourceApp); writer.string(record.sourceBundleID)
         let timestamp = record.copiedAt.timeIntervalSinceReferenceDate
         writer.integer((timestamp == 0 ? 0.0 : timestamp).bitPattern)
@@ -21,6 +21,7 @@ enum ClipboardEditFingerprint {
         }
         writer.string(record.renamedTitle); writer.string(record.ocrText)
         writer.string(record.pinboardID?.uuidString)
+        writer.string((record.pinboardOrderIdentity ?? canonicalIdentity ?? record.id).uuidString)
         if let order = record.pinboardOrder { writer.integer(1); writer.integer(UInt64(bitPattern: order)) }
         else { writer.integer(0) }
         writer.integer(record.isInHistory ? 1 : 0)

@@ -645,6 +645,7 @@
   "搜索剪贴板历史": "Buscar en el historial del portapapeles",
   "撤销": "Revocar",
   "撤销失败": "No se pudo revocar la autorización",
+  "撤销未完成，已保留重试机会：{0}": "No se pudo completar la acción de deshacer. Puedes volver a intentarlo: {0}",
   "操作…": "Acciones…",
   "操作回执对应的条目已变化，请关闭后重新打开。": "El elemento asociado a este resultado ha cambiado. Ciérralo y vuelve a abrirlo.",
   "操作已完成。": "Operación completada.",

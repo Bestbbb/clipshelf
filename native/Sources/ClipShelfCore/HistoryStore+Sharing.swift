@@ -46,7 +46,7 @@ extension HistoryStore {
             return try transaction {
                 guard var board = try pinboardsWithoutLock().first(where: { $0.id == sourceBoardID }) else { throw HistoryStoreError.pinboardNotFound }
                 guard !(try pinboardsWithoutLock().contains { $0.id == descriptor.boardID }) else { throw SyncError.namespaceConflict }
-                let statement = try prepare("SELECT \(Self.columns) FROM clipboard_records WHERE pinboard_id = ? ORDER BY rowid")
+                let statement = try prepare("SELECT \(Self.columns) FROM clipboard_records WHERE pinboard_id = ? ORDER BY local_history_order")
                 defer { sqlite3_finalize(statement) }
                 try bind(sourceBoardID.uuidString, at: 1, to: statement)
                 let contents = try readRecords(statement)
@@ -57,6 +57,7 @@ extension HistoryStore {
                 try savePinboard(board, replace: false)
                 for var record in contents {
                     let originalID = record.id
+                    record.pinboardOrderIdentity = record.pinboardOrderIdentity ?? record.id
                     record.id = UUID()
                     record.pinboardID = board.id
                     record.isInHistory = false
@@ -275,7 +276,7 @@ extension HistoryStore {
         try synchronized {
             try transaction {
                 guard var board = try pinboardsWithoutLock().first(where: { $0.id == boardID }) else { throw HistoryStoreError.pinboardNotFound }
-                let statement = try prepare("SELECT \(Self.columns) FROM clipboard_records WHERE pinboard_id = ? ORDER BY rowid")
+                let statement = try prepare("SELECT \(Self.columns) FROM clipboard_records WHERE pinboard_id = ? ORDER BY local_history_order")
                 defer { sqlite3_finalize(statement) }
                 try bind(boardID.uuidString, at: 1, to: statement)
                 let contents = try readRecords(statement)
@@ -283,6 +284,7 @@ extension HistoryStore {
                 try savePinboard(board, replace: false)
                 for var record in contents {
                     let originalID = record.id
+                    record.pinboardOrderIdentity = record.pinboardOrderIdentity ?? record.id
                     record.id = UUID(); record.pinboardID = board.id; record.isInHistory = false; record.revision = 1
                     try insert(record)
                     try copyOwnedFileBindingsWithoutLock(from: originalID, to: record)

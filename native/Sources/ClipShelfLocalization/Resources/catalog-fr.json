@@ -645,6 +645,7 @@
   "搜索剪贴板历史": "Rechercher dans l’historique du presse-papiers",
   "撤销": "Révoquer",
   "撤销失败": "Impossible de révoquer l’autorisation",
+  "撤销未完成，已保留重试机会：{0}": "L’annulation n’a pas abouti. Vous pouvez réessayer : {0}",
   "操作…": "Actions…",
   "操作回执对应的条目已变化，请关闭后重新打开。": "L’élément associé à ce résultat a changé. Fermez-le et rouvrez-le.",
   "操作已完成。": "Opération terminée.",

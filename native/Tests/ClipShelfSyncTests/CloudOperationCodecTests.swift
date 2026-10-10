@@ -7,9 +7,10 @@ import ClipShelfCore
 final class CloudOperationCodecTests: XCTestCase {
     private let zone = CKRecordZone.ID(zoneName: "private-zone", ownerName: CKCurrentUserDefaultName)
     private let account = "iCloud.test.clipshelf:synthetic-account"
-    private func operation(version: Int? = nil, owned: Bool = false) -> SyncOperation {
+    private func operation(version: Int? = nil, owned: Bool = false, orderIdentity: UUID? = nil) -> SyncOperation {
         let file = SyncOwnedFileDescriptor(digest: CloudSyncService.digest(Data("bytes".utf8)), byteCount: 5, filename: "sample.txt")
         var record = ClipboardRecord(text: "example")
+        record.pinboardOrderIdentity = orderIdentity
         if owned { record.parts = [ClipboardPart(representations: [ClipboardRepresentation(typeIdentifier: "public.file-url", data: Data(SyncOwnedFileManifest.token(digest: file.digest, filename: file.filename).utf8))])] }
         let manifest = owned ? SyncOwnedFileManifest(files: [file], bindings: [SyncOwnedFileBinding(partIndex: 0, representationIndex: 0, digest: file.digest, filename: file.filename)]) : nil
         return SyncOperation(accountID: account, entityID: record.id, entityKind: .clipboard, action: .upsert, baseRevision: 0, revision: 1,
@@ -33,6 +34,28 @@ final class CloudOperationCodecTests: XCTestCase {
             XCTAssertEqual(decoded, input)
             XCTAssertEqual(try CloudSyncService.encodeOperation(decoded), bytes)
             withExtendedLifetime(staging) {}
+        }
+    }
+    func testOptionalOrderIdentityPreservesLegacyBytesAndCloudDigests() throws {
+        struct LegacyRecord: Decodable { let id: UUID; let text: String }
+        struct LegacyEnvelope: Decodable { let record: LegacyRecord }
+        for version: Int? in [nil, 1, 2] {
+            for identity: UUID? in [nil, UUID()] {
+                let input = operation(version: version, owned: version == 2, orderIdentity: identity)
+                let bytes = try CloudSyncService.encodeOperation(input)
+                let json = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+                let recordJSON = try XCTUnwrap(json["record"] as? [String: Any])
+                XCTAssertEqual(recordJSON["pinboardOrderIdentity"] as? String, identity?.uuidString)
+                XCTAssertEqual(recordJSON.keys.contains("pinboardOrderIdentity"), identity != nil)
+                let oldReader = try JSONDecoder().decode(LegacyEnvelope.self, from: bytes)
+                XCTAssertEqual(oldReader.record.id, input.entityID)
+                let (record, staging) = try encode(input, outer: version ?? 1)
+                let decoded = try CloudSyncService.decodeOperation(record, accountID: account, zoneID: zone)
+                XCTAssertEqual(decoded, input)
+                XCTAssertEqual(try CloudSyncService.encodeOperation(decoded), bytes)
+                XCTAssertEqual(decoded.record?.pinboardOrderIdentity, identity)
+                withExtendedLifetime(staging) {}
+            }
         }
     }
     func testUnknownOuterInnerAndMissingVersionForManifestReject() throws {

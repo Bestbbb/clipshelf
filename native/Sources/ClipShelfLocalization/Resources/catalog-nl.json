@@ -645,6 +645,7 @@
   "搜索剪贴板历史": "Klembordgeschiedenis doorzoeken",
   "撤销": "Intrekken",
   "撤销失败": "Machtiging intrekken mislukt",
+  "撤销未完成，已保留重试机会：{0}": "Het ongedaan maken is niet voltooid. Je kunt het opnieuw proberen: {0}",
   "操作…": "Acties…",
   "操作回执对应的条目已变化，请关闭后重新打开。": "Het onderdeel bij dit resultaat is gewijzigd. Sluit het en open het opnieuw.",
   "操作已完成。": "Bewerking voltooid.",

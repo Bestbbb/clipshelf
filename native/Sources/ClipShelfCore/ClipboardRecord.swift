@@ -34,6 +34,9 @@ public struct ClipboardRecord: Identifiable, Equatable, Codable, Sendable {
     public var ocrText: String?
     public var pinboardID: UUID?
     public var pinboardOrder: Int64?
+    /// Stable tie ordering when concurrent records share a rank, even after deletion Undo gives
+    /// this content a new sync identity. Nil uses the entity ID for legacy records and payloads.
+    public var pinboardOrderIdentity: UUID?
     public var isInHistory: Bool
     public var revision: Int
     public var originDeviceID: UUID?
@@ -57,7 +60,8 @@ public struct ClipboardRecord: Identifiable, Equatable, Codable, Sendable {
         pinboardOrder: Int64? = nil,
         originDeviceID: UUID? = nil,
         originDeviceName: String? = nil,
-        originDeviceConflict: Bool = false
+        originDeviceConflict: Bool = false,
+        pinboardOrderIdentity: UUID? = nil
     ) {
         self.id = id
         self.text = text
@@ -71,6 +75,7 @@ public struct ClipboardRecord: Identifiable, Equatable, Codable, Sendable {
         self.ocrText = ocrText
         self.pinboardID = pinboardID
         self.pinboardOrder = pinboardOrder
+        self.pinboardOrderIdentity = pinboardOrderIdentity
         self.isInHistory = isInHistory
         self.revision = revision
         self.originDeviceID = originDeviceID
@@ -109,7 +114,7 @@ public struct ClipboardRecord: Identifiable, Equatable, Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, text, sourceApp, sourceBundleID, copiedAt, rtf, html, parts
-        case renamedTitle, ocrText, pinboardID, isInHistory, revision, pinboardOrder
+        case renamedTitle, ocrText, pinboardID, isInHistory, revision, pinboardOrder, pinboardOrderIdentity
         case originDeviceID, originDeviceName, originDeviceConflict
     }
 
@@ -127,6 +132,7 @@ public struct ClipboardRecord: Identifiable, Equatable, Codable, Sendable {
         ocrText = try values.decodeIfPresent(String.self, forKey: .ocrText)
         pinboardID = try values.decodeIfPresent(UUID.self, forKey: .pinboardID)
         pinboardOrder = try values.decodeIfPresent(Int64.self, forKey: .pinboardOrder)
+        pinboardOrderIdentity = try values.decodeIfPresent(UUID.self, forKey: .pinboardOrderIdentity)
         originDeviceID = try values.decodeIfPresent(UUID.self, forKey: .originDeviceID)
         originDeviceName = try values.decodeIfPresent(String.self, forKey: .originDeviceName)
         originDeviceConflict = try values.decodeIfPresent(Bool.self, forKey: .originDeviceConflict) ?? false

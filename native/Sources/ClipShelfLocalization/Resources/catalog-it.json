@@ -645,6 +645,7 @@
   "搜索剪贴板历史": "Cerca nella cronologia degli appunti",
   "撤销": "Revoca",
   "撤销失败": "Impossibile revocare l'autorizzazione",
+  "撤销未完成，已保留重试机会：{0}": "L’annullamento non è stato completato. Puoi riprovare: {0}",
   "操作…": "Azioni…",
   "操作回执对应的条目已变化，请关闭后重新打开。": "L'elemento associato a questo risultato è cambiato. Chiudilo e riaprilo.",
   "操作已完成。": "Operazione completata.",

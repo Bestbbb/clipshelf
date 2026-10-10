@@ -43,6 +43,7 @@ extension HistoryStore {
                     let status = sqlite3_step(anchor)
                     guard status != SQLITE_DONE else { throw HistoryStoreError.recordNotFound }
                     try check(status, allowingRow: true)
+                    try requireHistoryOrderColumn(anchor, at: 1)
                     let (index, overflow) = Int(sqlite3_column_int64(anchor, 0)).addingReportingOverflow(displacement)
                     guard !overflow, index >= 0 else { throw HistoryStoreError.recordNotFound }
                     target = index

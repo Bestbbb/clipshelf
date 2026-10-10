@@ -645,6 +645,7 @@
   "搜索剪贴板历史": "Szukaj w historii schowka",
   "撤销": "Cofnij dostęp",
   "撤销失败": "Nie udało się cofnąć upoważnienia",
+  "撤销未完成，已保留重试机会：{0}": "Nie udało się cofnąć operacji. Możesz spróbować ponownie: {0}",
   "操作…": "Czynności…",
   "操作回执对应的条目已变化，请关闭后重新打开。": "Element powiązany z tym wynikiem się zmienił. Zamknij go i otwórz ponownie.",
   "操作已完成。": "Operacja zakończona.",

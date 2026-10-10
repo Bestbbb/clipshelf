@@ -74,8 +74,8 @@ public final class HistoryStore: @unchecked Sendable {
     var ownedFilesSchemaReady = false
     var contentQuotaSchemaReady = false
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-    static let columns = "id, text, source_app, source_bundle_id, copied_at, rtf, html, parts, renamed_title, ocr_text, pinboard_id, is_in_history, revision, content_kind, pinboard_order, origin_device_id, origin_device_name, origin_device_conflict"
-    private static let metadataColumns = "id, text, source_app, source_bundle_id, copied_at, NULL, NULL, parts, renamed_title, ocr_text, pinboard_id, is_in_history, revision, content_kind, pinboard_order, origin_device_id, origin_device_name, origin_device_conflict"
+    static let columns = "id, text, source_app, source_bundle_id, copied_at, rtf, html, parts, renamed_title, ocr_text, pinboard_id, is_in_history, revision, content_kind, pinboard_order, origin_device_id, origin_device_name, origin_device_conflict, local_history_order, pinboard_order_identity"
+    private static let metadataColumns = "id, text, source_app, source_bundle_id, copied_at, NULL, NULL, parts, renamed_title, ocr_text, pinboard_id, is_in_history, revision, content_kind, pinboard_order, origin_device_id, origin_device_name, origin_device_conflict, local_history_order, pinboard_order_identity"
 
     public convenience init(databaseURL: URL, recordsLocalOrigin: Bool = false,
                             spaceCoordinator: StorageSpaceCoordinator? = nil) throws {
@@ -132,7 +132,7 @@ public final class HistoryStore: @unchecked Sendable {
     public func load(limit: Int = 500) throws -> [ClipboardRecord] {
         guard limit > 0 else { return [] }
         return try synchronized {
-            let statement = try prepare("SELECT \(Self.columns) FROM clipboard_records WHERE is_in_history = 1 ORDER BY rowid DESC LIMIT ?")
+            let statement = try prepare("SELECT \(Self.columns) FROM clipboard_records WHERE is_in_history = 1 ORDER BY local_history_order DESC LIMIT ?")
             defer { sqlite3_finalize(statement) }
             try check(sqlite3_bind_int64(statement, 1, Int64(clamping: limit)))
             var records: [ClipboardRecord] = []
@@ -270,6 +270,7 @@ public final class HistoryStore: @unchecked Sendable {
             let status = sqlite3_step(statement)
             if status == SQLITE_DONE { return nil }
             try check(status, allowingRow: true)
+            try requireHistoryOrderColumn(statement, at: 1)
             return Int(sqlite3_column_int64(statement, 0))
         }
     }
@@ -350,14 +351,14 @@ public final class HistoryStore: @unchecked Sendable {
             if let date = query.copiedBefore { clauses.append("copied_at <= ?"); dates.append(date) }
             guard dates.allSatisfy({ $0.timeIntervalSinceReferenceDate.isFinite }) else { throw HistoryStoreError.invalidTimestamp }
             if query.sortOrder == .pinboard, query.pinboardIDs.count != 1 { throw HistoryStoreError.invalidPinboardItemOrder }
-            let ordering = query.sortOrder == .pinboard ? Self.pinboardOrderingSQL : "rowid DESC"
+            let ordering = query.sortOrder == .pinboard ? Self.pinboardOrderingSQL : "local_history_order DESC"
             let sql: String
             if countOnly {
                 sql = "SELECT count(*) FROM clipboard_records WHERE \(clauses.joined(separator: " AND "))"
             } else if selectionOnly {
-                sql = "SELECT id, revision FROM clipboard_records WHERE \(clauses.joined(separator: " AND ")) ORDER BY \(ordering)"
+                sql = "SELECT id, revision, local_history_order FROM clipboard_records WHERE \(clauses.joined(separator: " AND ")) ORDER BY \(ordering)"
             } else if recordID != nil {
-                sql = "SELECT position FROM (SELECT id, row_number() OVER (ORDER BY \(ordering)) - 1 AS position FROM clipboard_records WHERE \(clauses.joined(separator: " AND "))) WHERE id = ?"
+                sql = "SELECT position, local_history_order FROM (SELECT id, local_history_order, row_number() OVER (ORDER BY \(ordering)) - 1 AS position FROM clipboard_records WHERE \(clauses.joined(separator: " AND "))) WHERE id = ?"
             } else {
                 sql = "SELECT \(metadataOnly ? Self.metadataColumns : Self.columns) FROM clipboard_records WHERE \(clauses.joined(separator: " AND ")) ORDER BY \(ordering) LIMIT ? OFFSET ?"
             }
@@ -403,6 +404,9 @@ public final class HistoryStore: @unchecked Sendable {
         next.originDeviceID = current.originDeviceID
         next.originDeviceName = current.originDeviceName
         next.originDeviceConflict = current.originDeviceConflict
+        // Stable rank-tie identity belongs to ordering, not to an editable content snapshot.
+        // Preserve it even when an older caller omits the field or moves the item to another board.
+        next.pinboardOrderIdentity = current.pinboardOrderIdentity
         if next.pinboardID == current.pinboardID {
             next.pinboardOrder = current.pinboardOrder
         } else {
@@ -597,12 +601,14 @@ public final class HistoryStore: @unchecked Sendable {
               board.color.dropFirst().allSatisfy(\.isHexDigit) else { throw HistoryStoreError.invalidPinboard }
     }
 
-    func insert(_ record: ClipboardRecord) throws {
+    func insert(_ record: ClipboardRecord, historyOrder: Int64? = nil) throws {
         try validate(record)
-        let statement = try prepare("INSERT INTO clipboard_records (\(Self.columns)) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        if let historyOrder { try validateRestoredHistoryOrderWithoutLock(historyOrder) }
+        let statement = try prepare("INSERT INTO clipboard_records (\(Self.columns)) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)")
         defer { sqlite3_finalize(statement) }
         try bindRecord(record, to: statement)
         try stepToCompletion(statement)
+        if let historyOrder { try restoreHistoryOrderWithoutLock(id: record.id, order: historyOrder) }
     }
 
     func bindRecord(_ record: ClipboardRecord, to statement: OpaquePointer) throws {
@@ -628,6 +634,7 @@ public final class HistoryStore: @unchecked Sendable {
         try bind(record.originDeviceID?.uuidString, at: 16, to: statement)
         try bind(record.originDeviceName, at: 17, to: statement)
         try check(sqlite3_bind_int(statement, 18, record.originDeviceConflict ? 1 : 0))
+        try bind(record.pinboardOrderIdentity?.uuidString, at: 19, to: statement)
     }
 
     func replaceContents(_ record: ClipboardRecord) throws {
@@ -638,7 +645,7 @@ public final class HistoryStore: @unchecked Sendable {
             copied_at = ?5, rtf = ?6, html = ?7, parts = ?8, renamed_title = ?9,
             ocr_text = ?10, pinboard_id = ?11, is_in_history = ?12, revision = ?13,
             content_kind = ?14, pinboard_order = ?15, origin_device_id = ?16,
-            origin_device_name = ?17, origin_device_conflict = ?18 WHERE id = ?1
+            origin_device_name = ?17, origin_device_conflict = ?18, pinboard_order_identity = ?19 WHERE id = ?1
             """)
         defer { sqlite3_finalize(statement) }
         try bindRecord(record, to: statement)
@@ -759,7 +766,7 @@ public final class HistoryStore: @unchecked Sendable {
             return Int(sqlite3_column_int(versionStatement, 0))
         }
         let observedVersion = try schemaVersion()
-        if (1...12).contains(observedVersion) { try recoveryDatabaseBackup(reason: "migration-v\(observedVersion)") }
+        if (1...13).contains(observedVersion) { try recoveryDatabaseBackup(reason: "migration-v\(observedVersion)") }
         suppressSyncCapture = true
         defer { suppressSyncCapture = false }
         try transaction {
@@ -812,9 +819,10 @@ public final class HistoryStore: @unchecked Sendable {
                     try stepToCompletion(update)
                 }
                 try execute("PRAGMA user_version = 2")
-            case 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13: break
+            case 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14: break
             default: throw HistoryStoreError.unsupportedSchemaVersion(version)
             }
+            try initializeLocalHistoryOrder(previousVersion: version)
             try execute("CREATE TABLE IF NOT EXISTS pinboard_order_backfill(board_id TEXT PRIMARY KEY REFERENCES pinboards(id) ON DELETE CASCADE)")
             if version < 7 {
                 let columns = try prepare("PRAGMA table_info(clipboard_records)")
@@ -840,7 +848,7 @@ public final class HistoryStore: @unchecked Sendable {
             try createOwnedSyncSchema(markLegacy: version < 11)
             try createOwnedStorageSchema(protectLegacy: version > 0 && version < 12)
             try initializeContentQuotaSchema(previousVersion: version)
-            try execute("PRAGMA user_version = 13")
+            try execute("PRAGMA user_version = 14")
             syncSchemaReady = true
         }
     }
@@ -877,7 +885,7 @@ public final class HistoryStore: @unchecked Sendable {
     }
 
     func latestRecord() throws -> ClipboardRecord? {
-        let statement = try prepare("SELECT \(Self.columns) FROM clipboard_records ORDER BY rowid DESC LIMIT 1")
+        let statement = try prepare("SELECT \(Self.columns) FROM clipboard_records ORDER BY local_history_order DESC LIMIT 1")
         defer { sqlite3_finalize(statement) }
         let status = sqlite3_step(statement)
         if status == SQLITE_DONE { return nil }
@@ -886,6 +894,7 @@ public final class HistoryStore: @unchecked Sendable {
     }
 
     func decode(_ statement: OpaquePointer) throws -> ClipboardRecord {
+        try requireHistoryOrderColumn(statement, at: 18)
         guard let idString = textColumn(statement, 0), let id = UUID(uuidString: idString),
               let text = textColumn(statement, 1) else {
             throw HistoryStoreError.invalidStoredRecord
@@ -902,12 +911,15 @@ public final class HistoryStore: @unchecked Sendable {
             revision: Int(sqlite3_column_int64(statement, 12)),
             pinboardOrder: sqlite3_column_type(statement, 14) == SQLITE_NULL ? nil : sqlite3_column_int64(statement, 14),
             originDeviceID: textColumn(statement, 15).flatMap(UUID.init(uuidString:)),
-            originDeviceName: textColumn(statement, 16), originDeviceConflict: sqlite3_column_int(statement, 17) != 0
+            originDeviceName: textColumn(statement, 16), originDeviceConflict: sqlite3_column_int(statement, 17) != 0,
+            pinboardOrderIdentity: try decodePinboardOrderIdentity(statement, at: 19)
         )
         return ownedFilesSchemaReady ? try rebasingOwnedFileURLsWithoutLock(record) : record
     }
 
     func decodeMetadata(_ statement: OpaquePointer) throws -> ClipboardRecordMetadata {
+        try requireHistoryOrderColumn(statement, at: 18)
+        _ = try decodePinboardOrderIdentity(statement, at: 19)
         guard let id = textColumn(statement, 0).flatMap(UUID.init(uuidString:)),
               let text = textColumn(statement, 1),
               let rawKind = textColumn(statement, 13), let kind = ClipboardContentKind(rawValue: rawKind) else {

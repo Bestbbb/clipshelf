@@ -115,7 +115,7 @@ final class HistorySelectionTests: XCTestCase {
         XCTAssertThrowsError(try reader.validateSelection([ref(first), ref(second)]))
     }
 
-    func testLocalMoveStepUndoAndDeleteNeedNoAttachments() throws {
+    func testLocalMoveAndUndoNeedNoAttachmentsButAuthenticatedDeletionRequiresThem() throws {
         let store = try store()
         let board = try store.createPinboard(name: "One"), other = try store.createPinboard(name: "Two")
         let records = try (0..<305).map { try store.create(rich("\($0)", board: board.id, inHistory: false)) }
@@ -135,8 +135,8 @@ final class HistorySelectionTests: XCTestCase {
         XCTAssertEqual(try store.itemMetadata(id: records[0].id)?.isInHistory, true)
         try store.undoSelectionMove(unpin)
         XCTAssertEqual(try store.itemMetadata(id: records[0].id)?.isInHistory, false)
-        try store.deleteSelection(try store.selectionSnapshot(HistoryQuery(pinboardIDs: [board.id])).references)
-        XCTAssertEqual(try ids(store, board: board.id), [])
+        XCTAssertThrowsError(try store.deleteSelection(try store.selectionSnapshot(HistoryQuery(pinboardIDs: [board.id])).references))
+        XCTAssertEqual(try ids(store, board: board.id), records.map(\.id))
     }
 
     func testMoveAndUndoValidateSelectionAnchorAndRebalancedNeighboursAtomically() throws {
@@ -229,15 +229,24 @@ final class HistorySelectionTests: XCTestCase {
         XCTAssertNil(try store.itemMetadata(id: record.id))
     }
 
-    func testSyncedDeleteTombstoneCannotBeResurrectedByBatchUndo() throws {
+    func testSyncedDeleteUndoCreatesFreshIdentityAndRetainsOldTombstone() throws {
         let store = try store()
         try store.configureSync(accountID: "account")
         let record = try store.create(ClipboardRecord(text: "synced"))
         let deletion = try store.deleteSelection([ref(record)])
         let before = try store.pendingSyncOperations(accountID: "account")
-        XCTAssertThrowsError(try store.restoreDeletedSelection([record], undo: deletion))
+        let receipt = try store.restoreDeletedSelection([record], undo: deletion)
+        let restored = try XCTUnwrap(store.resolveSelection(receipt.references).first)
+        XCTAssertNotEqual(restored.id, record.id)
+        XCTAssertEqual(restored.text, record.text)
+        XCTAssertEqual(restored.revision, 1)
         XCTAssertNil(try store.itemMetadata(id: record.id))
-        XCTAssertEqual(try store.pendingSyncOperations(accountID: "account"), before)
+        XCTAssertTrue(try store.hasSyncTombstone(accountID: "account", kind: .clipboard, entityID: record.id))
+        let after = try store.pendingSyncOperations(accountID: "account")
+        XCTAssertEqual(Array(after.prefix(before.count)), before)
+        XCTAssertEqual(after.count, before.count + 1)
+        XCTAssertEqual(after.last?.entityID, restored.id)
+        XCTAssertEqual(after.last?.action, .upsert)
     }
 
     func testUndoRejectsNewBoardPlacementOrRevokedPermissionAndPreservesAllRows() throws {

@@ -645,6 +645,7 @@
   "搜索剪贴板历史": "Hledat v historii schránky",
   "撤销": "Odvolat",
   "撤销失败": "Oprávnění se nepodařilo odvolat",
+  "撤销未完成，已保留重试机会：{0}": "Akci se nepodařilo vrátit zpět. Můžete to zkusit znovu: {0}",
   "操作…": "Akce…",
   "操作回执对应的条目已变化，请关闭后重新打开。": "Položka spojená s tímto výsledkem se změnila. Zavřete ji a otevřete znovu.",
   "操作已完成。": "Operace byla dokončena.",

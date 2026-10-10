@@ -645,6 +645,7 @@
   "搜索剪贴板历史": "Zwischenablageverlauf durchsuchen",
   "撤销": "Widerrufen",
   "撤销失败": "Berechtigung konnte nicht widerrufen werden",
+  "撤销未完成，已保留重试机会：{0}": "Das Rückgängigmachen wurde nicht abgeschlossen. Du kannst es erneut versuchen: {0}",
   "操作…": "Aktionen…",
   "操作回执对应的条目已变化，请关闭后重新打开。": "Der zu diesem Ergebnis gehörende Eintrag wurde geändert. Schließen und öffnen Sie ihn erneut.",
   "操作已完成。": "Vorgang abgeschlossen.",

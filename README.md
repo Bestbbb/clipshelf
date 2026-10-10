@@ -80,6 +80,13 @@ attachments stay read-only, and original-format output preserves the other objec
 Edit Undo also checks the saved content, so a backup that reuses the same record
 ID and revision cannot be overwritten by a stale Undo action.
 
+Deleting and undoing a synced item restores its content as a new item while
+retaining the old deletion marker. Local history position, board position and
+owned files are preserved, and earlier edits and moves remain undoable when
+their captured state still matches. Temporary storage failures retain the Undo
+action for retry. Older clients can read restored items but may order equal-rank
+board items differently until upgraded.
+
 Multi-selection merges only complete ordinary text objects, preserving supported
 RTF formatting. A selection containing other formats keeps every original object
 and representation in order. Explicit plain-text conversion reads actual text or

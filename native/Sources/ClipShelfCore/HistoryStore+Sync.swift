@@ -465,10 +465,14 @@ extension HistoryStore {
                     return
                 }
                 record = resolvingOrigin(record, existing: current)
+                // A pre-field peer cannot erase a known stable tie identity. Same-board full
+                // snapshots preserve the independently arbitrated local ordering component.
+                record.pinboardOrderIdentity = record.pinboardOrderIdentity ?? current.pinboardOrderIdentity
                 if record.pinboardID == current.pinboardID {
                     // Full snapshots carry their author's last-known position. Position-only operations
                     // arbitrate it independently, so a concurrent text edit cannot undo a drag.
                     record.pinboardOrder = current.pinboardOrder ?? record.pinboardOrder
+                    record.pinboardOrderIdentity = current.pinboardOrderIdentity ?? record.pinboardOrderIdentity
                 } else { try setSyncOrderHead(operation, boardID: record.pinboardID) }
                 if record != current { record.revision = max(record.revision, current.revision + 1) }
                 try replaceContents(record)
@@ -492,8 +496,15 @@ extension HistoryStore {
             let follows = try syncIsAncestor(head.id, of: operation.baseOperationID, accountID: operation.accountID)
             if !follows, operation.operationID.uuidString < head.id.uuidString { return }
         }
-        if current.pinboardOrder != incoming.pinboardOrder {
+        let rankChanged = current.pinboardOrder != incoming.pinboardOrder
+        if rankChanged {
             try writePlacement(id: current.id, boardID: current.pinboardID, rank: incoming.pinboardOrder)
+        }
+        if let identity = incoming.pinboardOrderIdentity, identity != current.pinboardOrderIdentity {
+            try reserveMetadataWriteWithoutLock()
+            try reserveExistingRecordRewriteWithoutLock(id: current.id)
+            try syncExecute("UPDATE clipboard_records SET pinboard_order_identity = ?, revision = revision + ? WHERE id = ?",
+                            [identity.uuidString, rankChanged ? "0" : "1", current.id.uuidString])
         }
         try setSyncOrderHead(operation, boardID: current.pinboardID)
     }

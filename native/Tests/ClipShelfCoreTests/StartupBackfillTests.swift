@@ -149,7 +149,7 @@ final class StartupBackfillTests: XCTestCase {
         let record = try XCTUnwrap(created)
         XCTAssertEqual(try opened.item(id: record.id), record)
         XCTAssertEqual(try token(opened, record.id), createdToken)
-        XCTAssertEqual(try opened.syncScalar("PRAGMA user_version", []), "13")
+        XCTAssertEqual(try opened.syncScalar("PRAGMA user_version", []), "14")
     }
 
     func testVersionSixRechecksVersionAfterBackupAndConcurrentMigration() throws {
@@ -177,7 +177,7 @@ final class StartupBackfillTests: XCTestCase {
         XCTAssertEqual(try rows(opened, "SELECT * FROM sync_content_heads ORDER BY entity_id"), peerHeads)
         XCTAssertEqual(try rows(opened, "SELECT operation_id, hex(payload) FROM sync_outbox ORDER BY rowid"), outbox)
         XCTAssertEqual(try opened.load().count, records.count)
-        XCTAssertEqual(try opened.syncScalar("PRAGMA user_version", []), "13")
+        XCTAssertEqual(try opened.syncScalar("PRAGMA user_version", []), "14")
     }
 
     func testVersionSixActuallyBackfillsBothHeadsAndTokensWithoutChangingOutbox() throws {
@@ -189,7 +189,7 @@ final class StartupBackfillTests: XCTestCase {
         try original.execute("DROP TABLE sync_content_heads; DROP TABLE sync_order_heads; UPDATE clipboard_records SET pinboard_order = NULL; DELETE FROM sync_dirty; PRAGMA user_version = 6")
         let trace = StartupSQLTrace(), migrated = try store(trace: trace)
         XCTAssertEqual(trace.backfills.count, 3)
-        XCTAssertEqual(try migrated.syncScalar("PRAGMA user_version", []), "13")
+        XCTAssertEqual(try migrated.syncScalar("PRAGMA user_version", []), "14")
         XCTAssertEqual(try rows(migrated, "SELECT * FROM sync_content_heads ORDER BY entity_id"), heads)
         XCTAssertEqual(try rows(migrated, "SELECT entity_id, operation_id FROM sync_order_heads ORDER BY entity_id"),
                        try rows(migrated, "SELECT entity_id, operation_id FROM sync_heads WHERE entity_kind='clipboard' ORDER BY entity_id"))
@@ -235,7 +235,7 @@ final class StartupBackfillTests: XCTestCase {
             assertCorrupt { try self.store(name) }
             XCTAssertNil(try original.syncScalar("SELECT type FROM sqlite_master WHERE name = ?", [table]))
             XCTAssertEqual(try original.item(id: records[0].id), records[0])
-            XCTAssertEqual(try original.syncScalar("PRAGMA user_version", []), "13")
+            XCTAssertEqual(try original.syncScalar("PRAGMA user_version", []), "14")
         }
     }
 
@@ -266,7 +266,7 @@ final class StartupBackfillTests: XCTestCase {
                 operation_id TEXT NOT NULL, board_id TEXT NOT NULL, PRIMARY KEY(account_id, entity_id));
             """)
         assertCorrupt { try self.store() }
-        XCTAssertEqual(try original.syncScalar("PRAGMA user_version", []), "13")
+        XCTAssertEqual(try original.syncScalar("PRAGMA user_version", []), "14")
     }
 
     func testExplicitNotNullCleanupPrimaryKeyRemainsCompatible() throws {
