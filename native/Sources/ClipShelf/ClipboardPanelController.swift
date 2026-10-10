@@ -146,6 +146,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     /// Injectable presenter for unshown-window tests; production uses the native file window.
     var makeFilePreview: ((ClipboardRecord, Bool) -> FileReferencePreviewController)?
     var makeImagePreview: ((ClipboardRecord, String) -> ImagePreviewController)?
+    var makeMultipartPreview: ((ClipboardRecord) -> MultipartPreviewController)?
     var onSettings: (() -> Void)?
     var onUndo: (() -> Void)?
     var onDropItems: (([NSPasteboardItem], UUID?) -> Void)?
@@ -287,6 +288,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private var linkPreview: LinkPreviewController?
     private var imagePreview: ImagePreviewController?
     private var filePreview: FileReferencePreviewController?
+    private var multipartPreview: MultipartPreviewController?
     private var detailPDFView: PDFView?
     private var pdfPageObserver: NSObjectProtocol?
     private var pdfLoadTask: Task<Void, Never>?
@@ -406,7 +408,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             requestDetailClose { [weak self] in self?.present(contents, on: screen, status: status) }
             return
         }
-        filePreview?.dismiss()
+        filePreview?.dismiss(); multipartPreview?.dismiss()
         cancelBoundaryNavigation()
         closeAllFilters(restoreFocus: false)
         viewGeneration = UUID()
@@ -645,7 +647,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         requestedThumbnails.removeAll()
         linkPreview?.dismiss()
         imagePreview?.dismiss()
-        filePreview?.dismiss()
+        filePreview?.dismiss(); multipartPreview?.dismiss()
         filterPopover?.close()
         filterPopover = nil
         insertionLine.isHidden = true
@@ -683,7 +685,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         detailColorWell?.deactivate()
         detailHidden = true
         detailWindow?.orderOut(nil)
-        linkPreview?.dismiss(); imagePreview?.dismiss(); filePreview?.dismiss()
+        linkPreview?.dismiss(); imagePreview?.dismiss(); filePreview?.dismiss(); multipartPreview?.dismiss()
         filterPopover?.close(); filterPopover = nil
         if let window { presentationMotion.hide(window: window) }
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor); self.eventMonitor = nil }
@@ -1729,7 +1731,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     /// The whole captured set is validated before exposing any payload to an output callback.
     private func resolveReferences(_ references: [ClipboardSelectionReference], forOutput: Bool = false, action: @escaping ([ClipboardRecord]) -> Void) {
         guard !forOutput || detailWindow == nil else { return }
-        guard !references.isEmpty, isVisible, filePreview == nil, !queryPending, boundaryNavigationID == nil, pageMatchesQuery,
+        guard !references.isEmpty, isVisible, filePreview == nil, multipartPreview == nil, !queryPending, boundaryNavigationID == nil, pageMatchesQuery,
               !selection.isInvalid, selectionRequestID == nil else { return }
         let actionID = UUID(), session = viewGeneration, scope = scopeGeneration
         outputActionGeneration = actionID
@@ -1797,7 +1799,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                 && !self.isEditingSearch && self.window?.attachedSheet == nil
                 && self.boundaryNavigationID == nil && self.allFiltersController == nil
                 && self.filterPopover?.isShown != true && self.filePreview == nil && self.detailWindow == nil
-                && self.imagePreview == nil && self.linkPreview == nil
+                && self.imagePreview == nil && self.linkPreview == nil && self.multipartPreview == nil
         }
     }
 
@@ -1894,6 +1896,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         // Repeated Return/Quick Paste is consumed below. It must not cancel the
         // original request while that request is still loading its payload.
         if !event.isARepeat { invalidateOutputContext() }
+        if let multipartPreview {
+            guard event.window === window else { return false }
+            if event.keyCode == 53, !event.isARepeat { multipartPreview.dismiss() }
+            return true
+        }
         if let filePreview {
             // Child windows and their sheets retain native text/button handling. A key
             // accidentally delivered to history while the file window is open cannot paste.
@@ -2031,7 +2038,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                             replaceSelectionOnFocus: Bool = false, boundaryNavigation: PanelBoundaryNavigation? = nil) {
         if boundaryNavigation == nil { cancelBoundaryNavigation() }
         if resetLimit {
-            filePreview?.dismiss()
+            filePreview?.dismiss(); multipartPreview?.dismiss()
             closeAllFilters(restoreFocus: false)
             scopeGeneration = UUID()
             selectionRequestID = nil
@@ -2335,18 +2342,22 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         moveReferences(selection.references, to: payload["boardID"].flatMap(UUID.init(uuidString:)))
     }
 
-    private func showDetail(_ record: ClipboardRecord, editing: Bool) {
+    private func showDetail(_ record: ClipboardRecord, editing: Bool, previewAllParts: Bool = true) {
         presentationMotion.finish()
         guard isVisible else { return }
         cardViews.forEach { $0.cancelPendingDrag() }
         invalidateOutputContext()
         if detailWindow != nil {
-            requestDetailClose { [weak self] in self?.showDetail(record, editing: editing) }
+            requestDetailClose { [weak self] in self?.showDetail(record, editing: editing, previewAllParts: previewAllParts) }
             return
         }
         linkPreview?.dismiss()
         imagePreview?.dismiss()
-        filePreview?.dismiss()
+        filePreview?.dismiss(); multipartPreview?.dismiss()
+        if !editing, previewAllParts, record.parts.count > 1 {
+            showMultipartPreview(record)
+            return
+        }
         // Mixed-record edits select one object before routing by the aggregate kind.
         if editing, record.parts.count > 1 {
             showTextDetail(record, editing: true)
@@ -2414,6 +2425,43 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             return
         }
         showTextDetail(record, editing: editing)
+    }
+
+    private func showMultipartPreview(_ record: ClipboardRecord) {
+        let preview = makeMultipartPreview?(record) ?? MultipartPreviewController(record: record)
+        let session = viewGeneration, scope = scopeGeneration
+        multipartPreview = preview
+        let current: () -> Bool = { [weak self, weak preview] in
+            guard let self, let preview else { return false }
+            return self.isVisible && self.viewGeneration == session && self.scopeGeneration == scope
+                && self.multipartPreview === preview
+        }
+        preview.isContextCurrent = current
+        preview.onDismiss = { [weak self, weak preview] in
+            guard let self, self.multipartPreview === preview else { return }
+            self.multipartPreview = nil
+            if self.isVisible, self.viewGeneration == session, self.scopeGeneration == scope {
+                self.window?.makeKey(); self.window?.makeFirstResponder(self.resultsView)
+            }
+        }
+        preview.onEdit = { [weak self, weak preview] index in
+            guard let self, current(), record.parts.indices.contains(index) else { return }
+            preview?.dismiss()
+            // The editor acquires a fresh full-record snapshot; a preview projection
+            // must never become editing authority or change the original part index.
+            self.showTextDetail(record, editing: true, partIndex: index)
+        }
+        preview.onImageTools = { [weak self, weak preview] in
+            guard let self, current() else { return }
+            preview?.dismiss()
+            self.showDetail(record, editing: false, previewAllParts: false)
+        }
+        preview.onFileReferences = { [weak self, weak preview] in
+            guard let self, current() else { return }
+            preview?.dismiss()
+            self.showFileReferences(record)
+        }
+        preview.present(relativeTo: window)
     }
 
     private func showTextDetail(_ record: ClipboardRecord, editing: Bool, renameReference: ClipboardSelectionReference? = nil,
@@ -2596,7 +2644,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             return
         }
         cancelBoundaryNavigation(); pendingActionID = nil
-        linkPreview?.dismiss(); imagePreview?.dismiss(); detailWindow?.close(); filePreview?.dismiss()
+        linkPreview?.dismiss(); imagePreview?.dismiss(); detailWindow?.close(); filePreview?.dismiss(); multipartPreview?.dismiss()
         let preview = makeFilePreview?(record, preferUnavailable) ?? FileReferencePreviewController(record: record, preferUnavailable: preferUnavailable)
         preview.publications = publications
         let session = viewGeneration, scope = scopeGeneration
@@ -2650,7 +2698,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         if filePreview?.ownsWindow(candidate) == true { return true }
         var current: NSWindow? = candidate
         while let next = current {
-            if next === window || next === detailWindow || next === linkPreview?.window || next === imagePreview?.window { return true }
+            if next === window || next === detailWindow || next === linkPreview?.window || next === imagePreview?.window || next === multipartPreview?.window { return true }
             current = next.sheetParent ?? next.parent
         }
         return false
@@ -2659,7 +2707,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     func contains(screenPoint: NSPoint) -> Bool {
         if detailColorWell?.isActive == true, NSColorPanel.shared.isVisible, NSColorPanel.shared.frame.contains(screenPoint) { return true }
         if let sheet = detailWindow?.attachedSheet, sheet.isVisible, sheet.frame.contains(screenPoint) { return true }
-        return [window, detailWindow, linkPreview?.window, imagePreview?.window].compactMap { $0 }
+        return [window, detailWindow, linkPreview?.window, imagePreview?.window, multipartPreview?.window].compactMap { $0 }
             .contains { $0.isVisible && $0.frame.contains(screenPoint) } || filePreview?.contains(screenPoint: screenPoint) == true
     }
 
@@ -2668,7 +2716,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         if closing === window {
             presentationMotion.cancelPreservingFrame()
             if detailIsDirty || detailSaveID != nil { hidePreservingDraft() }
-            filePreview?.dismiss()
+            filePreview?.dismiss(); multipartPreview?.dismiss()
             cardViews.forEach { $0.cancelPendingDrag() }
             pageRequestID = nil
             queryPending = false
@@ -3040,7 +3088,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             requestDetailClose { [weak self] in self?.rename(reference) }
             return
         }
-        linkPreview?.dismiss(); imagePreview?.dismiss(); filePreview?.dismiss()
+        linkPreview?.dismiss(); imagePreview?.dismiss(); filePreview?.dismiss(); multipartPreview?.dismiss()
         let placeholder = ClipboardRecord(id: reference.id, text: "", revision: reference.revision)
         showTextDetail(placeholder, editing: true, renameReference: reference)
     }

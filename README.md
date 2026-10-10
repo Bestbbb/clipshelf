@@ -29,6 +29,12 @@ selection are available immediately. Reduce Motion skips the entrance animation.
 Dismissal remains immediate, including during an unfinished animation; reopening
 cannot revive an earlier transition or lose a preserved editing draft.
 
+Space previews every object in a mixed clipboard record through an object
+selector, including rich text, embedded attachments, images, PDFs and file
+locations. Unsupported formats remain listed with their sizes; HTML is shown as
+source. Previews preserve the original bytes, and switching objects cancels
+stale decoding. Editing and file/image tools retain the complete source record.
+
 The interface supports 16 languages, including English, Simplified/Traditional
 Chinese, Japanese, Korean and Hebrew with right-to-left navigation.
 Choose **Language…** from the menu or welcome dialog; saving takes effect on the
