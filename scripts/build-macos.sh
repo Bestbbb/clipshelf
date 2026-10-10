@@ -31,6 +31,10 @@ if [[ "$DISTRIBUTION" == "development" && -z "${CODESIGN_IDENTITY:-}" && -f "$LO
         export CLIPSHELF_SIGNING_KEYCHAIN="$LOCAL_SIGNING_DIR/development.keychain-db"
         export CLIPSHELF_LOCAL_SIGNING=1
         /usr/bin/security unlock-keychain -p "$(cat "$LOCAL_SIGNING_DIR/keychain-password")" "$CLIPSHELF_SIGNING_KEYCHAIN"
+        export CODESIGN_IDENTITY
+        # codesign also needs this keychain in the search list, even when its
+        # --keychain argument is explicit. Restore that list when the build ends.
+        exec python3 "$PROJECT_ROOT/scripts/with-local-signing.py" "$PROJECT_ROOT/scripts/build-macos.sh"
     else
         echo "Local signing certificate is not trusted for code signing; using an ad-hoc preview build. Accessibility may require reauthorization." >&2
     fi
