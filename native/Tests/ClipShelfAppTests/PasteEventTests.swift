@@ -3,6 +3,20 @@ import XCTest
 @testable import ClipShelf
 
 final class PasteEventTests: XCTestCase {
+    @MainActor func testPasteEventsAreDeliveredOnceToCapturedProcessWithoutGlobalPosting() throws {
+        var posted: [(CGEvent, pid_t)] = []
+        let dispatch = try XCTUnwrap(PasteSystemEnvironment.commandVDispatch(to: 123,
+            restoring: [], post: { posted.append(($0, $1)) }))
+        XCTAssertTrue(posted.isEmpty)
+        XCTAssertEqual(dispatch.method, .keyboard)
+        XCTAssertTrue(dispatch.send())
+        XCTAssertEqual(posted.map { $0.1 }, [123, 123])
+        XCTAssertEqual(posted.map { $0.0.type }, [.keyDown, .keyUp])
+        XCTAssertTrue(posted[0].0.flags.contains(.maskCommand))
+        XCTAssertFalse(posted[1].0.flags.contains(.maskCommand))
+        XCTAssertNil(PasteSystemEnvironment.commandVDispatch(to: 0, restoring: [], post: { _, _ in XCTFail() }))
+    }
+
     @MainActor func testNormalPasteReleasesSyntheticCommandWithoutPosting() throws {
         let events = try XCTUnwrap(PasteSystemEnvironment.commandVEvents(restoring: []))
         XCTAssertEqual(events.down.type, .keyDown)

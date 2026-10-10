@@ -40,7 +40,7 @@ protocol PasteEnvironment: AnyObject {
     func focusState(for target: PasteCoordinator.Target) -> PasteFocusState
     var heldModifiers: PasteModifiers { get }
     var focusSettleInterval: TimeInterval { get }
-    func preparePaste(for target: PasteCoordinator.Target, allowMenu: Bool) -> PasteDispatch?
+    func preparePaste(for target: PasteCoordinator.Target) -> PasteDispatch?
     func prepareCommandV() -> (() -> Void)?
     func waitForReadiness() async throws
 }
@@ -49,7 +49,7 @@ extension PasteEnvironment {
     func destinationChoices() -> [PasteCoordinator.Target] { [] }
     func isLauncherSurface(_ target: PasteCoordinator.Target) -> Bool { false }
     var focusSettleInterval: TimeInterval { 0.08 }
-    func preparePaste(for target: PasteCoordinator.Target, allowMenu: Bool) -> PasteDispatch? {
+    func preparePaste(for target: PasteCoordinator.Target) -> PasteDispatch? {
         guard let send = prepareCommandV() else { return nil }
         return PasteDispatch(method: .keyboard, send: { send(); return true })
     }
@@ -202,14 +202,22 @@ final class PasteSystemEnvironment: PasteEnvironment {
         return { events.down.post(tap: .cghidEventTap); events.up.post(tap: .cghidEventTap) }
     }
 
-    func preparePaste(for target: PasteCoordinator.Target, allowMenu: Bool) -> PasteDispatch? {
-        if allowMenu, let command = PasteMenuCommand.find(in: AXUIElementCreateApplication(target.application.processIdentifier)) {
-            return PasteDispatch(method: .menu, send: {
-                AXUIElementPerformAction(command, kAXPressAction as CFString) == .success
-            })
-        }
-        guard let send = prepareCommandV() else { return nil }
-        return PasteDispatch(method: .keyboard, send: { send(); return true })
+    func preparePaste(for target: PasteCoordinator.Target) -> PasteDispatch? {
+        // A nonactivating shelf can own keyboard focus while the destination is
+        // still the frontmost application. Deliver to that captured process,
+        // rather than relying on the global event route or an AX menu action
+        // whose success does not establish that the input handled Paste.
+        Self.commandVDispatch(to: target.application.processIdentifier,
+                              restoring: CGEventSource.flagsState(.combinedSessionState))
+    }
+
+    static func commandVDispatch(to pid: pid_t, restoring flags: CGEventFlags,
+                                post: @escaping (CGEvent, pid_t) -> Void = { $0.postToPid($1) }) -> PasteDispatch? {
+        guard pid > 0, let events = commandVEvents(restoring: flags) else { return nil }
+        return PasteDispatch(method: .keyboard, send: {
+            post(events.down, pid); post(events.up, pid)
+            return true
+        })
     }
 
     /// Build without posting so release-state regressions can be checked without

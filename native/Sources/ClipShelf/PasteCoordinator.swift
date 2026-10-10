@@ -24,13 +24,15 @@ final class PasteCoordinator {
     enum Outcome: Equatable { case dispatched, copiedOnly, cancelled, failed, busy }
 
     private final class Attempt {
+        let startedAt: TimeInterval
         let target: Target?
         let isContextCurrent: (() -> Bool)?
         let onDispatched: (() -> Void)?
         let onCompleted: ((Outcome) -> Void)?
         var task: Task<Void, Never>?
         var dispatching = false
-        init(target: Target?, isContextCurrent: (() -> Bool)?, onDispatched: (() -> Void)?, onCompleted: ((Outcome) -> Void)?) {
+        init(startedAt: TimeInterval, target: Target?, isContextCurrent: (() -> Bool)?, onDispatched: (() -> Void)?, onCompleted: ((Outcome) -> Void)?) {
+            self.startedAt = startedAt
             self.target = target; self.isContextCurrent = isContextCurrent
             self.onDispatched = onDispatched; self.onCompleted = onCompleted
         }
@@ -52,6 +54,7 @@ final class PasteCoordinator {
     }
 
     var hasPermission: Bool { environment.hasPermission }
+    var hasPendingAttempt: Bool { attempt != nil }
     func requestPermission() { environment.requestPermission() }
     func returnToTargetIfIdle(_ target: Target?) {
         guard attempt == nil, let target, environment.isRunning(target),
@@ -110,7 +113,7 @@ final class PasteCoordinator {
         }
         // Claim the attempt before any callback. Dismissal, copy notifications,
         // and Stack callbacks can cancel or reenter synchronously.
-        let request = Attempt(target: target, isContextCurrent: isContextCurrent,
+        let request = Attempt(startedAt: environment.uptime, target: target, isContextCurrent: isContextCurrent,
                               onDispatched: onDispatched, onCompleted: onCompleted)
         attempt = request
         trace(.pastePrepared, target: target, state: .prepared)
@@ -151,11 +154,21 @@ final class PasteCoordinator {
         let deadline = environment.uptime + 0.9
         var lastFocus: PasteFocusState?
         var readySince: TimeInterval?
+        var restoredAfterActivation = false
         while contextIsCurrent(request) {
             guard environment.uptime < deadline else { break }
             guard clipboardIsCurrent(writtenCount, request: request), targetIsCurrent(target, request: request) else { return }
             if environment.foreground(for: target) == .target && modifiersAreReady(allowHeldCommand) {
-                let focus = environment.focusState(for: target)
+                var focus = environment.focusState(for: target)
+                // Activation can complete after the initial restoration. Retry
+                // the original input once after its process is actually active.
+                if !restoredAfterActivation && (focus == .differentElement || focus == .differentSelection) {
+                    restoredAfterActivation = true
+                    environment.restoreFocusedElement(target)
+                    guard contextIsCurrent(request), clipboardIsCurrent(writtenCount, request: request),
+                          targetIsCurrent(target, request: request) else { return }
+                    focus = environment.focusState(for: target)
+                }
                 lastFocus = focus
                 if focus == .ready {
                     let since = readySince ?? environment.uptime
@@ -165,7 +178,7 @@ final class PasteCoordinator {
                         catch { finish(request, .cancelled, failure: .waitCancelled); return }
                         continue
                     }
-                    guard let dispatch = environment.preparePaste(for: target, allowMenu: !allowHeldCommand) else {
+                    guard let dispatch = environment.preparePaste(for: target) else {
                         finish(request, .copiedOnly, message: L10n.text("无法创建粘贴按键；内容已复制。"), failure: .eventCreationFailed); return
                     }
                     // Preparing an event is not permission to send it. Recheck the
@@ -269,6 +282,17 @@ final class PasteCoordinator {
     func cancel() {
         guard let request = attempt, !request.dispatching else { return }
         finish(request, .cancelled, failure: .explicitCancellation)
+    }
+
+    /// Event delivery can lag behind the card click that started this attempt.
+    /// An older queued mouse-down cannot cancel the newer paste. A genuinely
+    /// new click still cancels before we restore or insert into an old input.
+    @discardableResult
+    func cancelForMouseDown(at timestamp: TimeInterval) -> Bool {
+        guard let request = attempt, !request.dispatching, timestamp.isFinite,
+              timestamp > request.startedAt else { return false }
+        finish(request, .cancelled, message: L10n.text("目标已改变；内容已复制，请手动粘贴。"), failure: .pointerChanged)
+        return true
     }
 
     /// Workspace notifications close the A → B → A gap between polling ticks.

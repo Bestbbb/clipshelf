@@ -37,6 +37,7 @@ enum ValidationTrace {
         case permissionOrProcessUnavailable = "permission_or_process_unavailable"
         case deadline, waitCancelled = "wait_cancelled", explicitCancellation = "explicit_cancellation"
         case finalReadinessChanged = "final_readiness_changed"
+        case pointerChanged = "pointer_changed"
     }
 
     private struct Entry: Encodable {

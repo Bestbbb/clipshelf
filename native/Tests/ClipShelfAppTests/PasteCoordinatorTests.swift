@@ -32,12 +32,13 @@ private final class PasteFakeEnvironment: PasteEnvironment {
     var raiseSucceeds = true
     var eventCreationSucceeds = true
     var focusSettleInterval: TimeInterval = 0
-    var menuAvailable = false, menuAccepted = true
+    var dispatchAccepted = true
     var dispatchMethods: [PasteDispatch.Method] = []
     var launcherSurface = false
     var activates = 0, raises = 0, focusRestores = 0, prepares = 0, dispatches = 0
     var onActivate: (() -> Void)?
     var onRaise: (() -> Void)?
+    var onRestore: (() -> Void)?
     var onPrepare: (() -> Void)?
     var onDispatch: (() -> Void)?
     var waits: [CheckedContinuation<Void, Error>] = []
@@ -54,18 +55,11 @@ private final class PasteFakeEnvironment: PasteEnvironment {
     func foreground(for target: PasteCoordinator.Target) -> PasteForeground { front }
     func activate(_ target: PasteCoordinator.Target) -> Bool { activates += 1; onActivate?(); return activationSucceeds }
     func raiseWindow(_ target: PasteCoordinator.Target) -> Bool { raises += 1; onRaise?(); return raiseSucceeds }
-    func restoreFocusedElement(_ target: PasteCoordinator.Target) { focusRestores += 1 }
+    func restoreFocusedElement(_ target: PasteCoordinator.Target) { focusRestores += 1; onRestore?() }
     func focusState(for target: PasteCoordinator.Target) -> PasteFocusState { focus }
-    func preparePaste(for target: PasteCoordinator.Target, allowMenu: Bool) -> PasteDispatch? {
-        if allowMenu && menuAvailable {
-            prepares += 1; onPrepare?()
-            return PasteDispatch(method: .menu, send: {
-                self.dispatches += 1; self.dispatchMethods.append(.menu); self.onDispatch?()
-                return self.menuAccepted
-            })
-        }
+    func preparePaste(for target: PasteCoordinator.Target) -> PasteDispatch? {
         guard let send = prepareCommandV() else { return nil }
-        return PasteDispatch(method: .keyboard, send: { self.dispatchMethods.append(.keyboard); send(); return true })
+        return PasteDispatch(method: .keyboard, send: { self.dispatchMethods.append(.keyboard); send(); return self.dispatchAccepted })
     }
     func prepareCommandV() -> (() -> Void)? {
         prepares += 1; onPrepare?()
@@ -110,11 +104,42 @@ private final class PasteHarness {
 }
 
 final class PasteCoordinatorTests: XCTestCase {
-    @MainActor func testNativePasteCommandRunsOnceAndFailureNeverRetriesWithKeys() async {
+    @MainActor func testQueuedMouseDownCannotCancelNewerPasteButNewClickCan() async {
+        let h = PasteHarness(); h.environment.focusSettleInterval = 0.08
+        h.paste(); await h.settle()
+        for timestamp in [99.9, 100, .nan, .infinity] {
+            XCTAssertFalse(h.coordinator.cancelForMouseDown(at: timestamp))
+        }
+        XCTAssertTrue(h.outcomes.isEmpty)
+        h.environment.advance(0.09); await h.settle()
+        XCTAssertEqual(h.outcomes, [.dispatched]); XCTAssertEqual(h.environment.dispatches, 1)
+        let changed = PasteHarness(); changed.environment.focusSettleInterval = 0.08
+        changed.paste(); await changed.settle()
+        XCTAssertTrue(changed.coordinator.cancelForMouseDown(at: 100.01))
+        changed.environment.advance(1); await changed.settle()
+        XCTAssertEqual(changed.outcomes, [.cancelled]); XCTAssertEqual(changed.environment.dispatches, 0)
+    }
+
+    @MainActor func testOriginalSelectionIsRestoredAgainAfterDelayedActivation() async {
+        let h = PasteHarness(); h.environment.front = .clipShelf
+        h.environment.focus = .differentSelection
+        h.environment.onRestore = {
+            if h.environment.front == .target { h.environment.focus = .ready }
+        }
+        h.paste(); await h.settle()
+        XCTAssertEqual(h.environment.focusRestores, 1)
+        XCTAssertEqual(h.environment.dispatches, 0)
+        h.environment.front = .target; h.environment.advance(0.1); await h.settle()
+        XCTAssertEqual(h.environment.focusRestores, 2)
+        XCTAssertEqual(h.outcomes, [.dispatched]); XCTAssertEqual(h.environment.dispatches, 1)
+        h.environment.onRestore = nil
+    }
+
+    @MainActor func testPasteCommandRunsOnceAndRejectedDispatchNeverRetries() async {
         for accepted in [true, false] {
-            let h = PasteHarness(); h.environment.menuAvailable = true; h.environment.menuAccepted = accepted
+            let h = PasteHarness(); h.environment.dispatchAccepted = accepted
             h.paste(); await h.settle()
-            XCTAssertEqual(h.environment.dispatchMethods, [.menu])
+            XCTAssertEqual(h.environment.dispatchMethods, [.keyboard])
             XCTAssertEqual(h.environment.dispatches, 1)
             XCTAssertEqual(h.outcomes, [accepted ? .dispatched : .copiedOnly])
             XCTAssertEqual(h.acknowledged, accepted ? 1 : 0)
@@ -123,11 +148,11 @@ final class PasteCoordinatorTests: XCTestCase {
         }
     }
 
-    @MainActor func testMissingMenuUsesKeysAndHeldCommandStackKeepsKeyboardRoute() async {
+    @MainActor func testNormalPasteAndHeldCommandStackUseKeyboardRoute() async {
         let normal = PasteHarness()
         normal.paste(); await normal.settle()
         XCTAssertEqual(normal.environment.dispatchMethods, [.keyboard])
-        let stack = PasteHarness(); stack.environment.menuAvailable = true; stack.environment.heldModifiers = .command
+        let stack = PasteHarness(); stack.environment.heldModifiers = .command
         stack.paste(allowHeldCommand: true); await stack.settle()
         XCTAssertEqual(stack.environment.dispatchMethods, [.keyboard])
         XCTAssertEqual(stack.outcomes, [.dispatched])
@@ -148,7 +173,7 @@ final class PasteCoordinatorTests: XCTestCase {
     }
 
     @MainActor func testClipboardReplacementDuringFocusStabilizationCancelsBeforePreparingAnyAction() async {
-        let h = PasteHarness(); h.environment.focusSettleInterval = 0.08; h.environment.menuAvailable = true
+        let h = PasteHarness(); h.environment.focusSettleInterval = 0.08
         h.paste(); await h.settle()
         h.clipboard.replaceExternally(); h.environment.advance(0.1); await h.settle()
         XCTAssertEqual(h.environment.prepares, 0); XCTAssertEqual(h.environment.dispatches, 0)

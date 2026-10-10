@@ -613,9 +613,23 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                 }
             }
         }
-        outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+        outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             MainActor.assumeIsolated {
-                guard let self, !self.panel.contains(screenPoint: NSEvent.mouseLocation) else { return }
+                guard let self else { return }
+                // Use the event's position, not where the pointer has moved by
+                // the time AppKit delivers the global monitor callback.
+                let point = event.window?.convertPoint(toScreen: event.locationInWindow) ?? event.locationInWindow
+                guard !self.panel.contains(screenPoint: point) else { return }
+                guard self.panel.isVisible else {
+                    if self.paste.cancelForMouseDown(at: event.timestamp) {
+                        ValidationTrace.emit(.outsideClick, state: .hidden)
+                        self.stackGestures.invalidate(); self.stack.cancelPendingPastes()
+                    } else if !self.paste.hasPendingAttempt {
+                        self.stackGestures.invalidate(); self.stack.cancelPendingPastes()
+                    }
+                    self.cancelSuggestions()
+                    return
+                }
                 ValidationTrace.emit(.outsideClick, state: self.panel.isVisible ? .visible : .hidden)
                 self.cancelPendingInteraction(); self.panel.hidePreservingDraft(); self.cancelSuggestions()
             }
