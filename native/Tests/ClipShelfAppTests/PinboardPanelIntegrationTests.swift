@@ -280,23 +280,24 @@ import XCTest
         XCTAssertNil(try h.selected())
     }
 
-    func testLegacyCompactHeightClampsToFitTabsAndCards() throws {
-        let h = PinboardPanelHarness(); defer { h.close() }
-        h.panel.setPreferredHeights(normal: 430, compact: 338)
-        h.panel.setCompactMode(true)
-        XCTAssertEqual(h.panel.window?.frame.height, 376)
-        try assertLayout(h, width: 1120, height: 376)
+    func testCompactHeightPreservesUsableLegacySizeAndClampsTooSmallSize() throws {
+        for (requested, expected): (CGFloat, CGFloat) in [(338, 338), (1, 240)] {
+            let h = PinboardPanelHarness(); defer { h.close() }
+            h.panel.setPreferredHeights(normal: 430, compact: requested)
+            h.panel.setCompactMode(true)
+            try assertLayout(h, width: 1120, height: expected)
+        }
     }
 
-    func testNormalCompactAndMinimumWidthLayoutsKeepTabsFiltersCardsAndFooterSeparate() throws {
+    func testNormalCompactAndMinimumWidthLayoutsKeepToolbarCardsAndFooterSeparate() throws {
         for width: CGFloat in [1120, 720] {
             for compact in [false, true] {
                 let h = PinboardPanelHarness(); defer { h.close() }
                 h.visibleFrame.size.width = width + 40
-                h.panel.setPreferredHeights(normal: 430, compact: 376)
+                h.panel.setPreferredHeights(normal: 330, compact: 240)
                 h.panel.setCompactMode(compact)
                 try h.select(h.ids[1])
-                try assertLayout(h, width: width, height: compact ? 376 : 430)
+                try assertLayout(h, width: width, height: compact ? 240 : 330)
             }
         }
     }
@@ -310,12 +311,25 @@ import XCTest
         XCTAssertEqual(window.frame.width, width, accuracy: 0.5, file: file, line: line)
         XCTAssertEqual(window.frame.height, height, accuracy: 0.5, file: file, line: line)
         let strip = try h.strip()
-        let boardRow = try XCTUnwrap(try h.popup().superview as? NSStackView)
-        let filterRow = try XCTUnwrap(try h.view(NSPopUpButton.self, label: "按内容类型筛选").superview as? NSStackView)
+        let toolbar = try XCTUnwrap(h.descendants.compactMap { $0 as? NSStackView }
+            .first { $0.accessibilityIdentifier() == "shelf.toolbar" })
+        let search = try h.view(NSSearchField.self)
+        let filters = try h.view(NSButton.self, label: "全部筛选")
+        for control in [strip, search, filters] as [NSView] {
+            XCTAssertTrue(control.isDescendant(of: toolbar), file: file, line: line)
+            XCTAssertFalse(control.isHiddenOrHasHiddenAncestor, file: file, line: line)
+            let frame = control.convert(control.bounds, to: toolbar)
+            XCTAssertGreaterThan(frame.width, 0, file: file, line: line)
+            XCTAssertGreaterThan(frame.height, 0, file: file, line: line)
+            XCTAssertGreaterThanOrEqual(frame.minX, -0.5, file: file, line: line)
+            XCTAssertLessThanOrEqual(frame.maxX, toolbar.bounds.maxX + 0.5, file: file, line: line)
+            XCTAssertGreaterThanOrEqual(frame.minY, -0.5, file: file, line: line)
+            XCTAssertLessThanOrEqual(frame.maxY, toolbar.bounds.maxY + 0.5, file: file, line: line)
+        }
         let collection = try h.view(NSCollectionView.self, label: "剪贴板搜索结果")
         let scroll = try XCTUnwrap(collection.enclosingScrollView)
         let footer = try XCTUnwrap(try h.view(NSTextField.self, label: "结果数量与选中项").superview as? NSStackView)
-        let orderedViews: [NSView] = [strip, boardRow, filterRow, scroll, footer]
+        let orderedViews: [NSView] = [toolbar, scroll, footer]
         let frames = orderedViews.map { $0.convert($0.bounds, to: root) }
         for (view, frame) in zip(orderedViews, frames) {
             XCTAssertGreaterThan(frame.width, 0, "\(type(of: view)) has no width", file: file, line: line)
