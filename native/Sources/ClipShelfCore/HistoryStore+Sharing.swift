@@ -165,7 +165,7 @@ extension HistoryStore {
             let state = try requireSharedBoard(boardID: boardID, accountID: accountID)
             suppressSyncCapture = true
             defer { suppressSyncCapture = false }
-            try transaction {
+            try transaction(allowReclamation: true) {
                 let query = try prepare("SELECT payload FROM sync_outbox WHERE account_id = ? ORDER BY rowid")
                 try bind(state.descriptor.namespace, at: 1, to: query)
                 let operations: [SyncOperation]

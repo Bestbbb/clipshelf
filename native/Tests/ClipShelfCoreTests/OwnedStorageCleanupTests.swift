@@ -279,7 +279,7 @@ final class OwnedStorageCleanupTests: XCTestCase {
         let a = try store(), record = try imported(a)
         try a.delete(id: record.id); try a.execute("PRAGMA user_version=11")
         let b = try store()
-        XCTAssertEqual(try b.syncScalar("PRAGMA user_version", []), "12")
+        XCTAssertEqual(try b.syncScalar("PRAGMA user_version", []), "13")
         XCTAssertEqual(try b.ownedStorageUsage().legacyProtectedAssetCount, 1)
         XCTAssertEqual(try b.prepareOwnedStorageCleanup().candidateCount, 0)
         XCTAssertThrowsError(try b.clearLegacyOwnedPublications(expectedIDs: []))

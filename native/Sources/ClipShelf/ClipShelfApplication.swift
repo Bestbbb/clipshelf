@@ -252,6 +252,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             self.capture.stop()
             self.preferences.set(false, forKey: "recordingEnabled")
             var message = L10n.text("保存失败，已暂停记录；\(self.captureIngestion?.pendingCount ?? 0) 项内容暂存在内存。可在菜单中重试保存或丢弃。\n\(error.localizedDescription)")
+            if let quotaError = error as? ContentQuotaError, case .exceeded = quotaError {
+                message += "\n" + L10n.text("已达到保存数据上限。可打开“存储管理…”调高上限或选择不限，也可清理已有内容，然后明确重试保存。")
+            }
             if self.captureBlocksOwnedReclamation {
                 message += "\n" + L10n.text("待保存内容含文件引用，请先重试或丢弃这些内容，再回收托管文件。")
             }
@@ -1345,10 +1348,27 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                 return try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: {
                     cancellation.cancel(); worker.cancel()
                 })
+            },
+            readContentQuota: {
+                try await Task.detached(priority: .utility) {
+                    try Task.checkCancellation()
+                    return try store.contentQuotaStatus()
+                }.value
+            },
+            setContentQuota: { bytes, revision in
+                try await Task.detached(priority: .userInitiated) {
+                    try Task.checkCancellation()
+                    return try store.setContentQuotaLimit(bytes, expectedRevision: revision)
+                }.value
             }
         ), preferences: preferences)
         storageSettings = controller
         controller.allowsLibraryScan = { [weak self] in self?.interactionLifecycle.isAllowed == true }
+        controller.allowsLimitChange = { [weak self] in
+            guard let self, self.interactionLifecycle.isAllowed else { return false }
+            return !self.selectionMutationInProgress && !self.isCaptureWriteBusy &&
+                self.historyCleanup?.isBusy != true && !self.isTerminating && !self.terminationDecisionPending
+        }
         controller.isExternalMutationBusy = { [weak self] in
             guard let self else { return true }
             return self.selectionMutationInProgress || self.isCaptureWriteBusy || self.captureBlocksOwnedReclamation || self.historyCleanup?.isBusy == true || self.sessionSuspended || self.isTerminating || self.terminationDecisionPending

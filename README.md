@@ -62,9 +62,14 @@ capacity before growing data. OCR caches, PNG exports and file promises, the
 share inbox, import receipts, and application-owned cloud staging use the same
 capacity checks on their destination volumes. These are cooperative estimates,
 not physical disk reservations; CloudKit and item-provider temporary files remain
-outside application control. Total storage is unlimited by default, automatic
-managed-file reclamation is off until enabled, and a configurable hard quota
-remains in progress.
+outside application control. A separate saved-data limit is unlimited by default
+and can be configured per library. It counts saved record data, deduplicated
+attachments, registered managed originals and persisted sync payloads. Reaching
+the limit preserves existing data and pending captures for explicit retry after
+cleanup or a limit change. This is not a physical-directory quota: database
+overhead, caches, backups and temporary/output files are outside its accounting.
+Automatic managed-file reclamation is off until enabled; a complete physical
+storage quota remains in progress.
 
 See the [implementation status](docs/IMPLEMENTATION_STATUS.zh-CN.md) for what is
 implemented, tested, and still missing. Individual feature availability does not

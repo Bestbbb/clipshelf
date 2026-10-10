@@ -67,7 +67,7 @@ extension HistoryStore {
     @discardableResult
     public func deleteSelection(_ references: [ClipboardSelectionReference]) throws -> HistorySelectionDeleteUndo {
         try synchronized {
-            try transaction {
+            try transaction(allowReclamation: true) {
                 let items = try selectionItems(references)
                 try requireEditableSelection(items)
                 let owned = try references.flatMap { try ownedFileBindingsWithoutLock(recordID: $0.id) }

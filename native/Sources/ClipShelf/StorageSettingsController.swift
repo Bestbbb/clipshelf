@@ -5,7 +5,7 @@ import ClipShelfCore
 /// Core owns reachability, filesystem recovery, and cross-connection exclusion.
 /// This controller only coordinates the visible confirmation and application lifetime.
 @MainActor
-final class StorageSettingsController: NSWindowController, NSWindowDelegate {
+final class StorageSettingsController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
     struct Actions {
         var scan: @MainActor () async throws -> OwnedStorageUsage
         var prepare: @MainActor () async throws -> OwnedStorageCleanupPlan
@@ -14,8 +14,10 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
         var readExternalUses: (@MainActor () async throws -> [OwnedAssetPublication])? = nil
         var releaseExternalUses: (@MainActor (Set<UUID>) async throws -> Void)? = nil
         var scanLibrary: (@MainActor (HistoryReadCancellation) async throws -> LibraryStorageSnapshot)? = nil
+        var readContentQuota: (@MainActor () async throws -> LibraryContentQuotaStatus)? = nil
+        var setContentQuota: (@MainActor (Int64?, Int64) async throws -> LibraryContentQuotaStatus)? = nil
     }
-    enum Phase { case idle, scanning, preparing, confirming, committing, recovering }
+    enum Phase { case idle, scanning, preparing, confirming, committing, recovering, savingLimit }
     private let actions: Actions
     private let preferences: UserDefaults
     private let status = NSTextField(wrappingLabelWithString: L10n.text("刷新后查看当前资料库托管文件的占用。"))
@@ -23,6 +25,15 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
     private let libraryDetail = NSTextField(wrappingLabelWithString: "")
     private var libraryCancellation: HistoryReadCancellation?
     private(set) var libraryUsage: LibraryStorageSnapshot?
+    private(set) var contentQuota: LibraryContentQuotaStatus?
+    private let quotaDetail = NSTextField(wrappingLabelWithString: L10n.text("尚未读取，不能据此判断为零。"))
+    private let quotaNotice = NSTextField(wrappingLabelWithString: "")
+    private let quotaMode = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let quotaMiB = NSTextField(string: "")
+    private let quotaSave = NSButton(title: L10n.text("保存上限"), target: nil, action: nil)
+    private var quotaDraftGeneration: UInt64 = 0
+    private var quotaDraftDirty = false
+    private var presentationGeneration: UInt64 = 0
     private let refreshButton = NSButton(title: L10n.text("刷新占用"), target: nil, action: nil)
     private let cleanupButton = NSButton(title: L10n.text("清理可回收文件…"), target: nil, action: nil)
     private let recoverButton = NSButton(title: L10n.text("继续中断的回收"), target: nil, action: nil)
@@ -36,9 +47,12 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
     private(set) var phase: Phase = .idle
     private(set) var usage: OwnedStorageUsage?
     var isBusy: Bool { phase != .idle }
-    var isCommitting: Bool { phase == .committing || phase == .recovering }
+    var isCommitting: Bool { phase == .committing || phase == .recovering || phase == .savingLimit }
     var isExternalMutationBusy: (() -> Bool)?
     var allowsLibraryScan: (() -> Bool)?
+    /// Failed captures containing file references may block reclamation, but must not
+    /// prevent raising or disabling the content limit needed to save those captures.
+    var allowsLimitChange: (() -> Bool)?
     var onBusyChanged: ((Bool) -> Void)?
     var onMessage: ((String) -> Void)?
     var confirmation: ((OwnedStorageCleanupPlan, @escaping (Bool) -> Void) -> (() -> Void))?
@@ -74,7 +88,30 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
             status.stringValue = L10n.text("刷新后查看资料库、缓存与备份的占用。")
             invalidateManagedUsage()
         }
-        let content = NSStackView(views: [libraryDetail, libraryScope, description, detail, scope])
+        let quotaHeading = NSTextField(labelWithString: L10n.text("保存数据上限"))
+        quotaHeading.font = .systemFont(ofSize: 14, weight: .semibold)
+        let quotaScope = NSTextField(wrappingLabelWithString: L10n.text("按保存的数据大小计量，包含记录内容、去重后的当前附件、已登记的托管原件和本地同步数据。不含数据库日志与索引、打开副本、备份、缓存和暂存文件；这不是整个资料库的磁盘占用上限。"))
+        quotaScope.textColor = .secondaryLabelColor
+        let quotaEffect = NSTextField(wrappingLabelWithString: L10n.text("默认不限。调低上限不会删除已有内容；超出时停止进一步增长。清理或调高上限后，请在菜单中明确重试保存。"))
+        quotaEffect.textColor = .secondaryLabelColor
+        quotaMode.addItems(withTitles: [L10n.text("不限"), L10n.text("限制大小")])
+        quotaMode.setAccessibilityIdentifier("storage.quota.mode")
+        quotaMode.setAccessibilityLabel(L10n.text("保存数据上限"))
+        quotaMode.target = self; quotaMode.action = #selector(changeQuotaDraft)
+        quotaMiB.setAccessibilityIdentifier("storage.quota.mib")
+        quotaMiB.setAccessibilityLabel(L10n.text("上限（MiB 正整数）"))
+        quotaMiB.placeholderString = L10n.text("MiB 正整数")
+        quotaMiB.delegate = self
+        quotaSave.setAccessibilityIdentifier("storage.quota.save")
+        quotaSave.target = self; quotaSave.action = #selector(saveContentQuota)
+        quotaDetail.setAccessibilityIdentifier("storage.quota.usage")
+        quotaNotice.setAccessibilityIdentifier("storage.quota.notice")
+        let quotaInput = NSStackView(views: [quotaMiB, NSTextField(labelWithString: "MiB")]); quotaInput.spacing = 8
+        let quotaBox = NSStackView(views: [quotaHeading, quotaScope, quotaDetail, quotaMode, quotaInput, quotaSave, quotaEffect, quotaNotice])
+        quotaBox.orientation = .vertical; quotaBox.alignment = .leading; quotaBox.spacing = 10
+        let hasQuota = actions.readContentQuota != nil && actions.setContentQuota != nil
+        let sections: [NSView] = [libraryDetail, libraryScope, description, detail, scope]
+        let content = NSStackView(views: hasQuota ? [quotaBox] + sections : sections)
         content.orientation = .vertical; content.alignment = .leading; content.spacing = 14
         content.translatesAutoresizingMaskIntoConstraints = false; scroll.documentView = content
         let body = NSStackView(views: [status, scroll, automatic, externalUsesButton, controls])
@@ -91,6 +128,16 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
             libraryDetail.widthAnchor.constraint(equalTo: content.widthAnchor),
             libraryScope.widthAnchor.constraint(equalTo: content.widthAnchor),
         ])
+        if hasQuota {
+            NSLayoutConstraint.activate([
+                quotaBox.widthAnchor.constraint(equalTo: content.widthAnchor),
+                quotaScope.widthAnchor.constraint(equalTo: quotaBox.widthAnchor),
+                quotaDetail.widthAnchor.constraint(equalTo: quotaBox.widthAnchor),
+                quotaEffect.widthAnchor.constraint(equalTo: quotaBox.widthAnchor),
+                quotaNotice.widthAnchor.constraint(equalTo: quotaBox.widthAnchor),
+                quotaMiB.widthAnchor.constraint(equalToConstant: 180),
+            ])
+        }
         renderControls()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -106,6 +153,7 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
     @discardableResult
     func cancelPending() -> Bool {
         automaticQueued = false; recoveryQueued = false
+        presentationGeneration &+= 1
         guard !isCommitting else { return false }
         generation &+= 1; libraryCancellation?.cancel(); libraryCancellation = nil
         task?.cancel(); task = nil
@@ -129,6 +177,13 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
     }
 
     @objc func refresh() {
+        if actions.readContentQuota != nil {
+            guard !isBusy else { return }
+            guard allowsLibraryScan?() != false else {
+                status.stringValue = L10n.text("其他修改正在进行，请稍后重试。"); return
+            }
+            refreshWithQuota(); return
+        }
         if let scanLibrary = actions.scanLibrary {
             guard !isBusy else { return }
             guard allowsLibraryScan?() != false else {
@@ -178,6 +233,141 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
             self.finish(current)
         }
     }
+
+    private func refreshWithQuota() {
+        let current = begin(.scanning, message: L10n.text("正在读取保存数据用量与上限…"))
+        let draft = quotaDraftGeneration
+        let cancellation = HistoryReadCancellation(); libraryCancellation = cancellation
+        if actions.scanLibrary != nil { invalidateManagedUsage() }
+        task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                if let read = self.actions.readContentQuota {
+                    let value = try await read()
+                    guard self.accepts(current) else { return }
+                    self.displayQuota(value, draftGeneration: draft)
+                }
+            } catch {
+                guard self.accepts(current) else { return }
+                self.contentQuota = nil
+                self.quotaDetail.stringValue = L10n.text("无法读取保存数据用量与上限，未将未知用量显示为零。\n\(error.localizedDescription)")
+            }
+            guard self.accepts(current) else { return }
+            // A content-policy read is independent of the physical scan and dependency audit.
+            // Failed captures holding file references can still read and raise their limit.
+            do {
+                if let scan = self.actions.scanLibrary {
+                    let snapshot = try await scan(cancellation)
+                    guard self.accepts(current) else { return }
+                    self.libraryUsage = snapshot
+                    self.libraryDetail.stringValue = LibraryStorageReader.describe(snapshot)
+                }
+            } catch {
+                guard self.accepts(current) else { return }
+                self.libraryUsage = nil
+                self.libraryDetail.stringValue = L10n.text("无法取得完整统计，未将未知占用显示为零。\n\(error.localizedDescription)")
+            }
+            guard self.accepts(current) else { return }
+            self.libraryCancellation = nil
+            self.status.stringValue = self.contentQuota == nil ? L10n.text("读取未完成，原因见下方。") : L10n.text("保存数据用量与上限已更新。")
+            self.finish(current)
+        }
+    }
+
+    private func displayQuota(_ value: LibraryContentQuotaStatus, draftGeneration: UInt64? = nil) {
+        contentQuota = value
+        let limit = value.limitBytes.map(Self.bytes) ?? L10n.text("不限")
+        var lines = [L10n.text("保存数据：\(Self.bytes(value.usedBytes)) · 上限：\(limit)"),
+            L10n.text("记录内容：\(Self.bytes(value.recordBytes)) · 当前附件：\(Self.bytes(value.representationBytes))"),
+            L10n.text("托管原件：\(Self.bytes(value.ownedFileBytes)) · 同步数据：\(Self.bytes(value.syncPayloadBytes))")]
+        if value.exceededBytes > 0 { lines.append(L10n.text("已超出 \(Self.bytes(value.exceededBytes))；已有内容保留，停止进一步增长。")) }
+        quotaDetail.stringValue = lines.joined(separator: "\n")
+        if let draftGeneration, draftGeneration == quotaDraftGeneration, !quotaDraftDirty {
+            quotaMode.selectItem(at: value.limitBytes == nil ? 0 : 1)
+            if let bytes = value.limitBytes {
+                let mib: Int64 = 1_048_576
+                quotaMiB.stringValue = String(bytes / mib + (bytes % mib == 0 ? 0 : 1))
+            } else { quotaMiB.stringValue = "" }
+        }
+        renderControls()
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        guard (notification.object as? NSTextField) === quotaMiB else { return }
+        changeQuotaDraft()
+    }
+
+    @objc private func changeQuotaDraft() {
+        quotaDraftGeneration &+= 1; quotaDraftDirty = true
+        quotaNotice.stringValue = L10n.text("上限尚未保存。")
+        renderControls()
+    }
+
+    /// MiB is exact binary scaling. Reject fractions, signs, zero and overflow before dispatch.
+    static func contentQuotaBytes(limited: Bool, text: String) throws -> Int64? {
+        guard limited else { return nil }
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text.utf8.allSatisfy({ (48...57).contains($0) }),
+              let mib = Int64(text), mib > 0, mib <= Int64.max / 1_048_576 else { throw ContentQuotaError.invalidLimit }
+        return mib * 1_048_576
+    }
+
+    @objc func saveContentQuota() {
+        guard !isBusy, quotaDraftDirty, let previous = contentQuota, let save = actions.setContentQuota else { return }
+        guard allowsLimitChange?() != false else {
+            quotaNotice.stringValue = L10n.text("其他修改正在进行，请稍后重试。"); return
+        }
+        let limit: Int64?
+        do { limit = try Self.contentQuotaBytes(limited: quotaMode.indexOfSelectedItem == 1, text: quotaMiB.stringValue) }
+        catch { quotaNotice.stringValue = L10n.text("请输入大于零的 MiB 整数，或选择不限。"); return }
+        let current = begin(.savingLimit, message: L10n.text("正在保存数据上限；关闭窗口不会撤销已开始的保存。"))
+        let presentation = presentationGeneration, draft = quotaDraftGeneration
+        task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let value = try await save(limit, previous.policyRevision)
+                if self.acceptsQuotaReceipt(current, presentation: presentation) {
+                    if self.quotaDraftGeneration == draft { self.quotaDraftDirty = false }
+                    self.displayQuota(value, draftGeneration: draft)
+                    self.quotaNotice.stringValue = L10n.text("保存数据上限已更新；已有内容保留。待保存内容需要在菜单中明确重试。")
+                    self.status.stringValue = L10n.text("保存数据用量与上限已更新。")
+                }
+            } catch {
+                if self.acceptsQuotaReceipt(current, presentation: presentation) {
+                    if let quotaError = error as? ContentQuotaError, case .stalePolicy = quotaError {
+                        self.contentQuota = nil
+                        do {
+                            if let read = self.actions.readContentQuota {
+                                let latest = try await read()
+                                if self.acceptsQuotaReceipt(current, presentation: presentation) { self.displayQuota(latest) }
+                            }
+                        } catch {
+                            if self.acceptsQuotaReceipt(current, presentation: presentation) {
+                                self.quotaDetail.stringValue = L10n.text("无法读取保存数据用量与上限，未将未知用量显示为零。\n\(error.localizedDescription)")
+                            }
+                        }
+                        if self.acceptsQuotaReceipt(current, presentation: presentation) {
+                            self.quotaNotice.stringValue = L10n.text("上限已在其他窗口或进程中改变。你的输入仍保留；请核对当前上限后再次保存。")
+                        }
+                    } else {
+                        self.quotaNotice.stringValue = L10n.text("上限未保存，输入仍保留。\n\(error.localizedDescription)")
+                    }
+                    if self.acceptsQuotaReceipt(current, presentation: presentation) { self.status.stringValue = L10n.text("上限未保存。") }
+                }
+            }
+            // Closing/suspending invalidates presentation only. An already dispatched commit
+            // must settle and unblock quit/restart, even when its UI receipt is obsolete.
+            let obsolete = self.presentationGeneration != presentation
+            if obsolete { self.contentQuota = nil }
+            self.finish(current)
+            if obsolete, self.window?.isVisible == true, self.allowsLibraryScan?() != false { self.refresh() }
+        }
+    }
+
+    private func acceptsQuotaReceipt(_ current: UInt64, presentation: UInt64) -> Bool {
+        accepts(current) && presentationGeneration == presentation && allowsLibraryScan?() != false
+    }
+
     @objc func cleanup() { prepareCleanup(automatic: false) }
     private func prepareCleanup(automatic automaticRun: Bool) {
         guard canBegin() else { if automaticRun { automaticQueued = true }; return }
@@ -241,6 +431,7 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
     }
     private func complete(_ result: OwnedStorageCleanupResult, generation current: UInt64) async throws {
         guard accepts(current) else { return }
+        let presentation = presentationGeneration, draft = quotaDraftGeneration
         invalidateLibraryUsage()
         let message = L10n.text("已移除 \(result.removedAssetCount) 组、\(result.removedFileCount) 个文件，文件大小合计 \(Self.bytes(result.removedLogicalBytes))。") +
             (result.remainingPendingCount > 0 ? L10n.text("另有 \(result.remainingPendingCount) 组仍待继续处理。") : "")
@@ -248,6 +439,16 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
         catch {
             guard accepts(current) else { return }
             usage = nil; detail.stringValue = L10n.text("文件回收结果已返回，但最新占用读取失败；请刷新。")
+        }
+        if let read = actions.readContentQuota {
+            do {
+                let latest = try await read()
+                if acceptsQuotaReceipt(current, presentation: presentation) { displayQuota(latest, draftGeneration: draft) }
+            } catch {
+                if acceptsQuotaReceipt(current, presentation: presentation) {
+                    quotaDetail.stringValue = L10n.text("无法读取保存数据用量与上限，未将未知用量显示为零。\n\(error.localizedDescription)")
+                }
+            }
         }
         guard accepts(current) else { return }
         status.stringValue = message
@@ -347,6 +548,10 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
         detail.stringValue = partial + L10n.text("托管文件：\(report.assetCount) 组\n原件与打开副本大小：\(Self.bytes(report.totalLogicalBytes))\n文件系统分配字节：\(Self.bytes(report.totalAllocatedBytes))\n可回收：\(report.reclaimableAssetCount) 组 · \(Self.bytes(report.reclaimableLogicalBytes))\n有使用依赖：\(report.protectedAssetCount) 组\n待检查并保留：\(report.unverifiedAssetCount) 项\n其中旧版本外部使用保护：\(report.legacyProtectedAssetCount) 组\n中断后待处理：\(report.pendingReclamationCount) 组")
     }
     private func invalidateLibraryUsage() {
+        if actions.readContentQuota != nil {
+            contentQuota = nil
+            quotaDetail.stringValue = L10n.text("尚未读取，不能据此判断为零。")
+        }
         guard actions.scanLibrary != nil else { return }
         libraryUsage = nil
         libraryDetail.stringValue = L10n.text("文件已发生变化，请刷新整库占用。")
@@ -378,6 +583,9 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate {
         recoverButton.isEnabled = !isBusy
         automatic.isEnabled = !isBusy
         externalUsesButton.isEnabled = !isBusy && actions.readExternalUses != nil && actions.releaseExternalUses != nil
+        quotaMode.isEnabled = !isCommitting
+        quotaMiB.isEnabled = !isCommitting && quotaMode.indexOfSelectedItem == 1
+        quotaSave.isEnabled = !isBusy && contentQuota != nil && quotaDraftDirty && actions.setContentQuota != nil
     }
     private static func purposeLabel(_ purpose: OwnedAssetPublicationPurpose) -> String {
         switch purpose {

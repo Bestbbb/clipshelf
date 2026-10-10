@@ -69,7 +69,10 @@ public final class HistoryStore: @unchecked Sendable {
     let representations: RepresentationStorage
     let ownedFileStorage: OwnedFileStorage
     var newOwnedFileDirectories: [UUID]?
+    var newRepresentationFiles: [NewRepresentationFile]?
+    var representationWriteSession: RepresentationWriteSession?
     var ownedFilesSchemaReady = false
+    var contentQuotaSchemaReady = false
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     static let columns = "id, text, source_app, source_bundle_id, copied_at, rtf, html, parts, renamed_title, ocr_text, pinboard_id, is_in_history, revision, content_kind, pinboard_order, origin_device_id, origin_device_name, origin_device_conflict"
     private static let metadataColumns = "id, text, source_app, source_bundle_id, copied_at, NULL, NULL, parts, renamed_title, ocr_text, pinboard_id, is_in_history, revision, content_kind, pinboard_order, origin_device_id, origin_device_name, origin_device_conflict"
@@ -523,6 +526,7 @@ public final class HistoryStore: @unchecked Sendable {
     public func compactAttachments() throws -> Int {
         try synchronized {
             try transaction {
+                if representationWriteSession == nil { representationWriteSession = try representations.beginWriteSession() }
                 let statement = try prepare("SELECT parts FROM clipboard_records WHERE parts IS NOT NULL")
                 defer { sqlite3_finalize(statement) }
                 var referenced = Set<String>()
@@ -600,7 +604,9 @@ public final class HistoryStore: @unchecked Sendable {
         try check(sqlite3_bind_double(statement, 5, record.copiedAt.timeIntervalSinceReferenceDate))
         try bind(record.rtf, at: 6, to: statement)
         try bind(record.html, at: 7, to: statement)
-        try bind(try representations.encode(record.parts, budget: writeBudget), at: 8, to: statement)
+        if representationWriteSession == nil { representationWriteSession = try representations.beginWriteSession() }
+        try bind(try representations.encode(record.parts, budget: writeBudget, session: representationWriteSession,
+                                           didCreate: { self.newRepresentationFiles?.append($0) }), at: 8, to: statement)
         try bind(record.renamedTitle, at: 9, to: statement)
         try bind(record.ocrText, at: 10, to: statement)
         try bind(record.pinboardID?.uuidString, at: 11, to: statement)
@@ -742,7 +748,7 @@ public final class HistoryStore: @unchecked Sendable {
             try check(sqlite3_step(versionStatement), allowingRow: true)
             return Int(sqlite3_column_int(versionStatement, 0))
         }()
-        if (1...11).contains(version) { try recoveryDatabaseBackup(reason: "migration-v\(version)") }
+        if (1...12).contains(version) { try recoveryDatabaseBackup(reason: "migration-v\(version)") }
         suppressSyncCapture = true
         defer { suppressSyncCapture = false }
         try transaction {
@@ -792,7 +798,7 @@ public final class HistoryStore: @unchecked Sendable {
                     try stepToCompletion(update)
                 }
                 try execute("PRAGMA user_version = 2")
-            case 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12: break
+            case 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13: break
             default: throw HistoryStoreError.unsupportedSchemaVersion(version)
             }
             try execute("CREATE TABLE IF NOT EXISTS pinboard_order_backfill(board_id TEXT PRIMARY KEY REFERENCES pinboards(id) ON DELETE CASCADE)")
@@ -819,7 +825,8 @@ public final class HistoryStore: @unchecked Sendable {
             try initializeHistoryCleanupTokens()
             try createOwnedSyncSchema(markLegacy: version < 11)
             try createOwnedStorageSchema(protectLegacy: version > 0 && version < 12)
-            try execute("PRAGMA user_version = 12")
+            try initializeContentQuotaSchema(previousVersion: version)
+            try execute("PRAGMA user_version = 13")
             syncSchemaReady = true
         }
     }
@@ -933,21 +940,27 @@ public final class HistoryStore: @unchecked Sendable {
         try execute("BEGIN IMMEDIATE")
         var committed = false
         newOwnedFileDirectories = []
+        newRepresentationFiles = []
         let budget = HistoryWriteBudget(coordinator: spaceCoordinator, allowReclamation: allowReclamation)
         writeBudget = budget
         defer {
             if !committed {
                 // Retain the writer lock during cleanup, including failures in outbox flush/COMMIT.
                 for id in newOwnedFileDirectories ?? [] { ownedFileStorage.removeNew(id) }
+                for file in newRepresentationFiles ?? [] { file.removeIfUnchanged() }
                 try? execute("ROLLBACK")
             }
             newOwnedFileDirectories = nil
+            newRepresentationFiles = nil
+            representationWriteSession = nil
             writeBudget = nil
             budget.release()
         }
         do {
+            let previousQuota = contentQuotaSchemaReady ? try contentQuotaStatusWithoutLock() : nil
             let result = try operation()
             if syncSchemaReady { try flushSyncDirty() }
+            try finishContentQuota(previous: previousQuota, allowReclamation: allowReclamation)
             try budget.validateDestinations()
             try execute("COMMIT")
             committed = true

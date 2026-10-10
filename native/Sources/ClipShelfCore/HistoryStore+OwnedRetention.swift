@@ -151,7 +151,15 @@ extension HistoryStore {
     }
     func ownedRetentionTransaction<T>(_ operation: () throws -> T) throws -> T {
         try execute("BEGIN IMMEDIATE")
-        do { let result = try operation(); try execute("COMMIT"); return result }
+        do {
+            let previous = contentQuotaSchemaReady ? try contentQuotaStatusWithoutLock() : nil
+            let result = try operation()
+            // Retention/GC must remain usable above the cap. Removing an asset registration
+            // releases its logical original bytes in the same SQLite commit.
+            try finishContentQuota(previous: previous, allowReclamation: true)
+            try execute("COMMIT")
+            return result
+        }
         catch { try? execute("ROLLBACK"); throw error }
     }
     /// Returns live or unverifiable lease IDs. Dead locks are only pruned under the writer lock.
