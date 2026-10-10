@@ -58,4 +58,22 @@ final class ValidationTraceTests: XCTestCase {
     func testEncodedLineRejectsNaNTimestamp() {
         XCTAssertNil(ValidationTrace.encodedLine(event: .pasteCompleted, timestamp: .nan))
     }
+
+    func testDiagnosticFlagEnablesTraceWithoutValidationMode() {
+        XCTAssertTrue(ValidationTrace.isEnabled(arguments: ["ClipShelf", "--diagnostic-trace"]))
+        XCTAssertFalse(ValidationTrace.isEnabled(arguments: ["--diagnostic-trace=true"]))
+        let profile = RuntimeProfile(arguments: ["ClipShelf", "--diagnostic-trace"])
+        XCTAssertEqual(profile.mode, .standard)
+        XCTAssertNil(profile.validationDirectory)
+        XCTAssertNil(profile.validationPreferenceDomain)
+    }
+
+    func testHotkeyRegistrationIncludesOnlyNumericSystemStatus() throws {
+        let data = try XCTUnwrap(ValidationTrace.encodedLine(event: .hotkeyRegistered,
+            timestamp: 42, state: .unavailable, status: -9878, shortcut: .activation))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(Set(object.keys), ["timestamp", "event", "state", "status", "shortcut"])
+        XCTAssertEqual(object["status"] as? Int, -9878)
+        XCTAssertEqual(object["shortcut"] as? String, "activation")
+    }
 }

@@ -6,7 +6,9 @@ Mac feature set and its smooth cross-app workflow.
 **Status (2026-10-10): this replication attempt failed user acceptance.**
 The user still found the app unusable after the latest fixes. It has not met the
 daily-use goal or full Paste for Mac parity and is not a validated replacement.
-Development work is stopped while this attempt is documented.
+An additional local diagnostic run is recorded in the
+[core-flow rerun](docs/CORE_FLOW_RERUN.zh-CN.md). Controlled text flows passed
+through the global shortcut callback, but the user's last failure remains unresolved.
 
 Some automated text and Pinboard workflows produced passing observations, but
 those results did not establish usability through the user's normal entry points.

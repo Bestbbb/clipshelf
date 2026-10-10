@@ -134,9 +134,12 @@ struct GlobalShortcutRegistrationError: LocalizedError {
         handle.onPressed = { [weak self, weak handle] in
             guard let self, let handle, let current = self.handles[chord], current === handle,
                   let action = self.actions[chord] else { return }
+            ValidationTrace.emit(.hotkeyReceived, state: .requested, shortcut: action == .activation ? .activation : .stack)
             self.onPressed?(action, chord)
         }
         let result = handle.register(keyCode: UInt32(chord.keyCode), modifiers: chord.carbonModifiers)
+        ValidationTrace.emit(.hotkeyRegistered, state: result == noErr ? .ready : .unavailable,
+                             status: result, shortcut: action == .activation ? .activation : .stack)
         guard result == noErr else {
             handle.unregister()
             throw GlobalShortcutRegistrationError(action: action, chord: chord, status: result)

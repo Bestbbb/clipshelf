@@ -1,9 +1,12 @@
 import Foundation
 
-/// Explicit acceptance diagnostics. The schema cannot carry clipboard contents, titles,
-/// paths, record identifiers or arbitrary error messages. Normal launches emit nothing.
+/// Explicit diagnostics. The schema cannot carry clipboard contents, titles,
+/// paths, record identifiers or arbitrary error messages. Unflagged launches emit nothing.
 enum ValidationTrace {
+    enum Shortcut: String, Codable, Sendable { case activation, stack }
     enum Event: String, Codable, Sendable {
+        case hotkeyRegistered = "hotkey_registered", hotkeyReceived = "hotkey_received"
+        case invocationBlocked = "invocation_blocked"
         case invocation, reopen
         case panelShown = "panel_shown", panelDismissed = "panel_dismissed"
         case panelEntranceStarted = "panel_entrance_started"
@@ -41,23 +44,26 @@ enum ValidationTrace {
         let hasInputElement: Bool?
         let state: State?
         let failure: Failure?
+        let status: Int32?
+        let shortcut: Shortcut?
     }
 
     static let enabled = isEnabled(arguments: CommandLine.arguments)
 
     static func isEnabled(arguments: [String]) -> Bool {
-        arguments.contains("--validation") && arguments.contains("--validation-trace")
+        arguments.contains("--diagnostic-trace") ||
+            (arguments.contains("--validation") && arguments.contains("--validation-trace"))
     }
 
     /// Pure formatting seam; tests never need to write stderr or invoke system input.
     static func encodedLine(event: Event, timestamp: TimeInterval, pid: Int32? = nil,
                             bundleID: String? = nil, hasTargetWindow: Bool? = nil,
                             hasInputElement: Bool? = nil, state: State? = nil,
-                            failure: Failure? = nil) -> Data? {
+                            failure: Failure? = nil, status: Int32? = nil, shortcut: Shortcut? = nil) -> Data? {
         guard timestamp.isFinite else { return nil }
         let entry = Entry(timestamp: timestamp, event: event, pid: pid, bundleID: bundleID,
                           hasTargetWindow: hasTargetWindow, hasInputElement: hasInputElement,
-                          state: state, failure: failure)
+                          state: state, failure: failure, status: status, shortcut: shortcut)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         guard var data = try? encoder.encode(entry) else { return nil }
@@ -67,10 +73,10 @@ enum ValidationTrace {
 
     static func emit(_ event: Event, pid: Int32? = nil, bundleID: String? = nil,
                      hasTargetWindow: Bool? = nil, hasInputElement: Bool? = nil,
-                     state: State? = nil, failure: Failure? = nil) {
+                     state: State? = nil, failure: Failure? = nil, status: Int32? = nil, shortcut: Shortcut? = nil) {
         guard enabled, let data = encodedLine(event: event, timestamp: Date().timeIntervalSince1970,
             pid: pid, bundleID: bundleID, hasTargetWindow: hasTargetWindow,
-            hasInputElement: hasInputElement, state: state, failure: failure) else { return }
+            hasInputElement: hasInputElement, state: state, failure: failure, status: status, shortcut: shortcut) else { return }
         try? FileHandle.standardError.write(contentsOf: data)
     }
 }

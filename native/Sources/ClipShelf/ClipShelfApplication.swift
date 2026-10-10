@@ -202,7 +202,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         capture.onStatus = { [weak self] message in self?.setStatus(message) }
         paste.onResult = { [weak self] message in self?.setStatus(message) }
         globalShortcuts.onPressed = { [weak self] action, chord in
-            guard let self, self.interactionLifecycle.isAllowed else { return }
+            guard let self else { return }
+            guard self.interactionLifecycle.isAllowed else {
+                ValidationTrace.emit(.invocationBlocked, state: .unavailable)
+                return
+            }
             if self.shortcutSettings?.captureRegisteredShortcut(chord) == true { return }
             guard self.shortcutSettings?.isKeyWindow != true else { return }
             switch action {
