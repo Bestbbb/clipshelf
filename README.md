@@ -3,14 +3,15 @@
 A free, open-source clipboard manager for macOS. The goal is the full Paste for
 Mac feature set and its smooth cross-app workflow.
 
-**Status: native implementation in progress.** A development app can be built
-locally. Full Paste parity, cross-app compatibility, cloud deployment, and a
-signed public release are still being developed and verified.
+**Status (2026-10-10): this replication attempt failed user acceptance.**
+The user still found the app unusable after the latest fixes. It has not met the
+daily-use goal or full Paste for Mac parity and is not a validated replacement.
+Development work is stopped while this attempt is documented.
 
-Text workflows have been checked in TextEdit, Chrome textareas, and VS Code:
-search, insertion at the original caret, repeated paste, double-click, and cancel.
-These checks use the app-opening entry point; physical global-hotkey delivery and
-rich-format compatibility remain unverified. See the [acceptance record](docs/LOCAL_USABILITY_QA.zh-CN.md).
+Some automated text and Pinboard workflows produced passing observations, but
+those results did not establish usability through the user's normal entry points.
+See the [failure retrospective](docs/REPLICATION_FAILURE_RETROSPECTIVE.zh-CN.md)
+and the [historical test record](docs/LOCAL_USABILITY_QA.zh-CN.md).
 
 ## Build and run
 
