@@ -8,6 +8,8 @@ latest feedback; the workflow still falls short of Paste.** Cards now paste with
 one click. Local automated checks verified insertion and continued typing in
 Cursor's chat input and code editor; see the
 [single-click workflow record](docs/SINGLE_CLICK_WORKFLOW.zh-CN.md).
+The latest input-selection restoration changes and their verified scope are
+recorded in the [generic paste workflow record](docs/GENERIC_PASTE_WORKFLOW.zh-CN.md).
 Full Paste for Mac parity and broad daily-use acceptance remain incomplete.
 Earlier failed acceptance and its retrospective are preserved as history.
 An additional local diagnostic run is recorded in the
