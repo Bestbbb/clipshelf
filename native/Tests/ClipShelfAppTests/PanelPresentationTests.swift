@@ -57,16 +57,25 @@ import ClipShelfLocalization
             XCTAssertLessThan(layout.itemSize.height,
                               height - layout.sectionInset.top - layout.sectionInset.bottom - insets.top - insets.bottom)
         }
+        for height: CGFloat in [28, 25, 22] {
+            results.frame = NSRect(x: 0, y: 0, width: 800, height: height)
+            XCTAssertLessThan(layout.itemSize.height,
+                              height - layout.sectionInset.top - layout.sectionInset.bottom)
+        }
     }
     func testInitialRemoteLoadingFailureRetryAndConfirmedEmptyHaveDistinctPresentation() throws {
         let h = PresentationHarness(); defer { h.close() }
-        h.panel.show(metadata: [])
+        h.panel.setRoutineStatus("recording fixture")
+        h.panel.show(metadata: [], status: "recording fixture")
+        let status = try h.view(ShelfStatusLabel.self)
+        XCTAssertTrue(status.isHidden)
         XCTAssertEqual(h.requests.count, 1)
         XCTAssertTrue(h.texts.contains(L10n.text("正在读取条目…")))
         XCTAssertFalse(h.texts.contains(L10n.text("复制一点内容，从这里开始")))
         XCTAssertFalse(h.texts.contains(L10n.text("没有找到相关内容")))
         XCTAssertTrue(try h.retryButton().isHidden)
         h.requests[0].1(.failure(HistoryStoreError.recordNotFound))
+        XCTAssertFalse(status.isHidden, "An asynchronous read error must remain visible in the quiet shelf")
         XCTAssertTrue(h.texts.contains(L10n.text("读取未完成，原因见下方。")))
         XCTAssertFalse(try h.retryButton().isHidden)
         XCTAssertTrue(try h.retryButton().isEnabled)
@@ -75,6 +84,7 @@ import ClipShelfLocalization
         XCTAssertTrue(h.texts.contains(L10n.text("正在读取条目…")))
         XCTAssertTrue(try h.retryButton().isHidden)
         try h.reply()
+        XCTAssertTrue(status.isHidden, "Routine status may disappear only after the error is cleared")
         XCTAssertTrue(h.texts.contains(L10n.text("复制一点内容，从这里开始")))
         XCTAssertFalse(h.texts.contains(L10n.text("正在读取条目…")))
     }

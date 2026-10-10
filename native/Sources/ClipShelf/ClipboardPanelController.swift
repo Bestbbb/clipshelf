@@ -41,18 +41,27 @@ private struct PanelBoundaryNavigation {
 }
 
 private final class ResultsFocusView: NSCollectionView {
+    override var frame: NSRect {
+        willSet { boundFlowItem(to: newValue.size) }
+    }
+    override var bounds: NSRect {
+        willSet { boundFlowItem(to: newValue.size) }
+    }
     override func setFrameSize(_ newSize: NSSize) {
         // Native flow layout can shrink its document during scrolling/resizing,
         // before the controller receives the window resize notification.
+        boundFlowItem(to: newSize)
+        super.setFrameSize(newSize)
+    }
+    private func boundFlowItem(to size: NSSize) {
         if let layout = collectionViewLayout as? NSCollectionViewFlowLayout {
             let insets = enclosingScrollView?.contentInsets ?? NSEdgeInsets()
-            let height = max(1, newSize.height - layout.sectionInset.top - layout.sectionInset.bottom
+            let height = max(1, size.height - layout.sectionInset.top - layout.sectionInset.bottom
                              - insets.top - insets.bottom - 1)
             if layout.itemSize.height > height {
                 layout.itemSize = NSSize(width: layout.itemSize.width, height: height)
             }
         }
-        super.setFrameSize(newSize)
     }
     override var acceptsFirstResponder: Bool { true }
     var onDropItems: (([NSPasteboardItem], Any?, NSPoint) -> Bool)?
@@ -221,7 +230,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private let searchField = NSSearchField()
-    private let statusLabel = NSTextField(labelWithString: "")
+    private var searchWidthConstraint: NSLayoutConstraint?
+    private var searchCancelCell: NSButtonCell?
+    private var isSearchExpanded = false
+    private var searchPresentationConfigured = false
+    private let statusLabel = ShelfStatusLabel(labelWithString: "")
     private let pasteButton = NSButton(title: "", target: nil, action: nil)
     private let destinationPopup = NSPopUpButton()
     private var canPasteToDestination = false
@@ -264,6 +277,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         else { copySelection() }
     }
     private var baseStatus = ""
+
+    func setRoutineStatus(_ status: String?) {
+        statusLabel.routineStatus = status
+        countLabel.toolTip = status
+    }
     private let countLabel = NSTextField(labelWithString: "")
     private let emptyTitle = NSTextField(labelWithString: L10n.text("复制一点内容，从这里开始"))
     private let emptyDescription = NSTextField(labelWithString: L10n.text("在其他 App 中复制文本，再按 ⌘⇧V 打开 ClipShelf。"))
@@ -515,8 +533,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         baseStatus = status ?? L10n.text("本机保存 · 随时取用")
         statusLabel.stringValue = baseStatus
         resultPresentation = usesRemoteQuery ? .loading : .ready
-        reloadResults(resetScroll: true)
+        setSearchExpanded(false)
         positionShelf(on: screen)
+        reloadResults(resetScroll: true)
         if let window { presentationMotion.present(window: window) }
         window?.makeFirstResponder(searchField)
         installEventMonitor()
@@ -710,6 +729,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         defer { applyingPresentationGeometry = false }
         window.minSize = NSSize(width: min(720, frame.width), height: min(PanelPresentationGeometry.minimumHeight, frame.height))
         window.maxSize = NSSize(width: visible.width, height: visible.height)
+        // setFrame can lay out descendants before windowDidResize is delivered.
+        // Retire the previous screen's item height before that native layout.
+        if let layout = resultsView.collectionViewLayout as? NSCollectionViewFlowLayout {
+            layout.itemSize = NSSize(width: layout.itemSize.width, height: 1)
+        }
         window.setFrame(frame, display: isVisible)
         updateCardLayout()
     }
@@ -877,11 +901,16 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         background.registerForDraggedTypes(dragTypes)
         background.onDropItems = { [weak self] items, source in self?.handleDrop(items, source: source) }
         panel.contentView = background
-        defer { InterfaceLayout.apply(to: background, direction: layoutDirection) }
 
         searchField.placeholderString = L10n.text("搜索内容或来源 App")
         searchField.font = .systemFont(ofSize: 13)
         searchField.controlSize = .regular
+        searchField.focusRingType = .none
+        if let cell = searchField.cell as? NSSearchFieldCell {
+            searchCancelCell = cell.cancelButtonCell
+            cell.searchButtonCell?.target = self
+            cell.searchButtonCell?.action = #selector(focusSearch)
+        }
         searchField.sendsSearchStringImmediately = true
         searchField.delegate = self
         searchField.setAccessibilityLabel(L10n.text("搜索剪贴板历史"))
@@ -895,6 +924,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         permissions.toolTip = L10n.text("设置直接粘贴所需的辅助功能权限")
         let close = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: L10n.text("收起 ClipShelf")) ?? NSImage(), target: self, action: #selector(closePanel))
         close.bezelStyle = .inline
+        close.isBordered = false
         compactButton.image = NSImage(systemSymbolName: "rectangle.compress.vertical", accessibilityDescription: L10n.text("切换紧凑卡片"))
         compactButton.imagePosition = .imageOnly
         compactButton.bezelStyle = .inline
@@ -983,7 +1013,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             control.controlSize = .small
             control.font = .systemFont(ofSize: 11)
         }
-        for (title, action) in [(L10n.text("暂停记录"), #selector(togglePause)),
+        boardActions.menu?.addItem(.separator())
+        for (title, action) in [(L10n.text("全部筛选…"), #selector(showAllFilters)),
+                                (L10n.text("暂停记录"), #selector(togglePause)),
                                 (L10n.text("切换紧凑卡片"), #selector(toggleCompactMode)),
                                 (L10n.text("粘贴权限"), #selector(openPermissions)),
                                 (L10n.text("设置…"), #selector(openSettings))] {
@@ -991,16 +1023,19 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             item.target = self
             boardActions.menu?.addItem(item)
         }
-        boardActions.item(at: 0)?.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: L10n.text("分组操作"))
+        boardActions.item(at: 0)?.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: L10n.text("分组操作"))
         boardActions.imagePosition = .imageOnly
         (boardActions.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
         boardActions.bezelStyle = .inline
+        boardActions.isBordered = false
         boardActions.setAccessibilityLabel(L10n.text("分组操作"))
         let addBoard = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: L10n.text("新建分组…")) ?? NSImage(), target: self, action: #selector(createBoard))
-        addBoard.title = L10n.text("新建分组…")
-        addBoard.imagePosition = .imageLeading
+        addBoard.imagePosition = .imageOnly
+        addBoard.setAccessibilityLabel(L10n.text("新建分组…"))
+        addBoard.toolTip = L10n.text("新建分组…")
         addBoard.setAccessibilityIdentifier("pinboard.create")
         addBoard.bezelStyle = .inline
+        addBoard.isBordered = false
         allFiltersButton.image = NSImage(systemSymbolName: "line.3.horizontal.decrease.circle", accessibilityDescription: L10n.text("全部筛选"))
         allFiltersButton.imagePosition = .imageOnly
         allFiltersButton.bezelStyle = .inline
@@ -1008,22 +1043,30 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         clearFiltersButton.imagePosition = .imageOnly
         clearFiltersButton.setAccessibilityLabel(L10n.text("清除条件"))
         clearFiltersButton.isHidden = true
-        let toolbarSpace = NSView()
-        toolbarSpace.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let header = NSStackView(views: [boardTabs, addBoard, toolbarSpace, searchField, allFiltersButton, clearFiltersButton, boardActions, close])
+        let header = NSStackView(views: [searchField, boardTabs, addBoard])
         header.orientation = .horizontal
         header.alignment = .centerY
-        header.spacing = 12
+        header.spacing = 10
+        // NSSearchField's native alignment rect extends two points beyond its frame.
+        header.edgeInsets = NSEdgeInsets(top: 0, left: 2, bottom: 0, right: 2)
         header.setAccessibilityIdentifier("shelf.toolbar")
         boardTabs.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         boardTabs.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         addBoard.setContentCompressionResistancePriority(.required, for: .horizontal)
-        for button in [allFiltersButton, clearFiltersButton, close] {
+        let headerActions = NSStackView(views: [allFiltersButton, clearFiltersButton, boardActions, close])
+        headerActions.orientation = .horizontal
+        headerActions.alignment = .centerY
+        headerActions.spacing = 8
+        headerActions.setAccessibilityIdentifier("shelf.toolbar-actions")
+        for button in [allFiltersButton, clearFiltersButton, close, addBoard] {
             button.widthAnchor.constraint(equalToConstant: 26).isActive = true
         }
-        boardActions.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        boardActions.widthAnchor.constraint(equalToConstant: 28).isActive = true
 
         scrollView.drawsBackground = false
+        // NSScroller chooses its orientation from its initial frame. Give the
+        // horizontal scroller a horizontal frame before the first Auto Layout pass.
+        scrollView.horizontalScroller = NSScroller(frame: NSRect(x: 0, y: 0, width: 100, height: 12))
         scrollView.hasHorizontalScroller = true
         scrollView.hasVerticalScroller = false
         scrollView.autohidesScrollers = true
@@ -1079,11 +1122,12 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         hints.textColor = .secondaryLabelColor
         hints.lineBreakMode = .byTruncatingTail
         hints.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        hints.isHidden = true
         pasteButton.target = self
         pasteButton.action = #selector(performPrimaryPaste)
-        pasteButton.bezelStyle = .rounded
+        pasteButton.bezelStyle = .inline
         pasteButton.controlSize = .regular
-        pasteButton.font = .systemFont(ofSize: 12, weight: .semibold)
+        pasteButton.font = .systemFont(ofSize: 11, weight: .medium)
         pasteButton.setAccessibilityIdentifier("shelf.paste")
         pasteButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         destinationPopup.target = self
@@ -1102,18 +1146,25 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         let footer = NSStackView(views: [pasteButton, destinationPopup, statusLabel, retryLoadingButton, NSView(), countLabel, previousPageButton, loadMoreButton, hints])
         footer.orientation = .horizontal
         footer.alignment = .centerY
-        footer.spacing = 16
+        footer.spacing = 12
 
-        for view in [header, scrollView, emptyStack, footer] {
+        for view in [header, headerActions, scrollView, emptyStack, footer] {
             view.translatesAutoresizingMaskIntoConstraints = false
             background.addSubview(view)
         }
+        let centeredHeader = header.centerXAnchor.constraint(equalTo: background.centerXAnchor)
+        centeredHeader.priority = .defaultHigh
+        searchWidthConstraint = searchField.widthAnchor.constraint(equalToConstant: 32)
+        searchWidthConstraint?.isActive = true
         NSLayoutConstraint.activate([
-            header.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 18),
-            header.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -18),
+            centeredHeader,
+            header.leadingAnchor.constraint(greaterThanOrEqualTo: background.leadingAnchor, constant: 24),
+            header.trailingAnchor.constraint(lessThanOrEqualTo: headerActions.leadingAnchor, constant: -16),
             header.topAnchor.constraint(equalTo: background.topAnchor, constant: 14),
             header.heightAnchor.constraint(equalToConstant: 32),
-            searchField.widthAnchor.constraint(equalToConstant: 230),
+            headerActions.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -18),
+            headerActions.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            headerActions.heightAnchor.constraint(equalToConstant: 30),
             boardTabs.widthAnchor.constraint(greaterThanOrEqualToConstant: 104),
             boardTabs.heightAnchor.constraint(equalToConstant: 30),
             scrollView.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 18),
@@ -1124,12 +1175,44 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             emptyStack.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor),
             footer.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 24),
             footer.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -24),
-            footer.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -12),
-            footer.heightAnchor.constraint(equalToConstant: 28)
+            footer.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -9),
+            footer.heightAnchor.constraint(equalToConstant: 22)
         ])
+        InterfaceLayout.apply(to: background, direction: layoutDirection)
+        setSearchExpanded(false)
+    }
+
+    private func setSearchExpanded(_ expanded: Bool) {
+        let next = expanded || !searchField.stringValue.isEmpty
+        guard !searchPresentationConfigured || next != isSearchExpanded else { return }
+        searchPresentationConfigured = true
+        isSearchExpanded = next
+        searchWidthConstraint?.constant = isSearchExpanded ? 220 : 32
+        searchField.placeholderString = isSearchExpanded ? L10n.text("搜索内容或来源 App") : ""
+        searchField.isBordered = false
+        searchField.isBezeled = isSearchExpanded
+        searchField.drawsBackground = isSearchExpanded
+        searchField.focusRingType = isSearchExpanded ? .default : .none
+        (searchField.cell as? NSSearchFieldCell)?.cancelButtonCell = isSearchExpanded ? searchCancelCell : nil
+        allFiltersButton.isHidden = !isSearchExpanded
+        // Retire the old height before AppKit relayouts the document while the
+        // toolbar changes width. Restore the viewport-sized cards afterwards.
+        if let layout = resultsView.collectionViewLayout as? NSCollectionViewFlowLayout {
+            layout.itemSize = NSSize(width: layout.itemSize.width, height: 1)
+        }
+        updateCardLayout()
+    }
+
+    @objc private func focusSearch() {
+        invalidateOutputContext()
+        cancelBoundaryNavigation()
+        setSearchExpanded(true)
+        window?.makeFirstResponder(searchField)
+        cardViews.forEach(updateShortcutLabel)
     }
 
     func controlTextDidChange(_ obj: Notification) {
+        setSearchExpanded(true)
         // Marked text remains owned by the input method; results update at commit.
         guard !isComposing else { return }
         // Starting a search intentionally leaves the current board: results are global
@@ -1685,6 +1768,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     @objc func showAllFilters() {
         guard isVisible, !isComposing else { return }
+        setSearchExpanded(true)
         invalidateOutputContext()
         cancelBoundaryNavigation()
         if let allFiltersController { allFiltersController.focusInitialControl(); return }
@@ -2156,8 +2240,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             switch command {
             case .search:
                 outputActionGeneration = UUID()
-                if editingSearch { showAllFilters() }
-                else { window?.makeFirstResponder(searchField); cardViews.forEach(updateShortcutLabel) }
+                if editingSearch && isSearchExpanded { showAllFilters() }
+                else { focusSearch() }
             case .settings: onSettings?()
             case .pause: onPauseToggle?()
             case .newText: onNewText?()
@@ -2211,7 +2295,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             window?.makeFirstResponder(resultsView); cardViews.forEach(updateShortcutLabel)
             return true
         case 48 where !editingSearch && flags == .shift:
-            window?.makeFirstResponder(searchField); cardViews.forEach(updateShortcutLabel)
+            focusSearch()
             return true
         case 49 where !editingSearch && flags.isEmpty:
             if !event.isARepeat { resolveFocused { [weak self] in self?.showDetail($0, editing: false) } }
@@ -2237,7 +2321,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             if !editingSearch, flags.intersection([.command, .control]).isEmpty,
                let characters = event.characters, !characters.isEmpty,
                characters.unicodeScalars.allSatisfy({ !$0.properties.isWhitespace && $0.value >= 0x20 && !($0.value >= 0xF700 && $0.value <= 0xF8FF) }) {
-                window?.makeFirstResponder(searchField); cardViews.forEach(updateShortcutLabel)
+                focusSearch()
             }
             return false
         }

@@ -94,9 +94,11 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     private var isDragging = false
 
     private let accent = NSView()
+    private let iconBackground = NSView()
     private let sourceIcon = NSImageView()
     private static var appIcons: [String: NSImage] = [:]
     private let sourceLabel = NSTextField(labelWithString: "")
+    private let timeLabel = NSTextField(labelWithString: "")
     private let bodyLabel = NSTextField(wrappingLabelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
     private let shortcutLabel = NSTextField(labelWithString: "")
@@ -106,12 +108,14 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     private var layoutIsConfigured = false
     private var usesShortLayout = true
     private var showsQuickPasteLabel = false
+    private let maximumPreviewLines: Int
     private var tracking: NSTrackingArea?
     private var isHovered = false { didSet { updateAppearance() } }
 
     init(record: ClipboardCardContent, position: Int, compact: Bool = false) {
         self.record = record
         self.position = position
+        maximumPreviewLines = compact ? 3 : 7
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         isBordered = false
@@ -119,6 +123,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         wantsLayer = true
         layer?.cornerRadius = 12
         layer?.borderWidth = 1
+        layer?.masksToBounds = true
         setButtonType(.momentaryChange)
         target = self
         action = #selector(pressed)
@@ -129,18 +134,22 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         accent.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
 
         sourceLabel.stringValue = record.sourceApp ?? L10n.text("剪贴板")
-        sourceLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-        sourceLabel.textColor = .secondaryLabelColor
+        sourceLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        sourceLabel.textColor = .white
         sourceLabel.lineBreakMode = .byTruncatingTail
+        timeLabel.font = .systemFont(ofSize: 11)
+        timeLabel.textColor = .white.withAlphaComponent(0.9)
+        timeLabel.lineBreakMode = .byTruncatingTail
         shortcutLabel.stringValue = ""
         shortcutLabel.font = .monospacedSystemFont(ofSize: 10, weight: .medium)
         shortcutLabel.textColor = .tertiaryLabelColor
         bodyLabel.stringValue = record.preview
         bodyLabel.font = .systemFont(ofSize: compact ? 12 : 15, weight: .regular)
         bodyLabel.textColor = .labelColor
-        bodyLabel.maximumNumberOfLines = compact ? 3 : 7
+        bodyLabel.maximumNumberOfLines = maximumPreviewLines
         bodyLabel.lineBreakMode = .byTruncatingTail
         bodyLabel.cell?.wraps = true
+        bodyLabel.cell?.truncatesLastVisibleLine = true
         bodyLabel.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         shortTitleLabel.stringValue = record.title
         shortTitleLabel.font = .systemFont(ofSize: 12, weight: .medium)
@@ -151,7 +160,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         shortTitleLabel.setAccessibilityIdentifier("clipboard.short-title")
         shortTitleLabel.wantsLayer = true
         shortTitleLabel.layer?.masksToBounds = true
-        for label in [sourceLabel, bodyLabel, detailLabel, shortcutLabel, shortTitleLabel] {
+        for label in [sourceLabel, timeLabel, bodyLabel, detailLabel, shortcutLabel, shortTitleLabel] {
             label.isSelectable = false
             label.isEditable = false
         }
@@ -162,10 +171,17 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         let kind = Self.contentKind(record)
         let elapsed = Date().timeIntervalSince(record.copiedAt)
         let relativeTime = abs(elapsed) < 10 ? L10n.text("刚刚") : formatter.localizedString(for: record.copiedAt, relativeTo: Date())
-        sourceLabel.stringValue = "\(kind) · \(relativeTime)"
-        detailLabel.stringValue = record.sourceApp ?? L10n.text("剪贴板")
+        sourceLabel.stringValue = kind
+        timeLabel.stringValue = relativeTime
+        detailLabel.stringValue = record.kind == .text || record.kind == .link
+            ? L10n.text("\(record.text.count) 个字符") : record.title
+        toolTip = record.sourceApp ?? L10n.text("剪贴板")
+        iconBackground.wantsLayer = true
+        iconBackground.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.96).cgColor
+        sourceIcon.toolTip = record.sourceApp ?? L10n.text("剪贴板")
         sourceIcon.setAccessibilityIdentifier("clipboard.source-icon")
         sourceIcon.imageScaling = .scaleProportionallyDown
+        sourceIcon.contentTintColor = NSColor(srgbRed: 0.28, green: 0.30, blue: 0.34, alpha: 1)
         if let bundleID = record.sourceBundleID {
             if let cached = Self.appIcons[bundleID] { sourceIcon.image = cached }
             else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
@@ -175,7 +191,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
             }
         }
         if sourceIcon.image == nil { sourceIcon.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: nil) }
-        detailLabel.font = .systemFont(ofSize: 10, weight: .medium)
+        detailLabel.font = .systemFont(ofSize: 11)
         detailLabel.textColor = .secondaryLabelColor
         detailLabel.lineBreakMode = .byTruncatingTail
 
@@ -193,12 +209,12 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         case .color:
             previewImage.layer?.backgroundColor = Self.hexColor(record.text)?.cgColor
             bodyLabel.isHidden = true
-            detailLabel.stringValue = "\(record.text) · \(relativeTime)"
+            detailLabel.stringValue = record.text
         default:
             previewImage.isHidden = true
         }
 
-        for child in [accent, sourceLabel, sourceIcon, shortcutLabel, previewImage, bodyLabel, detailLabel] {
+        for child in [accent, iconBackground, sourceLabel, timeLabel, sourceIcon, shortcutLabel, previewImage, bodyLabel, detailLabel] {
             child.translatesAutoresizingMaskIntoConstraints = false
             addSubview(child)
         }
@@ -209,14 +225,21 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
             accent.leadingAnchor.constraint(equalTo: leadingAnchor),
             accent.trailingAnchor.constraint(equalTo: trailingAnchor),
             accent.topAnchor.constraint(equalTo: topAnchor),
-            accent.heightAnchor.constraint(equalToConstant: 40),
-            sourceLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 13),
-            sourceLabel.centerYAnchor.constraint(equalTo: accent.centerYAnchor),
-            sourceLabel.trailingAnchor.constraint(lessThanOrEqualTo: sourceIcon.leadingAnchor, constant: -8),
-            sourceIcon.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -13),
+            accent.heightAnchor.constraint(equalToConstant: 58),
+            iconBackground.trailingAnchor.constraint(equalTo: trailingAnchor),
+            iconBackground.topAnchor.constraint(equalTo: accent.topAnchor),
+            iconBackground.bottomAnchor.constraint(equalTo: accent.bottomAnchor),
+            iconBackground.widthAnchor.constraint(equalToConstant: 58),
+            sourceLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            sourceLabel.topAnchor.constraint(equalTo: accent.topAnchor, constant: 10),
+            sourceLabel.trailingAnchor.constraint(lessThanOrEqualTo: iconBackground.leadingAnchor, constant: -8),
+            timeLabel.leadingAnchor.constraint(equalTo: sourceLabel.leadingAnchor),
+            timeLabel.topAnchor.constraint(equalTo: sourceLabel.bottomAnchor, constant: 2),
+            timeLabel.trailingAnchor.constraint(lessThanOrEqualTo: iconBackground.leadingAnchor, constant: -8),
+            sourceIcon.centerXAnchor.constraint(equalTo: iconBackground.centerXAnchor),
             sourceIcon.centerYAnchor.constraint(equalTo: accent.centerYAnchor),
-            sourceIcon.widthAnchor.constraint(equalToConstant: 20),
-            sourceIcon.heightAnchor.constraint(equalToConstant: 20),
+            sourceIcon.widthAnchor.constraint(equalToConstant: 36),
+            sourceIcon.heightAnchor.constraint(equalToConstant: 36),
             shortcutLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -13),
             shortcutLabel.centerYAnchor.constraint(equalTo: detailLabel.centerYAnchor),
             bodyLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 15),
@@ -228,8 +251,8 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
             previewImage.topAnchor.constraint(equalTo: accent.bottomAnchor, constant: 8),
             previewImage.bottomAnchor.constraint(equalTo: detailLabel.topAnchor, constant: -12),
             detailLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 15),
-            detailLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -15),
-            detailLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -15)
+            detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: shortcutLabel.leadingAnchor, constant: -8),
+            detailLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12)
         ]
         setAccessibilityLabel("\(record.sourceApp ?? L10n.text("剪贴板"))，\(kind)，\(record.text.prefix(140))")
         setAccessibilityHelp(L10n.text("单击粘贴；⌘/Shift 单击多选；回车粘贴，Shift 回车以纯文本粘贴。"))
@@ -254,7 +277,15 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     override func layout() {
         if layoutIsConfigured { applyLayoutMode(for: bounds.height) }
         super.layout()
-        guard usesShortLayout else { return }
+        if !usesShortLayout {
+            if let font = bodyLabel.font {
+                let lineHeight = ceil(font.ascender - font.descender + font.leading)
+                let available = max(0, bounds.height - 58 - 14 - 12 - detailLabel.intrinsicContentSize.height - 12)
+                let lines = max(1, min(maximumPreviewLines, Int(available / max(1, lineHeight))))
+                if bodyLabel.maximumNumberOfLines != lines { bodyLabel.maximumNumberOfLines = lines }
+            }
+            return
+        }
         let inset = min(15, max(0, bounds.width / 4))
         let height = min(max(0, bounds.height), max(0, shortTitleLabel.intrinsicContentSize.height))
         shortTitleLabel.frame = NSRect(x: bounds.minX + inset, y: bounds.midY - height / 2,
@@ -270,7 +301,9 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         }
         usesShortLayout = shortened
         accent.isHidden = shortened
+        iconBackground.isHidden = shortened
         sourceLabel.isHidden = shortened
+        timeLabel.isHidden = shortened
         sourceIcon.isHidden = shortened
         shortcutLabel.isHidden = shortened || !showsQuickPasteLabel
         detailLabel.isHidden = shortened
@@ -538,19 +571,32 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
 
     private func updateAppearance() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            let tint: NSColor
-            switch record.kind {
-            case .text: tint = .systemBlue
-            case .link: tint = .systemTeal
-            case .image: tint = .systemPink
-            case .file: tint = .systemOrange
-            case .color: tint = .systemPurple
-            }
-            accent.layer?.backgroundColor = tint.withAlphaComponent(0.12).cgColor
-            layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(isHovered ? 1 : 0.94).cgColor
-            layer?.borderColor = (isSelected ? NSColor.controlAccentColor.withAlphaComponent(0.75) : NSColor.separatorColor.withAlphaComponent(isHovered ? 0.8 : 0.45)).cgColor
-            layer?.borderWidth = isSelected ? 2 : 1
+            accent.layer?.backgroundColor = headerColor.cgColor
+            layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+            layer?.borderColor = (isSelected ? NSColor.controlAccentColor : NSColor.separatorColor.withAlphaComponent(isHovered ? 0.65 : 0.3)).cgColor
+            layer?.borderWidth = isSelected ? 2.5 : 0.5
         }
         setAccessibilityValue(isSelected ? L10n.text("已选中") : "")
+    }
+
+    /// Source identity has priority; unknown sources retain a consistent type palette.
+    /// These tones keep white header text readable in both system appearances.
+    private var headerColor: NSColor {
+        switch record.sourceBundleID {
+        case "com.openai.codex", "com.openai.chat":
+            return NSColor(srgbRed: 0.06, green: 0.10, blue: 0.22, alpha: 1)
+        case "com.tencent.xinWeChat":
+            return NSColor(srgbRed: 0.02, green: 0.46, blue: 0.27, alpha: 1)
+        case "com.todesktop.230313mzl4w4u92":
+            return NSColor(srgbRed: 0.22, green: 0.25, blue: 0.30, alpha: 1)
+        default:
+            switch record.kind {
+            case .text: return NSColor(srgbRed: 0.16, green: 0.39, blue: 0.76, alpha: 1)
+            case .link: return NSColor(srgbRed: 0.04, green: 0.43, blue: 0.47, alpha: 1)
+            case .image: return NSColor(srgbRed: 0.27, green: 0.32, blue: 0.51, alpha: 1)
+            case .file: return NSColor(srgbRed: 0.36, green: 0.39, blue: 0.44, alpha: 1)
+            case .color: return NSColor(srgbRed: 0.39, green: 0.31, blue: 0.48, alpha: 1)
+            }
+        }
     }
 }

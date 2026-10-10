@@ -85,6 +85,7 @@
   "{0} 个共享板尚未同步：{1}": "Niet-gesynchroniseerde gedeelde prikborden: {0}. {1}",
   "{0} 个分组": "Prikborden: {0}",
   "{0} 个区域 · {1} 处命中 · 平均置信度 {2}%": "Gebieden: {0} · Overeenkomsten: {1} · Gemiddelde betrouwbaarheid: {2}%",
+  "{0} 个字符": "{0} tekens",
   "{0} 条": "Onderdelen: {0}",
   "{0} 条固定记录仅移出历史，仍保留在分组中。": "Vastgemaakte records die uit de geschiedenis verdwijnen maar op hun prikbord blijven: {0}.",
   "{0} 的访问令牌": "Toegangstoken voor {0}",

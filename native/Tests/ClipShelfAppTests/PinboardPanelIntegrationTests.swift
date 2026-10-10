@@ -315,7 +315,12 @@ import XCTest
             .first { $0.accessibilityIdentifier() == "shelf.toolbar" })
         let search = try h.view(NSSearchField.self)
         let filters = try h.view(NSButton.self, label: "全部筛选")
-        for control in [strip, search, filters] as [NSView] {
+        let actions = try XCTUnwrap(h.descendants.compactMap { $0 as? NSStackView }
+            .first { $0.accessibilityIdentifier() == "shelf.toolbar-actions" })
+        XCTAssertTrue(filters.isDescendant(of: actions), file: file, line: line)
+        XCTAssertTrue(filters.isHidden, "Collapsed search keeps the toolbar quiet", file: file, line: line)
+        _ = try h.menuItem("showAllFilters") // The complete filter editor stays available in overflow.
+        for control in [strip, search] as [NSView] {
             XCTAssertTrue(control.isDescendant(of: toolbar), file: file, line: line)
             XCTAssertFalse(control.isHiddenOrHasHiddenAncestor, file: file, line: line)
             let frame = control.convert(control.bounds, to: toolbar)
@@ -323,7 +328,7 @@ import XCTest
             XCTAssertGreaterThan(frame.height, 0, file: file, line: line)
             XCTAssertGreaterThanOrEqual(frame.minX, -0.5, file: file, line: line)
             XCTAssertLessThanOrEqual(frame.maxX, toolbar.bounds.maxX + 0.5, file: file, line: line)
-            XCTAssertGreaterThanOrEqual(frame.minY, -0.5, file: file, line: line)
+            XCTAssertGreaterThanOrEqual(frame.minY, -0.5, "\(type(of: control)) frame \(frame) outside toolbar \(toolbar.bounds)", file: file, line: line)
             XCTAssertLessThanOrEqual(frame.maxY, toolbar.bounds.maxY + 0.5, file: file, line: line)
         }
         let collection = try h.view(NSCollectionView.self, label: "剪贴板搜索结果")
@@ -336,7 +341,7 @@ import XCTest
             XCTAssertGreaterThan(frame.height, 0, "\(type(of: view)) has no height", file: file, line: line)
             XCTAssertGreaterThanOrEqual(frame.minX, -0.5, file: file, line: line)
             XCTAssertLessThanOrEqual(frame.maxX, root.bounds.maxX + 0.5, file: file, line: line)
-            XCTAssertGreaterThanOrEqual(frame.minY, -0.5, file: file, line: line)
+            XCTAssertGreaterThanOrEqual(frame.minY, -0.5, "\(type(of: view)) frame \(frame) outside root \(root.bounds)", file: file, line: line)
             XCTAssertLessThanOrEqual(frame.maxY, root.bounds.maxY + 0.5, file: file, line: line)
         }
         for index in 0..<(frames.count - 1) {
@@ -344,12 +349,23 @@ import XCTest
             if root.isFlipped { XCTAssertLessThanOrEqual(frames[index].maxY, frames[index + 1].minY + 0.5, file: file, line: line) }
             else { XCTAssertGreaterThanOrEqual(frames[index].minY, frames[index + 1].maxY - 0.5, file: file, line: line) }
         }
+        h.panel.perform(NSSelectorFromString("focusSearch"))
+        root.layoutSubtreeIfNeeded()
+        XCTAssertFalse(filters.isHiddenOrHasHiddenAncestor, file: file, line: line)
+        XCTAssertGreaterThan(search.bounds.width, 100, file: file, line: line)
+        for control in [toolbar, actions] as [NSView] {
+            let frame = control.convert(control.bounds, to: root)
+            XCTAssertGreaterThanOrEqual(frame.minX, -0.5, file: file, line: line)
+            XCTAssertLessThanOrEqual(frame.maxX, root.bounds.maxX + 0.5, file: file, line: line)
+        }
+        XCTAssertFalse(toolbar.convert(toolbar.bounds, to: root).intersects(actions.convert(actions.bounds, to: root)),
+                       "Expanded search must keep group navigation and overflow separate", file: file, line: line)
         let layout = try XCTUnwrap(collection.collectionViewLayout)
         layout.prepare()
         let card = try XCTUnwrap(layout.layoutAttributesForItem(at: IndexPath(item: 0, section: 0))?.frame)
         let clip = scroll.contentView.bounds
         XCTAssertGreaterThan(card.height, 0, file: file, line: line)
-        XCTAssertGreaterThanOrEqual(card.minY, clip.minY - 0.5, file: file, line: line)
+        XCTAssertGreaterThanOrEqual(card.minY, clip.minY - 0.5, "Card \(card), clip \(clip)", file: file, line: line)
         XCTAssertLessThanOrEqual(card.maxY, clip.maxY + 0.5, "The card is clipped vertically: \(card), clip \(clip)", file: file, line: line)
     }
 }

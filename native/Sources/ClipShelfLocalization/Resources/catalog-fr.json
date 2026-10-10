@@ -85,6 +85,7 @@
   "{0} 个共享板尚未同步：{1}": "{0} tableaux partagés non synchronisés : {1}",
   "{0} 个分组": "Tableaux : {0}",
   "{0} 个区域 · {1} 处命中 · 平均置信度 {2}%": "Zones : {0} · Correspondances : {1} · Confiance moyenne : {2}%",
+  "{0} 个字符": "{0} caractères",
   "{0} 条": "Éléments : {0}",
   "{0} 条固定记录仅移出历史，仍保留在分组中。": "{0} éléments épinglés seront retirés de l’historique mais conservés dans leurs tableaux.",
   "{0} 的访问令牌": "Jeton d’accès de {0}",

@@ -85,6 +85,7 @@
   "{0} 个共享板尚未同步：{1}": "Tableros compartidos sin sincronizar: {0}. {1}",
   "{0} 个分组": "Tableros: {0}",
   "{0} 个区域 · {1} 处命中 · 平均置信度 {2}%": "Regiones: {0} · Coincidencias: {1} · Confianza media: {2}%",
+  "{0} 个字符": "{0} caracteres",
   "{0} 条": "Elementos: {0}",
   "{0} 条固定记录仅移出历史，仍保留在分组中。": "Registros fijados que se quitarán del historial y se conservarán en sus tableros: {0}.",
   "{0} 的访问令牌": "Token de acceso para {0}",

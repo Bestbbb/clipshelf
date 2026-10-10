@@ -973,6 +973,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             entry.state = entry.tag == preferences.integer(forKey: "retentionDays") ? .on : .off
         }
         panel.setCapturePaused(!capture.isRunning, recordingAllowed: !validation)
+        panel.setRoutineStatus(demo || (!validation && statusMessage == nil && capture.isRunning && paste.hasPermission) ? statusText : nil)
         if demo { panel.update(records: records, status: statusText) }
         else { panel.updateStatus(statusText) }
     }
@@ -2301,11 +2302,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
 
     private static var demoRecords: [ClipboardRecord] {
         var result = [
-            ClipboardRecord(text: "把复制的内容，放回你的工作流。\n\n唤起、找到、粘贴，然后继续。", sourceApp: "备忘录", copiedAt: Date()),
-            ClipboardRecord(text: "https://github.com/Bestbbb/clipshelf", sourceApp: "Safari", copiedAt: Date().addingTimeInterval(-120)),
-            ClipboardRecord(text: "struct ClipboardItem: Identifiable {\n    let id: UUID\n    let content: String\n}", sourceApp: "Xcode", copiedAt: Date().addingTimeInterval(-360)),
+            ClipboardRecord(text: "把复制的内容，放回你的工作流。\n\n唤起、找到、粘贴，然后继续。", sourceApp: "备忘录", sourceBundleID: "com.apple.Notes", copiedAt: Date()),
+            ClipboardRecord(text: "https://github.com/Bestbbb/clipshelf", sourceApp: "Safari", sourceBundleID: "com.apple.Safari", copiedAt: Date().addingTimeInterval(-120)),
+            ClipboardRecord(text: "struct ClipboardItem: Identifiable {\n    let id: UUID\n    let content: String\n}", sourceApp: "Xcode", sourceBundleID: "com.apple.dt.Xcode", copiedAt: Date().addingTimeInterval(-360)),
             ClipboardRecord(text: "#457B9D", sourceApp: "设计稿", copiedAt: Date().addingTimeInterval(-900)),
-            ClipboardRecord(text: "会议笔记\n• 先把跨 App 的焦点恢复做好\n• 保持中文输入和键盘操作流畅\n• 用真实结果验证粘贴", sourceApp: "TextEdit", copiedAt: Date().addingTimeInterval(-1600))
+            ClipboardRecord(text: "会议笔记\n• 先把跨 App 的焦点恢复做好\n• 保持中文输入和键盘操作流畅\n• 用真实结果验证粘贴", sourceApp: "TextEdit", sourceBundleID: "com.apple.TextEdit", copiedAt: Date().addingTimeInterval(-1600))
         ]
         let fixture = NSImage(size: NSSize(width: 640, height: 400))
         fixture.lockFocus()

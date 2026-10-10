@@ -85,6 +85,7 @@
   "{0} 个共享板尚未同步：{1}": "Painéis compartilhados não sincronizados: {0}. {1}",
   "{0} 个分组": "Painéis: {0}",
   "{0} 个区域 · {1} 处命中 · 平均置信度 {2}%": "Regiões: {0} · Correspondências: {1} · Confiança média: {2}%",
+  "{0} 个字符": "{0} caracteres",
   "{0} 条": "Itens: {0}",
   "{0} 条固定记录仅移出历史，仍保留在分组中。": "Registros fixados que serão removidos do histórico e mantidos nos painéis: {0}.",
   "{0} 的访问令牌": "Token de acesso para {0}",

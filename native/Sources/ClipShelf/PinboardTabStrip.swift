@@ -2,6 +2,15 @@ import AppKit
 import ClipShelfCore
 import ClipShelfLocalization
 
+@MainActor
+private final class PinboardTabCell: NSButtonCell {
+    override func drawBezel(withFrame frame: NSRect, in controlView: NSView) {
+        guard state == .on || isHighlighted else { return }
+        NSColor.labelColor.withAlphaComponent(isHighlighted ? 0.13 : 0.08).setFill()
+        NSBezierPath(roundedRect: frame.insetBy(dx: 1, dy: 1), xRadius: 6, yRadius: 6).fill()
+    }
+}
+
 /// A separate native drag type prevents a board gesture from becoming clipboard content.
 @MainActor
 final class PinboardTabStrip: NSView {
@@ -45,9 +54,13 @@ final class PinboardTabStrip: NSView {
         translatesAutoresizingMaskIntoConstraints = false
         setAccessibilityRole(.group)
         setAccessibilityLabel(L10n.text("分组"))
-        allButton.bezelStyle = .inline
+        allButton.cell = PinboardTabCell(textCell: allButton.title)
+        allButton.bezelStyle = .rounded
         allButton.setButtonType(.toggle)
-        allButton.font = .systemFont(ofSize: 12, weight: .semibold)
+        allButton.font = .systemFont(ofSize: 13, weight: .medium)
+        allButton.contentTintColor = .labelColor
+        allButton.image = NSImage(systemSymbolName: "clock.arrow.circlepath", accessibilityDescription: nil)
+        allButton.imagePosition = .imageLeading
         allButton.target = self
         allButton.action = #selector(selectAllBoards)
         allButton.setAccessibilityIdentifier("pinboard.all")
@@ -278,9 +291,11 @@ final class PinboardTabButton: NSButton, NSDraggingSource {
         boardID = board.id
         self.owner = owner
         super.init(frame: .zero)
-        bezelStyle = .inline
+        cell = PinboardTabCell(textCell: board.name)
+        bezelStyle = .rounded
         setButtonType(.toggle)
-        font = .systemFont(ofSize: 12, weight: .medium)
+        font = .systemFont(ofSize: 13)
+        contentTintColor = .labelColor
         imagePosition = .imageLeading
         cell?.lineBreakMode = .byTruncatingTail
         target = self
@@ -296,7 +311,7 @@ final class PinboardTabButton: NSButton, NSDraggingSource {
         setAccessibilityLabel(board.name)
         setAccessibilityIdentifier("pinboard.\(boardID.uuidString)")
         let color = ClipboardCardView.hexColor(board.color) ?? .controlAccentColor
-        image = NSImage(size: NSSize(width: 9, height: 9), flipped: false) { rect in
+        image = NSImage(size: NSSize(width: 11, height: 11), flipped: false) { rect in
             color.setFill()
             NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
             return true

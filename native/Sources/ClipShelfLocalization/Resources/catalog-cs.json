@@ -85,6 +85,7 @@
   "{0} 个共享板尚未同步：{1}": "Nesynchronizované sdílené nástěnky: {0}: {1}",
   "{0} 个分组": "Nástěnky: {0}",
   "{0} 个区域 · {1} 处命中 · 平均置信度 {2}%": "Oblasti: {0} · Shody: {1} · Průměrná spolehlivost: {2}%",
+  "{0} 个字符": "{0} znaků",
   "{0} 条": "Položky: {0}",
   "{0} 条固定记录仅移出历史，仍保留在分组中。": "Připnuté záznamy ({0}) budou odebrány z historie, ale zůstanou na svých nástěnkách.",
   "{0} 的访问令牌": "Přístupový token pro {0}",

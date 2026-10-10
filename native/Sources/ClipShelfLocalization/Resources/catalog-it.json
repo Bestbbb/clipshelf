@@ -85,6 +85,7 @@
   "{0} 个共享板尚未同步：{1}": "Bacheche condivise non sincronizzate: {0}. {1}",
   "{0} 个分组": "Bacheche: {0}",
   "{0} 个区域 · {1} 处命中 · 平均置信度 {2}%": "Aree: {0} · Corrispondenze: {1} · Affidabilità media: {2}%",
+  "{0} 个字符": "{0} caratteri",
   "{0} 条": "Elementi: {0}",
   "{0} 条固定记录仅移出历史，仍保留在分组中。": "Voci fissate che verranno rimosse dalla cronologia ma conservate nelle bacheche: {0}.",
   "{0} 的访问令牌": "Token di accesso per {0}",
