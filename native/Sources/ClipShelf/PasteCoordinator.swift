@@ -2,9 +2,11 @@ import ClipShelfLocalization
 import AppKit
 import ApplicationServices
 import ClipShelfCore
+import OSLog
 
 @MainActor
 final class PasteCoordinator {
+    private static let outcomeLogger = Logger(subsystem: "io.github.bestbbb.clipshelf", category: "PasteOutcome")
     struct Target {
         let application: NSRunningApplication
         let window: AXUIElement?
@@ -157,6 +159,9 @@ final class PasteCoordinator {
             catch { finish(request, .cancelled, failure: .waitCancelled); return }
         }
         guard contextIsCurrent(request) else { return }
+        let foreground = String(describing: environment.foreground(for: target))
+        let modifiers = environment.heldModifiers.rawValue
+        Self.outcomeLogger.notice("readiness_timeout foreground=\(foreground, privacy: .public) focus=\(String(describing: lastFocus), privacy: .public) modifiers=\(modifiers, privacy: .public)")
         let message: String
         switch lastFocus {
         case .differentWindow: message = L10n.text("原窗口焦点未恢复；内容已复制。")
@@ -209,6 +214,9 @@ final class PasteCoordinator {
         case .busy: state = .busy
         }
         trace(.pasteCompleted, target: request.target, state: state, failure: failure)
+        // Keep cancellation reasons available after the panel has dismissed.
+        // Never log clipboard data, window titles, paths or input contents.
+        Self.outcomeLogger.notice("outcome=\(state.rawValue, privacy: .public) failure=\(failure?.rawValue ?? "none", privacy: .public) target=\(request.target != nil, privacy: .public) window=\(request.target?.window != nil, privacy: .public) input=\(request.target?.focusedElement != nil, privacy: .public)")
         if let message { onResult?(message) }
         if outcome == .dispatched { request.onDispatched?() }
         request.onCompleted?(outcome)

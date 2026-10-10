@@ -126,13 +126,24 @@ final class PasteSystemEnvironment: PasteEnvironment {
         return result
     }
     func prepareCommandV() -> (() -> Void)? {
-        guard let source = CGEventSource(stateID: .hidSystemState),
+        guard let events = Self.commandVEvents(restoring: CGEventSource.flagsState(.combinedSessionState)) else { return nil }
+        return { events.down.post(tap: .cghidEventTap); events.up.post(tap: .cghidEventTap) }
+    }
+
+    /// Build without posting so release-state regressions can be checked without
+    /// touching the desktop. Synthetic input must not mutate the hardware table.
+    static func commandVEvents(restoring flags: CGEventFlags) -> (down: CGEvent, up: CGEvent)? {
+        guard let source = CGEventSource(stateID: .privateState),
               let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { return nil }
-        down.flags = .maskCommand; up.flags = .maskCommand
+        down.flags = flags.union(.maskCommand)
+        // An unconditional Command flag on key-up leaves the combined session
+        // reporting Command held even though we never pressed that modifier.
+        // Preserve a real held Command for Stack; otherwise release our flag.
+        up.flags = flags
         down.setIntegerValueField(.eventSourceUserData, value: StackKeyMonitor.syntheticEventTag)
         up.setIntegerValueField(.eventSourceUserData, value: StackKeyMonitor.syntheticEventTag)
-        return { down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap) }
+        return (down, up)
     }
     func waitForReadiness() async throws { try await Task.sleep(nanoseconds: 15_000_000) }
     private static func attribute(_ element: AXUIElement, _ name: String) -> AXUIElement? {
