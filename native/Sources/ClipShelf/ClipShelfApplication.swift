@@ -42,6 +42,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     private let stack = StackCoordinator()
     private let stackPanel = StackPanelController()
     private let stackKeys = StackKeyMonitor()
+    private let pasteClickShield = PasteClickShield()
     private lazy var stackGestures: StackPasteGestureCoordinator<PasteCoordinator.Target> = StackPasteGestureCoordinator(
         ownProcessIdentifier: ProcessInfo.processInfo.processIdentifier,
         isAvailable: { [weak self] in self?.stackInputIsAvailable == true },
@@ -433,6 +434,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                 completion(record ?? nil)
             }
         }
+        panel.onCardPasteClick = { [weak self] event in
+            guard let self, !self.demo, self.interactionLifecycle.isAllowed,
+                  !self.requiresPasteDestinationChoice, self.paste.hasPermission, self.target?.window != nil else { return }
+            self.pasteClickShield.protect(event)
+        }
         panel.onPaste = { [weak self] record, plain in
             guard let self, self.interactionLifecycle.isAllowed else { return }
             if self.demo { self.setStatus(L10n.text("演示：已选择「\(record.title)」；不会写入剪贴板。")); return }
@@ -621,7 +627,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                 let point = event.window?.convertPoint(toScreen: event.locationInWindow) ?? event.locationInWindow
                 guard !self.panel.contains(screenPoint: point) else { return }
                 guard self.panel.isVisible else {
-                    if self.paste.cancelForMouseDown(at: event.timestamp) {
+                    if self.paste.cancelForMouseDown(at: event.timestamp, clickCount: event.clickCount) {
                         ValidationTrace.emit(.outsideClick, state: .hidden)
                         self.stackGestures.invalidate(); self.stack.cancelPendingPastes()
                     } else if !self.paste.hasPendingAttempt {
@@ -1347,6 +1353,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
 
     private func cancelPendingInteraction() {
         ValidationTrace.emit(.interactionCancelled, state: .requested)
+        pasteClickShield.cancel()
         stackGestures.invalidate()
         stack.cancelPendingPastes()
         paste.cancel()

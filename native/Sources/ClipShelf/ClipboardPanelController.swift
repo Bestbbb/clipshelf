@@ -41,6 +41,19 @@ private struct PanelBoundaryNavigation {
 }
 
 private final class ResultsFocusView: NSCollectionView {
+    override func setFrameSize(_ newSize: NSSize) {
+        // Native flow layout can shrink its document during scrolling/resizing,
+        // before the controller receives the window resize notification.
+        if let layout = collectionViewLayout as? NSCollectionViewFlowLayout {
+            let insets = enclosingScrollView?.contentInsets ?? NSEdgeInsets()
+            let height = max(1, newSize.height - layout.sectionInset.top - layout.sectionInset.bottom
+                             - insets.top - insets.bottom - 1)
+            if layout.itemSize.height > height {
+                layout.itemSize = NSSize(width: layout.itemSize.width, height: height)
+            }
+        }
+        super.setFrameSize(newSize)
+    }
     override var acceptsFirstResponder: Bool { true }
     var onDropItems: (([NSPasteboardItem], Any?, NSPoint) -> Bool)?
     var onDragLocation: ((NSPoint, Any?) -> NSDragOperation)?
@@ -101,6 +114,7 @@ private final class ClipboardCollectionItem: NSCollectionViewItem {
 /// Presents history without activating ClipShelf or performing clipboard side effects.
 @MainActor
 final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate, NSTextViewDelegate, NSWindowDelegate, NSPopoverDelegate, NSCollectionViewDataSource, NSMenuItemValidation {
+    var onCardPasteClick: ((NSEvent) -> Void)?
     var onPaste: ((ClipboardRecord, Bool) -> Void)?
     var onPasteRecords: (([ClipboardRecord], Bool) -> Void)?
     var onCopy: ((ClipboardRecord) -> Void)?
@@ -1018,7 +1032,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         scrollView.scrollerStyle = .overlay
         let layout = NSCollectionViewFlowLayout()
         layout.scrollDirection = .horizontal
-        layout.itemSize = NSSize(width: 222, height: 224)
+        layout.itemSize = NSSize(width: 222, height: 1)
         layout.minimumLineSpacing = 12
         layout.minimumInteritemSpacing = 0
         layout.sectionInset = NSEdgeInsets(top: 2, left: 0, bottom: 10, right: 0)
@@ -1228,7 +1242,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         }
         card.onClick = { [weak self, weak card] event in
             guard let self, self.detailWindow == nil, !event.modifierFlags.contains(.shift), !event.modifierFlags.contains(.command),
-                  !self.queryPending else { return }
+                  !self.queryPending, !self.isComposing else { return }
+            self.onCardPasteClick?(event)
             card?.onOpen?(event.modifierFlags)
         }
         card.onOpen = { [weak self] modifiers in
@@ -3018,9 +3033,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         window?.contentView?.layoutSubtreeIfNeeded()
         // A screen smaller than the preferred minimum still bounds the shelf.
         // Keep the native flow item inside that viewport, including its insets.
-        let height = max(1, scrollView.contentView.bounds.height - 15)
-        layout.itemSize = NSSize(width: compactMode ? 190 : 222, height: height)
         resultsView.setFrameSize(NSSize(width: max(scrollView.contentView.bounds.width, resultsView.frame.width), height: scrollView.contentView.bounds.height))
+        let insets = scrollView.contentInsets
+        let height = max(1, min(scrollView.contentView.bounds.height, resultsView.bounds.height)
+                         - layout.sectionInset.top - layout.sectionInset.bottom - insets.top - insets.bottom - 3)
+        layout.itemSize = NSSize(width: compactMode ? 190 : 222, height: height)
         layout.invalidateLayout()
         resultsView.reloadData()
     }

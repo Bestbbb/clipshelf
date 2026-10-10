@@ -3,6 +3,15 @@ import XCTest
 @testable import ClipShelf
 
 final class ValidationTraceTests: XCTestCase {
+    func testPointerCancellationRecordsOnlyClickCountAndRelativeTime() throws {
+        let data = try XCTUnwrap(ValidationTrace.encodedLine(event: .pastePointerChange, timestamp: 42,
+            state: .cancelled, failure: .pointerChanged, mouseClickCount: 2, mouseDeltaMS: 44))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(Set(object.keys), ["timestamp", "event", "state", "failure", "mouseClickCount", "mouseDeltaMS"])
+        XCTAssertEqual(object["mouseClickCount"] as? Int, 2)
+        XCTAssertEqual(object["mouseDeltaMS"] as? Double, 44)
+        XCTAssertNil(ValidationTrace.encodedLine(event: .pastePointerChange, timestamp: 42, mouseDeltaMS: .nan))
+    }
     func testGateRequiresBothExactValidationFlags() {
         let disabled: [[String]] = [
             [], ["--validation"], ["--validation-trace"],

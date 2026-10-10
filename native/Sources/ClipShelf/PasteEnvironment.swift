@@ -151,9 +151,15 @@ final class PasteSystemEnvironment: PasteEnvironment {
         if pid == target.application.processIdentifier { return .target }
         return pid == ownProcessIdentifier ? .clipShelf : .other
     }
-    func activate(_ target: PasteCoordinator.Target) -> Bool { target.application.activate(options: []) }
+    func activate(_ target: PasteCoordinator.Target) -> Bool {
+        // Re-activating an already active custom editor can reset its internal
+        // input state even though its AX window identity remains unchanged.
+        foreground(for: target) == .target || target.application.activate(options: [])
+    }
     func raiseWindow(_ target: PasteCoordinator.Target) -> Bool {
         guard let window = target.window else { return false }
+        let app = AXUIElementCreateApplication(target.application.processIdentifier)
+        if let current = Self.attribute(app, kAXFocusedWindowAttribute), CFEqual(current, window) { return true }
         return AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success
     }
     func restoreFocusedElement(_ target: PasteCoordinator.Target) {
@@ -239,11 +245,12 @@ final class PasteSystemEnvironment: PasteEnvironment {
     private static func focusedElement(app: AXUIElement, pid: pid_t) -> AXUIElement? {
         // Some apps expose the current input only through system-wide focus.
         // Never borrow an element from another process as a destination.
-        guard let element = attribute(app, kAXFocusedUIElementAttribute) ??
-            attribute(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute) else { return nil }
-        var actualPID: pid_t = 0
-        guard AXUIElementGetPid(element, &actualPID) == .success, actualPID == pid else { return nil }
-        return element
+        for source in [app, AXUIElementCreateSystemWide()] {
+            guard let element = attribute(source, kAXFocusedUIElementAttribute) else { continue }
+            var actualPID: pid_t = 0
+            if AXUIElementGetPid(element, &actualPID) == .success, actualPID == pid { return element }
+        }
+        return nil
     }
     private static func selectedRange(_ element: AXUIElement) -> CFRange? {
         var value: CFTypeRef?

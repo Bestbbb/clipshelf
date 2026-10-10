@@ -195,7 +195,7 @@ final class PasteCoordinator {
                     let accepted = dispatch.send()
                     guard accepted else {
                         request.dispatching = false
-                        // AX failure can be ambiguous. Never send a second action after it.
+                        // Dispatch failure can be ambiguous. Never send a second action after it.
                         finish(request, .copiedOnly, message: L10n.text("内容已复制，请切回目标应用按 ⌘V。"), failure: .eventDispatchFailed)
                         return
                     }
@@ -288,9 +288,11 @@ final class PasteCoordinator {
     /// An older queued mouse-down cannot cancel the newer paste. A genuinely
     /// new click still cancels before we restore or insert into an old input.
     @discardableResult
-    func cancelForMouseDown(at timestamp: TimeInterval) -> Bool {
+    func cancelForMouseDown(at timestamp: TimeInterval, clickCount: Int = 1) -> Bool {
         guard let request = attempt, !request.dispatching, timestamp.isFinite,
               timestamp > request.startedAt else { return false }
+        ValidationTrace.emit(.pastePointerChange, state: .cancelled, failure: .pointerChanged,
+                             mouseClickCount: clickCount, mouseDeltaMS: (timestamp - request.startedAt) * 1000)
         finish(request, .cancelled, message: L10n.text("目标已改变；内容已复制，请手动粘贴。"), failure: .pointerChanged)
         return true
     }

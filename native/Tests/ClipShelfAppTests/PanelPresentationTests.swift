@@ -46,6 +46,18 @@ import ClipShelfLocalization
 }
 
 @MainActor final class PanelPresentationTests: XCTestCase {
+    func testNativeDocumentShrinkKeepsFlowItemsInsideTheViewportBeforeWindowResizeCallback() throws {
+        let h = PresentationHarness(remote: false); defer { h.close() }
+        h.panel.show(records: [ClipboardRecord(text: "resize fixture")])
+        let results = try h.view(NSCollectionView.self)
+        let layout = try XCTUnwrap(results.collectionViewLayout as? NSCollectionViewFlowLayout)
+        for height: CGFloat in [180, 121, 70, 30] {
+            results.setFrameSize(NSSize(width: 800, height: height))
+            let insets = results.enclosingScrollView?.contentInsets ?? NSEdgeInsets()
+            XCTAssertLessThan(layout.itemSize.height,
+                              height - layout.sectionInset.top - layout.sectionInset.bottom - insets.top - insets.bottom)
+        }
+    }
     func testInitialRemoteLoadingFailureRetryAndConfirmedEmptyHaveDistinctPresentation() throws {
         let h = PresentationHarness(); defer { h.close() }
         h.panel.show(metadata: [])
