@@ -123,6 +123,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     var onValidateSelection: (([ClipboardSelectionReference], @escaping (Result<Void, Error>) -> Void) -> Void)?
     var resolveSelection: (([ClipboardSelectionReference], @escaping (Result<[ClipboardRecord], Error>) -> Void) -> Void)?
     var publications: OwnedFilePublicationCoordinator?
+    var spaceCoordinator: StorageSpaceCoordinator?
     /// Output also validates managed-file projections. Management/repair reads must remain possible when output is unavailable.
     var resolveOutputSelection: (([ClipboardSelectionReference], @escaping (Result<[ClipboardRecord], Error>) -> Void) -> Void)?
     var onMoveSelection: (([ClipboardSelectionReference], UUID?, @escaping (Result<[ClipboardSelectionReference], Error>) -> Void) -> Void)?
@@ -1046,6 +1047,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                         card.providePreparedPayload(records: records, gestureID: gestureID); return
                     }
                     let isCurrent = self.captureOutputContext()
+                    let spaceCoordinator = self.spaceCoordinator
                     let retention: OwnedAssetLease?
                     do { retention = try self.publications?.retain(records) }
                     catch { card.rejectPreparedPayload(error, gestureID: gestureID); return }
@@ -1053,7 +1055,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                         defer { withExtendedLifetime(retention) {} }
                         do {
                             let prepared = try await Task.detached(priority: .userInitiated) {
-                                try ImageFileOutput.prepare(records)
+                                try ImageFileOutput.prepare(records, spaceCoordinator: spaceCoordinator)
                             }.value
                             guard isCurrent() else {
                                 if card?.activeGestureID == gestureID { card?.cancelPendingDrag() }

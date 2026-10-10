@@ -19,7 +19,7 @@ let package = Package(
         .systemLibrary(name: "CSQLite"),
         .target(name: "ClipShelfLocalization", resources: [.process("Resources")]),
         .target(name: "ClipShelfCore", dependencies: ["CSQLite", "ClipShelfLocalization"]),
-        .target(name: "ShareInboxShared", dependencies: ["ClipShelfLocalization"]),
+        .target(name: "ShareInboxShared", dependencies: ["ClipShelfLocalization", "ClipShelfCore"]),
         .executableTarget(name: "ClipShelf", dependencies: [
             "ClipShelfCore", "ShareInboxShared", "ClipShelfLocalization", .product(name: "Sparkle", package: "Sparkle"),
         ], exclude: ["Sparkle-LICENSE.txt", "Resources"], linkerSettings: [

@@ -20,9 +20,16 @@ actor OCRDerivedCache {
     }
     private let directory: URL
     private let maximumAge: TimeInterval
-    init(directory: URL, maximumAge: TimeInterval = 30 * 24 * 60 * 60) {
+    private let spaceCoordinator: StorageSpaceCoordinator?
+    /// Internal fault injection after actual staged bytes have been written.
+    private let writeCheckpoint: (@Sendable (URL, Int) throws -> Void)?
+    init(directory: URL, maximumAge: TimeInterval = 30 * 24 * 60 * 60,
+         spaceCoordinator: StorageSpaceCoordinator? = nil,
+         writeCheckpoint: (@Sendable (URL, Int) throws -> Void)? = nil) {
         self.directory = directory
         self.maximumAge = maximumAge
+        self.spaceCoordinator = spaceCoordinator
+        self.writeCheckpoint = writeCheckpoint
     }
 
     nonisolated static func imageData(in record: ClipboardRecord) -> Data? {
@@ -54,22 +61,69 @@ actor OCRDerivedCache {
         let digest = LocalIntelligenceService.imageDigest(imageData)
         guard record.revision > 0, result.sourceImageDigest == digest, Self.valid(result),
               Self.imageData(in: record).map(LocalIntelligenceService.imageDigest) == digest else { throw CacheError.invalidResult }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let values = try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-        guard values.isDirectory == true, values.isSymbolicLink != true else { throw CacheError.invalidResult }
         // A late background result must not replace a newer source revision.
         if let existing = try? readEntry(location(record.id)), existing.sourceRevision > record.revision { return }
         let entry = Entry(version: 1, recordID: record.id, sourceRevision: record.revision, imageDigest: digest,
                           requestedLanguages: recognitionLanguages, createdAt: Date(), result: result)
         let data = try JSONEncoder().encode(entry)
         guard data.count <= Self.maximumEntryBytes else { throw CacheError.invalidResult }
-        try Task.checkCancellation()
-        // There is no suspension from this metadata check through file publication.
-        // A purge queued by a concurrent deletion runs after this actor turn; a
-        // deletion already visible here cannot be resurrected by a late OCR result.
-        try Self.validateSource(record, in: sourceStore)
-        try data.write(to: location(record.id), options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: location(record.id).path)
+        let coordinator = try sourceStore?.spaceCoordinator ?? spaceCoordinator ?? ApplicationStorageBudget.fallbackCoordinator()
+        let lease = try coordinator.reserve([.init(destination: location(record.id), bytes: Int64(data.count))])
+        defer { try? lease.release() }
+        do {
+            try Task.checkCancellation()
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let folder = Darwin.open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard folder >= 0 else { throw Self.writeError() }
+            defer { Darwin.close(folder) }
+            try lease.revalidate()
+            let name = ".ocr-\(UUID().uuidString).tmp"
+            let stagedURL = directory.appendingPathComponent(name)
+            let descriptor = openat(folder, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            guard descriptor >= 0 else { throw Self.writeError() }
+            defer { Darwin.close(descriptor) }
+            var identity = stat()
+            guard fstat(descriptor, &identity) == 0 else { throw Self.writeError() }
+            var published = false
+            defer {
+                var current = stat()
+                if !published, fstatat(folder, name, &current, AT_SYMLINK_NOFOLLOW) == 0,
+                   current.st_dev == identity.st_dev, current.st_ino == identity.st_ino {
+                    unlinkat(folder, name, 0)
+                }
+            }
+            try data.withUnsafeBytes { buffer in
+                var offset = 0
+                while offset < buffer.count {
+                    try Task.checkCancellation()
+                    let count = Darwin.write(descriptor, buffer.baseAddress!.advanced(by: offset), min(65_536, buffer.count - offset))
+                    if count < 0, errno == EINTR { continue }
+                    guard count > 0 else { throw Self.writeError() }
+                    offset += count
+                    try writeCheckpoint?(stagedURL, offset)
+                }
+            }
+            guard fsync(descriptor) == 0 else { throw Self.writeError() }
+            try Task.checkCancellation()
+            // Check the original source and destination after staging, before the atomic
+            // replacement. A failed write or cancellation leaves the previous JSON intact.
+            try Self.validateSource(record, in: sourceStore)
+            try lease.validateDestinations()
+            var currentFolder = stat(), openFolder = stat(), currentFile = stat()
+            guard lstat(directory.path, &currentFolder) == 0, fstat(folder, &openFolder) == 0,
+                  currentFolder.st_mode & S_IFMT == S_IFDIR,
+                  currentFolder.st_dev == openFolder.st_dev, currentFolder.st_ino == openFolder.st_ino,
+                  fstatat(folder, name, &currentFile, AT_SYMLINK_NOFOLLOW) == 0,
+                  currentFile.st_dev == identity.st_dev, currentFile.st_ino == identity.st_ino else {
+                throw StorageWriteFailure.destinationChanged
+            }
+            guard renameat(folder, name, folder, location(record.id).lastPathComponent) == 0 else { throw Self.writeError() }
+            published = true
+        } catch { throw StorageWriteFailure.classify(error) ?? error }
+    }
+    private nonisolated static func writeError() -> Error {
+        let error = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        return StorageWriteFailure.classify(error) ?? error
     }
     /// Live callers inject a store; nil is reserved for synthetic/demo snapshots.
     nonisolated static func validateSource(_ record: ClipboardRecord, in sourceStore: HistoryStore?) throws {

@@ -6,7 +6,7 @@ import ClipShelfCore
 final class SharingSettingsController: NSWindowController {
     typealias Completion = @MainActor () -> Void
     private let store: HistoryStore
-    private let transport = CloudSharedBoardTransport()
+    private let transport: CloudSharedBoardTransport
     private let coordinator: CloudSharingCoordinator
     private let sharingPresenter: CloudSharedBoardSharingPresenter
     private let preferences: UserDefaults
@@ -33,6 +33,8 @@ final class SharingSettingsController: NSWindowController {
          readStates: (@MainActor () async throws -> [SharedBoardState])? = nil,
          availability: (@MainActor () async -> CloudSyncAvailability)? = nil) {
         self.store = store; self.preferences = preferences
+        let transport = CloudSharedBoardTransport(spaceCoordinator: store.spaceCoordinator)
+        self.transport = transport
         let coordinator = CloudSharingCoordinator(store: store, transport: transport)
         self.coordinator = coordinator
         self.readStates = readStates ?? { try await coordinator.states() }

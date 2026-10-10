@@ -79,20 +79,54 @@ public final class SyncOwnedFileStaging: @unchecked Sendable {
     public let fileURL: URL
     public let descriptor: SyncOwnedFileDescriptor
     private let directory: URL
-    private init(directory: URL, descriptor: SyncOwnedFileDescriptor) { self.directory = directory; self.fileURL = directory.appendingPathComponent("payload"); self.descriptor = descriptor }
-    deinit { try? FileManager.default.removeItem(at: directory) }
-    public static func create(data: Data, descriptor: SyncOwnedFileDescriptor) throws -> SyncOwnedFileStaging {
+    private let spaceLease: StorageSpaceLease
+    private init(directory: URL, descriptor: SyncOwnedFileDescriptor, spaceLease: StorageSpaceLease) {
+        self.directory = directory; self.fileURL = directory.appendingPathComponent("payload")
+        self.descriptor = descriptor; self.spaceLease = spaceLease
+    }
+    deinit {
+        try? FileManager.default.removeItem(at: directory)
+        try? spaceLease.release()
+    }
+    /// Resolve an existing root with realpath so the budget's NOFOLLOW walk sees the
+    /// actual /private/var directory, not a Foundation-normalized system alias.
+    public static func resolvedTemporaryDirectory(_ directory: URL? = nil) throws -> URL {
+        try StorageSpaceFiles.canonicalDirectory(directory ?? FileManager.default.temporaryDirectory)
+    }
+    public static func create(data: Data, descriptor: SyncOwnedFileDescriptor,
+                              spaceCoordinator: StorageSpaceCoordinator? = nil, temporaryDirectory: URL? = nil) throws -> SyncOwnedFileStaging {
+        try create(data: data, descriptor: descriptor, spaceCoordinator: spaceCoordinator, temporaryDirectory: temporaryDirectory,
+                   writer: { try $0.write(to: $1, options: .withoutOverwriting) })
+    }
+    static func create(data: Data, descriptor: SyncOwnedFileDescriptor, spaceCoordinator: StorageSpaceCoordinator?,
+                       temporaryDirectory: URL?, writer: (Data, URL) throws -> Void) throws -> SyncOwnedFileStaging {
         try descriptor.validate()
         guard data.count == descriptor.byteCount, RepresentationStorage.digest(data) == descriptor.digest else { throw SyncError.invalidOperation }
-        let directory = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("ClipShelf-sync-" + UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        let result = SyncOwnedFileStaging(directory: directory, descriptor: descriptor)
-        try data.write(to: result.fileURL, options: .withoutOverwriting)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: result.fileURL.path)
-        return result
+        try Task.checkCancellation()
+        let root = try resolvedTemporaryDirectory(temporaryDirectory)
+        let coordinator = try spaceCoordinator ?? StorageSpaceCoordinator(directory: root.appendingPathComponent(".clipshelf-storage-reservations"))
+        let directory = root.appendingPathComponent("ClipShelf-sync-" + UUID().uuidString, isDirectory: true)
+        let spaceLease = try coordinator.reserve([.init(destination: directory, bytes: Int64(descriptor.byteCount))])
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            let result = SyncOwnedFileStaging(directory: directory, descriptor: descriptor, spaceLease: spaceLease)
+            try Task.checkCancellation()
+            try writer(data, result.fileURL)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: result.fileURL.path)
+            try Task.checkCancellation()
+            try spaceLease.validateDestinations()
+            return result
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            try? spaceLease.release()
+            throw StorageWriteFailure.classify(error) ?? error
+        }
     }
-    public static func copy(from fileURL: URL, descriptor: SyncOwnedFileDescriptor) throws -> SyncOwnedFileStaging {
-        try create(data: readVerified(fileURL: fileURL, descriptor: descriptor), descriptor: descriptor)
+    public static func copy(from fileURL: URL, descriptor: SyncOwnedFileDescriptor,
+                            spaceCoordinator: StorageSpaceCoordinator? = nil, temporaryDirectory: URL? = nil) throws -> SyncOwnedFileStaging {
+        try Task.checkCancellation()
+        return try create(data: readVerified(fileURL: fileURL, descriptor: descriptor), descriptor: descriptor,
+                          spaceCoordinator: spaceCoordinator, temporaryDirectory: temporaryDirectory)
     }
     static func readVerified(fileURL: URL, descriptor: SyncOwnedFileDescriptor) throws -> Data {
         try descriptor.validate()

@@ -54,8 +54,9 @@ final class SystemIntegrationController: NSObject {
     }
 
     /// Compatibility entry point for callers exporting exactly one image part.
-    static func exportImage(_ record: ClipboardRecord, directory: URL? = nil, now: Date = Date()) throws -> URL {
-        let prepared = try ImageFileOutput.prepare([record])
+    static func exportImage(_ record: ClipboardRecord, directory: URL? = nil, now: Date = Date(),
+                            spaceCoordinator: StorageSpaceCoordinator? = nil) throws -> URL {
+        let prepared = try ImageFileOutput.prepare([record], spaceCoordinator: spaceCoordinator)
         guard prepared.imageCount == 1 else { throw ClipboardCodecError.noContent }
         return try prepared.exportReceipt(directory: directory, now: now).fileURLs[0]
     }

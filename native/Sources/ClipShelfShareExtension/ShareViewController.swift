@@ -113,7 +113,15 @@ import Security
             status.stringValue = L10n.text("已保存到收件箱，等待 ClipShelf 导入。")
             saveButton.isEnabled = false
             extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
-        } catch { show(error) }
+        } catch {
+            show(error)
+            if ShareInboxDraft.canRetryPublication(after: error) {
+                // Keep the already loaded providers and selected destination. Saving again
+                // retries the same draft after the user has made space available.
+                ready = true
+                selectionChanged()
+            }
+        }
     }
     @objc private func cancelShare() {
         finished = true; stopLoading()

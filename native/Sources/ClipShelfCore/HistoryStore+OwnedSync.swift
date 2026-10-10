@@ -91,7 +91,7 @@ extension HistoryStore {
                       let binding = bindings.first(where: { $0.partIndex == portable.partIndex && $0.representationIndex == portable.representationIndex }) else { throw HistoryStoreError.invalidOwnedFile }
                 let asset = try ownedFileAssetWithoutLock(id: binding.assetID)
                 guard asset.sha256 == file.digest, asset.byteCount == file.byteCount, asset.filename == file.filename else { throw HistoryStoreError.invalidOwnedFile }
-                let staging = try SyncOwnedFileStaging.create(data: ownedFileStorage.read(asset), descriptor: file)
+                let staging = try SyncOwnedFileStaging.create(data: ownedFileStorage.read(asset), descriptor: file, spaceCoordinator: spaceCoordinator)
                 try writeOwnedTransfer(operation, file: file, scope: context.scope, direction: .upload, status: .pending)
                 return PreparedSyncOwnedUpload(operationID: operationID, scope: context.scope, file: file, staging: staging)
             }

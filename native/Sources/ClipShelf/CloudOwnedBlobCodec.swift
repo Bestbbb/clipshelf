@@ -8,18 +8,72 @@ import Foundation
 /// Lifetime-owned local copies: never let a CKAsset temporary URL escape a CloudKit response.
 final class CloudAssetStaging: @unchecked Sendable {
     let directory: URL
-    init() throws {
-        directory = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+    private let coordinator: StorageSpaceCoordinator
+    private let writer: @Sendable (FileHandle, Data) throws -> Void
+    private let lock = NSRecursiveLock()
+    private var lease: StorageSpaceLease?
+    private var valid = true
+    private var writing = false
+    init(spaceCoordinator: StorageSpaceCoordinator? = nil, temporaryDirectory: URL? = nil,
+         writer: @escaping @Sendable (FileHandle, Data) throws -> Void = { try $0.write(contentsOf: $1) }) throws {
+        let root = try SyncOwnedFileStaging.resolvedTemporaryDirectory(temporaryDirectory)
+        coordinator = try spaceCoordinator ?? StorageSpaceCoordinator(directory: root.appendingPathComponent(".clipshelf-storage-reservations"))
+        self.writer = writer
+        directory = root
             .appendingPathComponent("ClipShelf-cloud-assets-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
     }
-    deinit { try? FileManager.default.removeItem(at: directory) }
+    deinit { cleanup() }
+
+    private func cleanup() {
+        try? FileManager.default.removeItem(at: directory)
+        try? lease?.release(); lease = nil; valid = false
+    }
+
+    /// Reserve the complete stream before its first byte. An existing staging's original
+    /// file and new chunks remain in the same aggregate claim until all its files are gone.
+    func withWriteBudget<T>(bytes: Int, _ body: () throws -> T) throws -> T {
+        lock.lock(); defer { lock.unlock() }
+        guard valid, !writing, bytes >= 0 else { throw SyncError.invalidOperation }
+        do {
+            try Task.checkCancellation()
+            let requirement = StorageSpaceRequirement(destination: directory, bytes: Int64(bytes))
+            if let lease { try lease.addRequirements([requirement]) }
+            else { lease = try coordinator.reserve([requirement]) }
+            writing = true; defer { writing = false }
+            let result = try body()
+            try Task.checkCancellation()
+            try lease?.validateDestinations()
+            return result
+        } catch {
+            cleanup()
+            throw StorageWriteFailure.classify(error) ?? error
+        }
+    }
+
+    /// Only called inside withWriteBudget. Empty-file creation does not stand in for stream budgeting.
+    func createOutput(name: String) throws -> (URL, FileHandle) {
+        guard writing, !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else { throw SyncError.invalidOperation }
+        let url = directory.appendingPathComponent(name)
+        let descriptor = Darwin.open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        return (url, FileHandle(fileDescriptor: descriptor, closeOnDealloc: true))
+    }
+
+    func append(_ data: Data, to output: FileHandle) throws {
+        guard writing else { throw SyncError.invalidOperation }
+        try Task.checkCancellation()
+        try writer(output, data)
+    }
 
     func write(_ data: Data, name: String) throws -> URL {
-        let url = directory.appendingPathComponent(name)
-        try data.write(to: url, options: .withoutOverwriting)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        return url
+        try withWriteBudget(bytes: data.count) {
+            let (url, output) = try createOutput(name: name)
+            defer { try? output.close() }
+            try append(data, to: output)
+            try output.synchronize()
+            return url
+        }
     }
 
     /// Bounds the opened regular inode before and during every read, rejecting links and FIFOs.
@@ -126,25 +180,26 @@ enum CloudOwnedBlobCodec {
         record["chunkCount"] = chunkCount(byteCount: byteCount) as NSNumber; record["formatVersion"] = 1 as NSNumber
         record["container"] = scope.containerIdentifier as NSString; record["namespace"] = scope.namespace as NSString
         record["scopeKind"] = scope.kind as NSString; record["zoneName"] = scope.zoneID.zoneName as NSString
-        try CloudAssetStaging.withFile(file, maximum: maximumBytes) { input, size in
-            guard size == byteCount else { throw SyncError.invalidOperation }
-            var hash = SHA256(), total = 0
-            for index in 0..<chunkCount(byteCount: byteCount) {
-                let url = try staging.write(Data(), name: "chunk\(index)")
-                let output = try FileHandle(forWritingTo: url)
-                defer { try? output.close() }
-                let expected = min(chunkBytes, byteCount - total)
-                var written = 0
-                while written < expected {
-                    try Task.checkCancellation()
-                    guard let data = try input.read(upToCount: min(1_024 * 1_024, expected - written)), !data.isEmpty else { throw SyncError.invalidOperation }
-                    hash.update(data: data); try output.write(contentsOf: data); written += data.count
+        try staging.withWriteBudget(bytes: byteCount) {
+            try CloudAssetStaging.withFile(file, maximum: maximumBytes) { input, size in
+                guard size == byteCount else { throw SyncError.invalidOperation }
+                var hash = SHA256(), total = 0
+                for index in 0..<chunkCount(byteCount: byteCount) {
+                    let (url, output) = try staging.createOutput(name: "chunk\(index)")
+                    defer { try? output.close() }
+                    let expected = min(chunkBytes, byteCount - total)
+                    var written = 0
+                    while written < expected {
+                        try Task.checkCancellation()
+                        guard let data = try input.read(upToCount: min(1_024 * 1_024, expected - written)), !data.isEmpty else { throw SyncError.invalidOperation }
+                        hash.update(data: data); try staging.append(data, to: output); written += data.count
+                    }
+                    try output.synchronize(); total += written
+                    record[assetKeys[index]] = CKAsset(fileURL: url)
                 }
-                try output.synchronize(); total += written
-                record[assetKeys[index]] = CKAsset(fileURL: url)
+                guard (try input.read(upToCount: 1))?.isEmpty != false,
+                      hash.finalize().map({ String(format: "%02x", $0) }).joined() == digest else { throw SyncError.invalidOperation }
             }
-            guard (try input.read(upToCount: 1))?.isEmpty != false,
-                  hash.finalize().map({ String(format: "%02x", $0) }).joined() == digest else { throw SyncError.invalidOperation }
         }
         return record
     }
@@ -153,28 +208,29 @@ enum CloudOwnedBlobCodec {
         guard matches(record, digest: digest, byteCount: byteCount, scope: scope) else { throw SyncError.invalidOperation }
         let count = chunkCount(byteCount: byteCount)
         if count == 1, record["chunk1"] != nil { throw SyncError.invalidOperation }
-        let result = try staging.write(Data(), name: "payload")
-        let output = try FileHandle(forWritingTo: result)
-        defer { try? output.close() }
-        var hash = SHA256(), total = 0
-        for index in 0..<count {
-            guard let asset = record[assetKeys[index]] as? CKAsset, let url = asset.fileURL else { throw SyncError.invalidOperation }
-            let expected = min(chunkBytes, byteCount - total)
-            try CloudAssetStaging.withFile(url, maximum: chunkBytes) { input, size in
-                guard size == expected else { throw SyncError.invalidOperation }
-                var copied = 0
-                while let data = try input.read(upToCount: min(1_024 * 1_024, expected - copied + 1)), !data.isEmpty {
-                    try Task.checkCancellation()
-                    guard data.count <= expected - copied else { throw SyncError.invalidOperation }
-                    try output.write(contentsOf: data); hash.update(data: data); copied += data.count
+        return try staging.withWriteBudget(bytes: byteCount) {
+            let (result, output) = try staging.createOutput(name: "payload")
+            defer { try? output.close() }
+            var hash = SHA256(), total = 0
+            for index in 0..<count {
+                guard let asset = record[assetKeys[index]] as? CKAsset, let url = asset.fileURL else { throw SyncError.invalidOperation }
+                let expected = min(chunkBytes, byteCount - total)
+                try CloudAssetStaging.withFile(url, maximum: chunkBytes) { input, size in
+                    guard size == expected else { throw SyncError.invalidOperation }
+                    var copied = 0
+                    while let data = try input.read(upToCount: min(1_024 * 1_024, expected - copied + 1)), !data.isEmpty {
+                        try Task.checkCancellation()
+                        guard data.count <= expected - copied else { throw SyncError.invalidOperation }
+                        try staging.append(data, to: output); hash.update(data: data); copied += data.count
+                    }
+                    guard copied == expected else { throw SyncError.invalidOperation }
+                    total += copied
                 }
-                guard copied == expected else { throw SyncError.invalidOperation }
-                total += copied
             }
+            guard total == byteCount, hash.finalize().map({ String(format: "%02x", $0) }).joined() == digest else { throw SyncError.invalidOperation }
+            try output.synchronize()
+            return result
         }
-        guard total == byteCount, hash.finalize().map({ String(format: "%02x", $0) }).joined() == digest else { throw SyncError.invalidOperation }
-        try output.synchronize()
-        return result
     }
 }
 

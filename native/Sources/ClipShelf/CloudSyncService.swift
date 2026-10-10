@@ -82,9 +82,8 @@ actor CloudSyncService: SyncOwnedFileTransport {
         guard operations.count <= 100, Set(operations.map(\.operationID)).count == operations.count, operations.allSatisfy({ $0.accountID == accountID }) else { throw SyncError.invalidOperation }
         let container = try await checkedContainer(accountID: accountID)
         if operations.isEmpty { return [] }
-        let staging = FileManager.default.temporaryDirectory.appendingPathComponent("ClipShelf-sync-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        defer { try? FileManager.default.removeItem(at: staging) }
+        let staging = try CloudAssetStaging(spaceCoordinator: store.spaceCoordinator)
+        defer { withExtendedLifetime(staging) {} }
         let zoneID = CKRecordZone.ID(zoneName: configuration.zoneName, ownerName: CKCurrentUserDefaultName)
         var records: [CKRecord] = []
         var expectedRecords: [CKRecord.ID: CKRecord] = [:]
@@ -92,9 +91,7 @@ actor CloudSyncService: SyncOwnedFileTransport {
             try await verifyOwnedDependencies(operation, accountID: accountID)
             let data = try Self.encodeOperation(operation)
             guard data.count <= 256 * 1_024 * 1_024 else { throw HistoryStoreError.valueTooLarge }
-            let file = staging.appendingPathComponent(operation.operationID.uuidString + ".json")
-            try data.write(to: file, options: .withoutOverwriting)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+            let file = try staging.write(data, name: operation.operationID.uuidString + ".json")
             let record = CKRecord(recordType: Self.recordType, recordID: CKRecord.ID(recordName: operation.operationID.uuidString, zoneID: zoneID))
             let digest = Self.digest(data)
             record["payload"] = CKAsset(fileURL: file)
@@ -196,6 +193,7 @@ actor CloudSyncService: SyncOwnedFileTransport {
                             zoneID: CKRecordZone.ID(zoneName: configuration.zoneName, ownerName: CKCurrentUserDefaultName), shared: false)
     }
     func uploadOwnedFile(_ upload: PreparedSyncOwnedUpload) async throws {
+        defer { withExtendedLifetime(upload) {} }
         let account = upload.scope.accountID
         let container = try await checkedContainer(accountID: account)
         guard upload.scope == (try localOwnedScope(accountID: account)) else { throw SyncError.namespaceConflict }
@@ -212,7 +210,8 @@ actor CloudSyncService: SyncOwnedFileTransport {
         case .failure(let error):
             guard (error as? CKError)?.code == .unknownItem else { throw error }
         }
-        let staging = try CloudAssetStaging()
+        let staging = try CloudAssetStaging(spaceCoordinator: store.spaceCoordinator)
+        defer { withExtendedLifetime(staging) {} }
         let record = try CloudOwnedBlobCodec.encode(file: upload.fileURL, digest: upload.file.digest, byteCount: upload.file.byteCount, scope: scope, staging: staging)
         let saved = try await container.privateCloudDatabase.modifyRecords(saving: [record], deleting: [], savePolicy: .ifServerRecordUnchanged, atomically: true)
         _ = try await checkedContainer(accountID: account)
@@ -225,7 +224,6 @@ actor CloudSyncService: SyncOwnedFileTransport {
             acknowledged = server
         }
         guard CloudOwnedBlobCodec.matches(acknowledged, digest: upload.file.digest, byteCount: upload.file.byteCount, scope: scope) else { throw SyncError.invalidOperation }
-        withExtendedLifetime(staging) {}
     }
     func downloadOwnedFile(_ request: SyncOwnedDownloadRequest) async throws -> SyncOwnedFileStaging {
         let account = request.scope.accountID
@@ -238,9 +236,10 @@ actor CloudSyncService: SyncOwnedFileTransport {
         guard let response = records[id] else { throw SyncError.invalidOperation }
         let record = try response.get()
         // Copy before another await; CloudKit's temporary URLs must not survive the response.
-        let temporary = try CloudAssetStaging()
+        let temporary = try CloudAssetStaging(spaceCoordinator: store.spaceCoordinator)
+        defer { withExtendedLifetime(temporary) {} }
         let file = try CloudOwnedBlobCodec.decode(record, digest: request.file.digest, byteCount: request.file.byteCount, scope: scope, staging: temporary)
-        let lease = try SyncOwnedFileStaging.copy(from: file, descriptor: request.file)
+        let lease = try SyncOwnedFileStaging.copy(from: file, descriptor: request.file, spaceCoordinator: store.spaceCoordinator)
         _ = try await checkedContainer(accountID: account)
         return lease
     }

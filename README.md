@@ -58,10 +58,13 @@ recover copies overwritten between observations.
 
 Storage Management reports library files, shared caches and the share inbox
 separately, including unavailable scopes. Core writes and backups check volume
-capacity before growing data; this is a cooperative estimate, not a physical disk
-reservation. Total storage is unlimited by default, and automatic managed-file
-reclamation is off until enabled. Complete write-path coverage and a configurable
-hard quota remain in progress.
+capacity before growing data. OCR caches, PNG exports and file promises, the
+share inbox, import receipts, and application-owned cloud staging use the same
+capacity checks on their destination volumes. These are cooperative estimates,
+not physical disk reservations; CloudKit and item-provider temporary files remain
+outside application control. Total storage is unlimited by default, automatic
+managed-file reclamation is off until enabled, and a configurable hard quota
+remains in progress.
 
 See the [implementation status](docs/IMPLEMENTATION_STATUS.zh-CN.md) for what is
 implemented, tested, and still missing. Individual feature availability does not

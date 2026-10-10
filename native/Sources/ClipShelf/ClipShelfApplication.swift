@@ -145,6 +145,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             let directory = try profile.dataDirectory()
             store = try HistoryStore(databaseURL: directory.appendingPathComponent("history.sqlite"), recordsLocalOrigin: true)
             panel.ocrSourceStore = store
+            panel.spaceCoordinator = store?.spaceCoordinator
             configureOwnedLifetimes(store: store!)
             configureHistoryCleanup()
             configureStorageManagement(store: store!)
@@ -1478,7 +1479,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             }
             do {
                 let exported = try await Task.detached(priority: .userInitiated) {
-                    let prepared = try ImageFileOutput.prepare(records)
+                    let prepared = try ImageFileOutput.prepare(records, spaceCoordinator: store.spaceCoordinator)
                     let receipt = try prepared.exportReceipt(directory: directory)
                     do {
                         // Conversion can take time; recheck the frozen selection before publishing it.

@@ -72,6 +72,7 @@ actor ShareInboxService {
     private let store: HistoryStore
     private let directory: ShareInboxDirectory
     private let privateDirectory: URL
+    private let receiptWriter: ShareInboxFileWriter
     private var importsAllowed = true
     private var lastPublishedCatalog: ShareInboxCatalog?
 
@@ -82,9 +83,11 @@ actor ShareInboxService {
         try ShareInboxService(store: store, privateDirectory: privateDirectory, inbox: ShareInboxDirectory.configured(bundle: bundle))
     }
     /// Explicit synthetic inbox injection for tests. Production uses configured().
-    init(store: HistoryStore, privateDirectory: URL, inbox: ShareInboxDirectory) throws {
+    init(store: HistoryStore, privateDirectory: URL, inbox: ShareInboxDirectory,
+         receiptWriter: ShareInboxFileWriter = .live) throws {
         self.store = store
         directory = inbox
+        self.receiptWriter = receiptWriter
         self.privateDirectory = privateDirectory.appendingPathComponent("ShareImports", isDirectory: true)
         try FileManager.default.createDirectory(at: self.privateDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try ShareInboxDirectory.requireRegular(self.privateDirectory, directory: true)
@@ -114,6 +117,7 @@ actor ShareInboxService {
                 let (envelope, digest) = try directory.read(id)
                 let receiptURL = privateDirectory.appendingPathComponent(id.uuidString + ".json")
                 var receipt: Receipt
+                var newReceipt = false
                 if FileManager.default.fileExists(atPath: receiptURL.path) {
                     receipt = try JSONDecoder().decode(Receipt.self, from: ShareInboxDirectory.boundedData(receiptURL, limit: 65_536))
                     guard receipt.digest == digest, receipt.recordIDs.count == envelope.items.count,
@@ -123,7 +127,7 @@ actor ShareInboxService {
                 } else {
                     // Never trust operation or record IDs supplied by another process.
                     receipt = Receipt(digest: digest, recordIDs: envelope.items.map { _ in UUID() }, attempted: [], completed: [])
-                    try save(receipt, to: receiptURL)
+                    newReceipt = true
                 }
                 // A completed receipt prevents resurrection even after a user deletes the imported record.
                 if receipt.completed.count == envelope.items.count {
@@ -131,6 +135,11 @@ actor ShareInboxService {
                     try directory.remove(id)
                     continue
                 }
+                // This allowance exists before the first attempt marker and any Core commit.
+                // A completed replay only removes inbox content and needs no new receipt write.
+                let receiptBudget = try reserveReceiptWrites(receipt, to: receiptURL)
+                defer { try? receiptBudget.lease.release() }
+                if newReceipt { try save(receipt, to: receiptURL, budget: receiptBudget) }
                 let expectedSync = try store.syncConfiguration()
                 let expectedSharing = try store.sharingConfiguration()
                 let catalog = try currentCatalog()
@@ -144,7 +153,7 @@ actor ShareInboxService {
                     if receipt.attempted.contains(index) {
                         if try store.itemMetadata(id: recordID) != nil {
                             receipt.completed.insert(index)
-                            try save(receipt, to: receiptURL)
+                            try save(receipt, to: receiptURL, budget: receiptBudget)
                             existing += 1
                             continue
                         }
@@ -152,17 +161,20 @@ actor ShareInboxService {
                     }
                     let prepared = try makeRecord(item, envelope: envelope, recordID: recordID)
                     receipt.attempted.insert(index)
-                    try save(receipt, to: receiptURL)
+                    try save(receipt, to: receiptURL, budget: receiptBudget)
                     do {
+                        // The synchronized attempt marker is already durable. Keep room for
+                        // the largest completion/rollback receipt across this Core transaction.
+                        try receiptBudget.lease.validateDestinations()
                         // Core transaction resolves namespace and rechecks shared access.
                         _ = try store.create(prepared.record, ownedFiles: prepared.ownedFiles, expectedSyncConfiguration: expectedSync, expectedSharingConfiguration: expectedSharing)
                     } catch {
                         receipt.attempted.remove(index) // This synchronous transaction is known to have failed.
-                        try save(receipt, to: receiptURL)
+                        try save(receipt, to: receiptURL, budget: receiptBudget)
                         throw error
                     }
                     receipt.completed.insert(index)
-                    try save(receipt, to: receiptURL)
+                    try save(receipt, to: receiptURL, budget: receiptBudget)
                     imported += 1
                 }
                 try directory.remove(id)
@@ -372,11 +384,29 @@ actor ShareInboxService {
         return (record, ownedFiles)
     }
 
-    private func save(_ receipt: Receipt, to url: URL) throws {
+    private struct ReceiptWriteBudget {
+        let lease: StorageSpaceLease
+        let maximumBytes: Int
+    }
+
+    private func reserveReceiptWrites(_ receipt: Receipt, to url: URL) throws -> ReceiptWriteBudget {
+        var largest = receipt
+        largest.attempted = Set(receipt.recordIDs.indices)
+        largest.completed = largest.attempted
+        let maximumBytes = try JSONEncoder().encode(largest).count
+        guard maximumBytes <= 65_536 else { throw ImportError.receiptMismatch }
+        // One published receipt and one atomic replacement temporary file can coexist.
+        // Previous temporary files are removed before the next save. Never credit the old
+        // receipt as reclaimed space, and never require the consumed total again after writing.
+        let lease = try store.spaceCoordinator.reserve([.init(destination: url, bytes: Int64(maximumBytes) * 2)])
+        do { try lease.revalidate() } catch { try? lease.release(); throw error }
+        return ReceiptWriteBudget(lease: lease, maximumBytes: maximumBytes)
+    }
+
+    private func save(_ receipt: Receipt, to url: URL, budget: ReceiptWriteBudget) throws {
         if FileManager.default.fileExists(atPath: url.path) { try ShareInboxDirectory.requireRegular(url) }
-        try JSONEncoder().encode(receipt).write(to: url, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        let file = try FileHandle(forWritingTo: url)
-        try file.synchronize(); try file.close()
+        let data = try JSONEncoder().encode(receipt)
+        guard data.count <= budget.maximumBytes else { throw ImportError.receiptMismatch }
+        try receiptWriter.publish(data, to: url, replacing: true) { try budget.lease.validateDestinations() }
     }
 }

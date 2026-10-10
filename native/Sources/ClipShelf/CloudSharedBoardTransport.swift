@@ -10,8 +10,11 @@ actor CloudSharedBoardTransport: SharedBoardLifecycleTransport, SharedBoardOwned
     static let recordType = "ClipShelfSharedOperationV1"
     static let maximumPayloadBytes = 256 * 1_024 * 1_024
     private let configuration: CloudSyncConfiguration
+    private let spaceCoordinator: StorageSpaceCoordinator?
 
-    init(configuration: CloudSyncConfiguration = .from()) { self.configuration = configuration }
+    init(configuration: CloudSyncConfiguration = .from(), spaceCoordinator: StorageSpaceCoordinator? = nil) {
+        self.configuration = configuration; self.spaceCoordinator = spaceCoordinator
+    }
 
     func configurationStatus() -> CloudSyncAvailability {
         guard let identifier = configuration.containerIdentifier, identifier.hasPrefix("iCloud."), identifier.count > 7 else {
@@ -48,17 +51,14 @@ actor CloudSharedBoardTransport: SharedBoardLifecycleTransport, SharedBoardOwned
         guard role.canWrite else { throw role == .revoked ? SharedBoardError.remotePermissionDenied : SharedBoardError.readOnly }
         if operations.isEmpty { return [] }
 
-        let staging = FileManager.default.temporaryDirectory.appendingPathComponent("ClipShelf-shared-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        defer { try? FileManager.default.removeItem(at: staging) }
+        let staging = try CloudAssetStaging(spaceCoordinator: spaceCoordinator)
+        defer { withExtendedLifetime(staging) {} }
         var records: [CKRecord] = [], expectedRecords: [CKRecord.ID: CKRecord] = [:]
         for operation in operations {
             try await verifyOwnedDependencies(operation, board: board, context: context)
             let data = try CloudSyncService.encodeOperation(operation)
             guard data.count <= Self.maximumPayloadBytes else { throw HistoryStoreError.valueTooLarge }
-            let file = staging.appendingPathComponent(operation.operationID.uuidString + ".json")
-            try data.write(to: file, options: .withoutOverwriting)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+            let file = try staging.write(data, name: operation.operationID.uuidString + ".json")
             let record = CKRecord(recordType: Self.recordType, recordID: CKRecord.ID(recordName: operation.operationID.uuidString, zoneID: context.zoneID))
             let hash = CloudSyncService.digest(data)
             record["payload"] = CKAsset(fileURL: file)
@@ -171,6 +171,7 @@ actor CloudSharedBoardTransport: SharedBoardLifecycleTransport, SharedBoardOwned
         return try await request(context.session, operation)
     }
     func uploadOwnedFile(_ upload: PreparedSyncOwnedUpload, board: SharedBoardDescriptor) async throws {
+        defer { withExtendedLifetime(upload) {} }
         let context = try await context(for: board)
         guard upload.scope == ownedScope(board: board, context: context) else { throw SyncError.namespaceConflict }
         try upload.file.validate()
@@ -188,7 +189,8 @@ actor CloudSharedBoardTransport: SharedBoardLifecycleTransport, SharedBoardOwned
             if Self.isPermissionDenied(error) { throw SharedBoardError.remotePermissionDenied }
             guard (error as? CKError)?.code == .unknownItem else { throw error }
         }
-        let staging = try CloudAssetStaging()
+        let staging = try CloudAssetStaging(spaceCoordinator: spaceCoordinator)
+        defer { withExtendedLifetime(staging) {} }
         let record = try CloudOwnedBlobCodec.encode(file: upload.fileURL, digest: upload.file.digest, byteCount: upload.file.byteCount, scope: scope, staging: staging)
         let saved = try await boardRequest(board, context: context, writing: true) {
             try await context.database.modifyRecords(saving: [record], deleting: [], savePolicy: .ifServerRecordUnchanged, atomically: true)
@@ -203,7 +205,6 @@ actor CloudSharedBoardTransport: SharedBoardLifecycleTransport, SharedBoardOwned
             acknowledged = server
         }
         guard CloudOwnedBlobCodec.matches(acknowledged, digest: upload.file.digest, byteCount: upload.file.byteCount, scope: scope) else { throw SyncError.invalidOperation }
-        withExtendedLifetime(staging) {}
     }
     func downloadOwnedFile(_ request: SyncOwnedDownloadRequest, board: SharedBoardDescriptor) async throws -> SyncOwnedFileStaging {
         let context = try await context(for: board)
@@ -214,9 +215,10 @@ actor CloudSharedBoardTransport: SharedBoardLifecycleTransport, SharedBoardOwned
         return try await boardRequest(board, context: context, writing: false) {
             let records = try await context.database.records(for: [id], desiredKeys: CloudOwnedBlobCodec.metadataKeys + CloudOwnedBlobCodec.assetKeys)
             guard let response = records[id] else { throw SyncError.invalidOperation }
-            let temporary = try CloudAssetStaging()
+            let temporary = try CloudAssetStaging(spaceCoordinator: self.spaceCoordinator)
+            defer { withExtendedLifetime(temporary) {} }
             let file = try CloudOwnedBlobCodec.decode(try response.get(), digest: request.file.digest, byteCount: request.file.byteCount, scope: scope, staging: temporary)
-            return try SyncOwnedFileStaging.copy(from: file, descriptor: request.file)
+            return try SyncOwnedFileStaging.copy(from: file, descriptor: request.file, spaceCoordinator: self.spaceCoordinator)
         }
     }
     private func verifyOwnedDependencies(_ operation: SyncOperation, board: SharedBoardDescriptor, context: Context) async throws {
