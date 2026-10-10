@@ -25,6 +25,7 @@ extension HistoryStore {
         let updated = try updateWithoutLock(record: record, current: original, preserveOCR: preserveOCR)
         return HistorySelectionEditUndo(original: original,
                                         expected: ClipboardSelectionReference(id: updated.id, revision: updated.revision),
+                                        expectedContentFingerprint: ClipboardEditFingerprint.digest(updated),
                                         storeIdentity: selectionStoreIdentity,
                                         syncConfiguration: sync, sharingConfiguration: sharing, ownedFileBindings: bindings,
                                         ownedAssetLease: try retainOwnedAssetsWithoutLock(Set(bindings.map(\.assetID)).union(capturedOwnedIDsWithoutLock([original])), purpose: .undo))
@@ -39,6 +40,7 @@ extension HistoryStore {
                 let items = try selectionItems([undo.expected])
                 try requireEditableSelection(items)
                 guard let current = try itemWithoutLock(id: undo.expected.id) else { throw HistoryStoreError.recordNotFound }
+                guard ClipboardEditFingerprint.digest(current) == undo.expectedContentFingerprint else { throw HistoryStoreError.staleRevision }
                 var original = undo.original
                 original.revision = undo.expected.revision
                 // This is the exact original authenticated by this store's Undo token,
@@ -61,6 +63,7 @@ extension HistoryStore {
         let index = receipt.before.firstIndex(of: undo.expected)
         return HistorySelectionEditUndo(original: undo.original,
                                         expected: index.map { receipt.after[$0] } ?? undo.expected,
+                                        expectedContentFingerprint: undo.expectedContentFingerprint,
                                         storeIdentity: undo.storeIdentity,
                                         syncConfiguration: undo.syncConfiguration, sharingConfiguration: undo.sharingConfiguration,
                                         ownedFileBindings: undo.ownedFileBindings, ownedAssetLease: undo.ownedAssetLease)

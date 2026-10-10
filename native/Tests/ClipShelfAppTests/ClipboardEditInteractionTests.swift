@@ -140,11 +140,8 @@ import XCTest
         XCTAssertTrue(font.fontDescriptor.symbolicTraits.contains(.bold)); XCTAssertEqual(font.pointSize, 18)
     }
 
-    func testMultiObjectAndMalformedRichTextAreExplicitlyReadOnly() throws {
-        for record in [ClipboardRecord(text: "two objects", parts: [
-            .init(representations: [.init(typeIdentifier: "public.utf8-plain-text", data: Data("one".utf8))]),
-            .init(representations: [.init(typeIdentifier: "public.utf8-plain-text", data: Data("two".utf8))])]),
-            ClipboardRecord(text: "broken", rtf: Data("not RTF".utf8))] {
+    func testMalformedRichTextIsExplicitlyReadOnly() throws {
+        for record in [ClipboardRecord(text: "broken", rtf: Data("not RTF".utf8))] {
             let h = EditHarness(record: record); defer { h.close() }; h.load()
             XCTAssertFalse(try h.editor().isEditable); XCTAssertFalse(h.status.isEmpty)
             XCTAssertFalse(try h.view(NSButton.self, title: "保存修改").isEnabled)

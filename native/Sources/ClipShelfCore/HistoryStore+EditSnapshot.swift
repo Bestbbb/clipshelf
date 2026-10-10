@@ -18,6 +18,20 @@ extension HistoryStore {
         }
     }
 
+    /// A text-object edit cannot change any other part, including the image from which existing
+    /// OCR was derived. Reuse the complete snapshot commit and its account/access/quota checks.
+    public func commitPartEdit(_ edit: ClipboardPartEdit, snapshot: ClipboardEditSnapshot) throws -> HistorySelectionEditUndo {
+        let edited = try edit.applying(to: snapshot.record)
+        let preservedOCR: ClipboardImageOCR?
+        if let text = snapshot.record.ocrText,
+           let image = snapshot.record.parts.lazy.flatMap(\.representations).first(where: {
+               UTType($0.typeIdentifier)?.conforms(to: .image) == true
+           }) {
+            preservedOCR = ClipboardImageOCR(text: text, sourceImageDigest: RepresentationStorage.digest(image.data))
+        } else { preservedOCR = nil }
+        return try commitEdit(edited, snapshot: snapshot, recomputedOCR: preservedOCR)
+    }
+
     /// No stale editor can save under another store, revision, or account-configuration generation.
     /// The original and its Undo capability are captured in the same atomic write as the edit.
     public func commitEdit(_ edited: ClipboardRecord, snapshot: ClipboardEditSnapshot,

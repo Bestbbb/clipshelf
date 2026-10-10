@@ -109,11 +109,13 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     var onDeleteRecords: (([ClipboardRecord]) -> Void)?
     var onPrepareEdit: ((ClipboardSelectionReference, @escaping (Result<ClipboardEditSnapshot, Error>) -> Void) -> Void)?
     var onEdit: ((ClipboardEditSnapshot, ClipboardRecord, @escaping (Result<ClipboardSelectionReference, Error>) -> Void) -> Void)?
+    var onEditPart: ((ClipboardEditSnapshot, ClipboardPartEdit, @escaping (Result<ClipboardSelectionReference, Error>) -> Void) -> Void)?
     /// Production uses native windows and a native discard sheet. Tests can keep
     /// them unshown and inject an encoding failure without touching a pasteboard.
     var presentDetailPanel: ((NSPanel, NSWindow?) -> Void)?
     var confirmDiscardEdits: ((NSPanel, @escaping (Bool) -> Void) -> (() -> Void))?
     var makeEditedRecord: ((ClipboardRecord, NSAttributedString) throws -> ClipboardRecord)?
+    var makeEditedPart: ((ClipboardRecord, Int, NSAttributedString) throws -> ClipboardPartEdit)?
     var onNewText: (() -> Void)?
     var onQueryChange: ((HistoryQuery) -> Void)?
     /// Reads one bounded metadata window; completion must return on main.
@@ -301,11 +303,15 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private var detailIsRenaming = false
     private var detailPrepareReference: ClipboardSelectionReference?
     private var detailContextLabel: NSTextField?
+    private var detailPartIndex: Int?
+    private var detailPartPicker: NSPopUpButton?
+    private var detailEditingRecord: ClipboardRecord?
+    private var detailNote: NSTextField?
     private var detailPrimary: NSButton?
     private var detailStatus: NSTextField?
     private var detailColorWell: NSColorWell?
     private var detailError: String?
-    private var detailStructureError: ClipboardEditPlanError?
+    private var detailStructureError: Error?
     private var detailEventMonitor: Any?
     private var detailUndoObservers: [NSObjectProtocol] = []
     private var detailHidden = false
@@ -1073,7 +1079,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         card.onDragError = { [weak self] error in self?.statusLabel.stringValue = L10n.text("无法拖出内容：\(error.localizedDescription)") }
         if record.kind == .image { requestThumbnail(record, for: card) }
         let menu = NSMenu()
-        for (title, action) in [(L10n.text("粘贴"), #selector(pasteFromMenu(_:))), (L10n.text("以纯文本粘贴"), #selector(pastePlainFromMenu(_:))), (L10n.text("复制"), #selector(copyFromMenu(_:))), (record.kind == .file ? L10n.text("文件与位置…") : L10n.text("预览此项"), #selector(previewFromMenu(_:))), (record.kind == .file ? L10n.text("查看文件后打开…") : L10n.text("打开此项"), #selector(openFromMenu(_:))), (record.kind == .file ? L10n.text("管理文件位置…") : L10n.text("编辑此项"), #selector(editFromMenu(_:))), (L10n.text("重命名此项"), #selector(renameFromMenu(_:))), (L10n.text("删除"), #selector(deleteFromMenu(_:)))] {
+        for (title, action) in [(L10n.text("粘贴"), #selector(pasteFromMenu(_:))), (L10n.text("以纯文本粘贴"), #selector(pastePlainFromMenu(_:))), (L10n.text("复制"), #selector(copyFromMenu(_:))), (record.kind == .file ? L10n.text("文件与位置…") : L10n.text("预览此项"), #selector(previewFromMenu(_:))), (record.kind == .file ? L10n.text("查看文件后打开…") : L10n.text("打开此项"), #selector(openFromMenu(_:))), (L10n.text("编辑此项"), #selector(editFromMenu(_:))), (L10n.text("重命名此项"), #selector(renameFromMenu(_:))), (L10n.text("删除"), #selector(deleteFromMenu(_:)))] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             item.representedObject = record.id
@@ -2328,6 +2334,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         linkPreview?.dismiss()
         imagePreview?.dismiss()
         filePreview?.dismiss()
+        // Mixed-record edits select one object before routing by the aggregate kind.
+        if editing, record.parts.count > 1 {
+            showTextDetail(record, editing: true)
+            return
+        }
         // A file may also contain an embedded PDF; its reference-management entry
         // must remain reachable regardless of the other representations.
         if record.kind == .file || record.parts.flatMap(\.representations).contains(where: { ClipboardFileAccess.isFileURLType($0.typeIdentifier) }) {
@@ -2392,7 +2403,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         showTextDetail(record, editing: editing)
     }
 
-    private func showTextDetail(_ record: ClipboardRecord, editing: Bool, renameReference: ClipboardSelectionReference? = nil) {
+    private func showTextDetail(_ record: ClipboardRecord, editing: Bool, renameReference: ClipboardSelectionReference? = nil,
+                                partIndex: Int? = nil) {
         let renaming = renameReference != nil
         let detail = ShelfPanel(contentRect: NSRect(x: 0, y: 0, width: 620, height: 460), styleMask: [.titled, .closable, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
         detail.title = renaming ? L10n.text("重命名条目") : (editing ? L10n.text("编辑剪贴板内容") : L10n.text("预览剪贴板内容"))
@@ -2403,8 +2415,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         detailRecord = record; detailWindow = detail
         detailSession = UUID(); detailParentSession = viewGeneration; detailIsEditing = editing
         detailIsRenaming = renaming
+        detailPartIndex = editing && !renaming && record.parts.count > 1
+            ? (partIndex ?? ClipboardEditPlan.editablePartIndices(original: record).first ?? 0) : nil
+        if detailPartIndex != nil { detail.minSize = NSSize(width: 440, height: 360) }
         detailPrepareReference = renameReference ?? .init(id: record.id, revision: record.revision)
-        detailStructureError = editing && !renaming ? ClipboardEditPlan.editingError(original: record) : nil
+        configureDetailEditingRecord(record)
         let root = NSView(); detail.contentView = root
         defer { InterfaceLayout.apply(to: root, direction: layoutDirection) }
         let context = NSTextField(labelWithString: renaming ? L10n.text("正在读取条目…") : "\(record.sourceApp ?? L10n.text("剪贴板")) · \(L10n.date(record.copiedAt))")
@@ -2434,9 +2449,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         }
         initialDetailContents = NSAttributedString(attributedString: editor.attributedString())
         scroll.documentView = editor
-        let htmlOnly = Self.detailRTF(record) == nil && (record.html != nil || record.parts.flatMap(\.representations).contains { $0.typeIdentifier == "public.html" })
-        let note = NSTextField(wrappingLabelWithString: renaming ? L10n.text("名称用于查找和识别，不会修改粘贴的内容。留空可恢复自动名称。") : editing && htmlOnly ? L10n.text("此条目仅有 HTML 格式；修改后将保存为文本及原生富文本。未修改保存会保留原格式。") : (editing ? L10n.text("保存成功后更新当前条目。关闭未保存的草稿时可选择继续编辑。") : L10n.text("内容只读；编辑不会立即粘贴到其他 App。")))
-        note.font = .systemFont(ofSize: 10); note.textColor = .secondaryLabelColor; note.maximumNumberOfLines = 3
+        let note = NSTextField(wrappingLabelWithString: "")
+        note.font = .systemFont(ofSize: 10); note.textColor = .secondaryLabelColor; note.maximumNumberOfLines = 4
+        note.setAccessibilityIdentifier("editor.note"); detailNote = note
         let error = NSTextField(wrappingLabelWithString: "")
         error.font = .systemFont(ofSize: 11); error.maximumNumberOfLines = 3
         error.setAccessibilityLabel(L10n.text("编辑状态")); detailStatus = error
@@ -2446,17 +2461,32 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         primary.bezelStyle = .rounded; detailPrimary = primary
         // Return is never a button equivalent: text may contain line breaks.
         let actions = NSStackView(views: [cancel, primary])
-        if record.kind == .color && editing && !renaming {
+        if editing && !renaming {
             let picker = NSColorWell(frame: NSRect(x: 0, y: 0, width: 48, height: 25))
-            picker.color = ClipboardEditPlan.color(from: record.text) ?? .controlAccentColor
+            picker.color = ClipboardEditPlan.color(from: detailEditingRecord?.text ?? "") ?? .controlAccentColor
             picker.target = self; picker.action = #selector(colorChanged(_:)); picker.setAccessibilityLabel(L10n.text("选择颜色"))
             detailColorWell = picker; actions.insertArrangedSubview(picker, at: 0)
         }
         actions.orientation = .horizontal; actions.spacing = 8
         for view in [context, scroll, note, error, actions] { view.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(view) }
+        var scrollTop = context.bottomAnchor
+        if detailPartIndex != nil {
+            let picker = NSPopUpButton(frame: .zero, pullsDown: false)
+            picker.target = self; picker.action = #selector(changeDetailPart(_:))
+            picker.setAccessibilityLabel(L10n.text("编辑对象")); picker.setAccessibilityIdentifier("editor.part")
+            picker.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(picker)
+            detailPartPicker = picker; populateDetailParts(record)
+            NSLayoutConstraint.activate([
+                picker.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
+                picker.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
+                picker.topAnchor.constraint(equalTo: context.bottomAnchor, constant: 10)
+            ])
+            scrollTop = picker.bottomAnchor
+        }
+        updateDetailNote()
         NSLayoutConstraint.activate([
             context.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20), context.topAnchor.constraint(equalTo: root.topAnchor, constant: 18), context.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
-            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20), scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20), scroll.topAnchor.constraint(equalTo: context.bottomAnchor, constant: 14), scroll.bottomAnchor.constraint(equalTo: note.topAnchor, constant: -10),
+            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20), scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20), scroll.topAnchor.constraint(equalTo: scrollTop, constant: 14), scroll.bottomAnchor.constraint(equalTo: note.topAnchor, constant: -10),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 60),
             note.leadingAnchor.constraint(equalTo: scroll.leadingAnchor), note.trailingAnchor.constraint(equalTo: scroll.trailingAnchor), note.bottomAnchor.constraint(equalTo: error.topAnchor, constant: -8),
             error.leadingAnchor.constraint(equalTo: scroll.leadingAnchor), error.trailingAnchor.constraint(equalTo: scroll.trailingAnchor), error.heightAnchor.constraint(greaterThanOrEqualToConstant: 30), error.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -10),
@@ -2650,6 +2680,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         detailIsEditing = false; detailHidden = false; detailPrimary = nil; detailStatus = nil
         detailColorWell = nil; detailError = nil
         detailStructureError = nil; detailIsRenaming = false; detailPrepareReference = nil; detailContextLabel = nil
+        detailPartIndex = nil; detailPartPicker = nil; detailEditingRecord = nil; detailNote = nil
         if isVisible { window?.makeKey(); window?.makeFirstResponder(resultsView) }
     }
 
@@ -2704,12 +2735,82 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         }
     }
 
+    private func configureDetailEditingRecord(_ record: ClipboardRecord) {
+        detailEditingRecord = nil; detailStructureError = nil
+        guard detailIsEditing, !detailIsRenaming else { return }
+        do {
+            let index = detailPartIndex ?? (record.parts.count == 1 ? 0 : nil)
+            let projected = try index.map { try ClipboardEditPlan.partRecord(original: record, partIndex: $0) } ?? record
+            detailEditingRecord = projected
+            detailStructureError = ClipboardEditPlan.editingError(original: projected)
+        } catch { detailStructureError = error }
+    }
+
+    private func detailPartSummary(_ record: ClipboardRecord, index: Int) -> String {
+        if let projected = try? ClipboardEditPlan.partRecord(original: record, partIndex: index) {
+            return String(projected.text.prefix(256).split(whereSeparator: { $0.isNewline }).joined(separator: " ").prefix(72))
+        }
+        let part = record.parts[index]
+        if let file = part.representations.first(where: { ClipboardFileAccess.isFileURLType($0.typeIdentifier) }),
+           let value = String(data: file.data.prefix(4_096), encoding: .utf8), let url = URL(string: value) {
+            return String(url.lastPathComponent.prefix(72))
+        }
+        return ClipboardRecord(text: "", parts: [part]).title
+    }
+
+    private func populateDetailParts(_ record: ClipboardRecord) {
+        guard let picker = detailPartPicker else { return }
+        let editable = Set(ClipboardEditPlan.editablePartIndices(original: record))
+        picker.removeAllItems()
+        for index in record.parts.indices {
+            let state = editable.contains(index) ? L10n.text("可编辑") : L10n.text("只读")
+            let summary = detailPartSummary(record, index: index)
+            picker.addItem(withTitle: L10n.text("对象 \(index + 1)：\(summary) · \(state)"))
+            picker.lastItem?.tag = index
+        }
+        if let index = detailPartIndex { picker.selectItem(withTag: index) }
+    }
+
+    @objc private func changeDetailPart(_ sender: NSPopUpButton) {
+        guard let current = detailPartIndex else { return }
+        let target = sender.selectedTag()
+        // Keep the selector on the current draft while a discard decision is pending.
+        sender.selectItem(withTag: current)
+        guard target != current, detailPrepareID == nil, detailSaveID == nil,
+              detailDiscardID == nil, detailSnapshot != nil,
+              let record = detailRecord, record.parts.indices.contains(target) else { return }
+        requestDetailClose { [weak self] in
+            guard let self, self.isVisible else { return }
+            self.showTextDetail(record, editing: true, partIndex: target)
+        }
+    }
+
+    private func updateDetailNote() {
+        let projected = detailEditingRecord ?? (detailPartIndex == nil ? detailRecord : nil)
+        let htmlOnly = projected.map { Self.detailRTF($0) == nil && ($0.html != nil || $0.parts.flatMap(\.representations).contains { $0.typeIdentifier == "public.html" }) } ?? false
+        var note: String
+        if detailIsRenaming { note = L10n.text("名称用于查找和识别，不会修改粘贴的内容。留空可恢复自动名称。") }
+        else if detailIsEditing && htmlOnly { note = L10n.text("此条目仅有 HTML 格式；修改后将保存为文本及原生富文本。未修改保存会保留原格式。") }
+        else if detailIsEditing { note = L10n.text("保存成功后更新当前条目。关闭未保存的草稿时可选择继续编辑。") }
+        else { note = L10n.text("内容只读；编辑不会立即粘贴到其他 App。") }
+        if detailPartIndex != nil { note += "\n" + L10n.text("本次仅修改选中的对象，其他对象保持原样。") }
+        detailNote?.stringValue = note
+        detailColorWell?.isHidden = detailEditingRecord?.kind != .color || detailIsRenaming
+    }
+
     private func loadDetailContents(_ record: ClipboardRecord, into editor: NSTextView) {
         if detailIsRenaming { editor.string = record.title }
+        else if detailIsEditing, let index = detailPartIndex ?? (record.parts.count == 1 ? 0 : nil) {
+            do { editor.textStorage?.setAttributedString(try ClipboardEditPlan.partContents(original: record, partIndex: index)) }
+            catch {
+                detailStructureError = error
+                editor.string = record.parts.indices.contains(index) ? detailPartSummary(record, index: index) : ""
+            }
+        }
         else if let data = Self.detailRTF(record), let attributed = NSAttributedString(rtf: data, documentAttributes: nil) {
             editor.textStorage?.setAttributedString(attributed)
         } else { editor.string = record.text }
-        editor.undoManager?.removeAllActions()
+        (editor as? ShelfEditTextView)?.draftUndoManager.removeAllActions()
     }
 
     private static func detailRTF(_ record: ClipboardRecord) -> Data? {
@@ -2735,13 +2836,15 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
                     self.updateDetailEditingState(); return
                 }
                 self.detailSnapshot = snapshot; self.detailRecord = snapshot.record
-                self.detailStructureError = self.detailIsRenaming ? nil : ClipboardEditPlan.editingError(original: snapshot.record)
+                self.configureDetailEditingRecord(snapshot.record)
+                self.populateDetailParts(snapshot.record)
                 self.detailContextLabel?.stringValue = "\(snapshot.record.sourceApp ?? L10n.text("剪贴板")) · \(L10n.date(snapshot.record.copiedAt))"
                 if let editor = self.detailEditor {
                     self.loadDetailContents(snapshot.record, into: editor)
                     self.initialDetailContents = NSAttributedString(attributedString: editor.attributedString())
                 }
                 self.detailError = nil
+                self.updateDetailNote()
             case .failure(let error): self.detailError = error.localizedDescription
             }
             self.updateDetailEditingState()
@@ -2752,15 +2855,17 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         guard let editor = detailEditor else { return }
         guard detailIsEditing else { detailPrimary?.isEnabled = onPrepareEdit != nil && onEdit != nil; return }
         let structural = detailStructureError
-        let validation = detailIsRenaming ? nil : detailRecord.flatMap { ClipboardEditPlan.validationError(original: $0, text: editor.string) }
-        let busy = detailPrepareID != nil || detailSaveID != nil
+        let validation = detailIsRenaming ? nil : detailEditingRecord.flatMap { ClipboardEditPlan.validationError(original: $0, text: editor.string) }
+        let busy = detailPrepareID != nil || detailSaveID != nil || detailDiscardID != nil
         let editable = detailSnapshot != nil && structural == nil && !busy
         editor.isEditable = editable
         (editor as? ShelfEditTextView)?.locksEdits = !editable
         detailColorWell?.isEnabled = editable
+        detailPartPicker?.isEnabled = !busy && detailSnapshot != nil
         if let color = ClipboardEditPlan.color(from: editor.string), detailColorWell != nil { detailColorWell?.color = color }
         detailPrimary?.title = detailSnapshot == nil && detailPrepareID == nil ? L10n.text("重试读取") : (detailSaveID == nil ? L10n.text("保存修改") : L10n.text("正在保存…"))
-        detailPrimary?.isEnabled = !busy && (detailSnapshot == nil ? onPrepareEdit != nil : (structural == nil && validation == nil && onEdit != nil))
+        let canSave = detailPartIndex == nil ? onEdit != nil : onEditPart != nil
+        detailPrimary?.isEnabled = !busy && (detailSnapshot == nil ? onPrepareEdit != nil : (structural == nil && validation == nil && canSave))
         let message: String
         if detailPrepareID != nil { message = L10n.text("正在检查条目与编辑权限…") }
         else if detailSaveID != nil { message = L10n.text("正在保存，草稿暂时只读；放弃或关闭不会撤回已提交的保存。") }
@@ -2775,7 +2880,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
-        textView !== detailEditor || (detailIsEditing && detailSnapshot != nil && detailPrepareID == nil && detailSaveID == nil && detailStructureError == nil)
+        textView !== detailEditor || (detailIsEditing && detailSnapshot != nil && detailPrepareID == nil && detailSaveID == nil && detailDiscardID == nil && detailStructureError == nil)
     }
 
     private func requestDetailClose(onCancel: (() -> Void)? = nil, _ continuation: @escaping () -> Void) {
@@ -2788,10 +2893,12 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         let token = UUID(), session = detailSession
         detailDiscardID = token
         detailDiscardCancelled = onCancel
+        updateDetailEditingState()
         let reply: (Bool) -> Void = { [weak self, weak detail] discard in
             guard let self, let detail, self.detailContextIsCurrent(detail, session: session), self.detailDiscardID == token else { return }
             self.detailDiscardID = nil; self.cancelDetailDiscard = nil
             self.detailDiscardCancelled = nil
+            self.updateDetailEditingState()
             if discard { detail.close(); continuation() }
             else { onCancel?() }
         }
@@ -2816,6 +2923,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         let cancelled = detailDiscardCancelled; detailDiscardCancelled = nil
         let cancel = cancelDetailDiscard; cancelDetailDiscard = nil; cancel?()
         cancelled?()
+        updateDetailEditingState()
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -2831,6 +2939,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
     @objc private func colorChanged(_ sender: NSColorWell) {
         guard detailIsEditing, detailSaveID == nil, detailPrepareID == nil, detailSnapshot != nil,
+              detailDiscardID == nil, detailEditingRecord?.kind == .color,
               let editor = detailEditor, editor.isEditable, let text = ClipboardEditPlan.hexString(for: sender.color) else { return }
         let range = NSRange(location: 0, length: editor.attributedString().length)
         editor.breakUndoCoalescing()
@@ -2843,28 +2952,39 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     @objc private func extractDetail() { if let record = detailRecord { requestDetailClose { [weak self] in self?.onExtractText?(record) } } }
     @objc private func editDetail() { if let record = detailRecord { showDetail(record, editing: true) } }
     @objc private func saveDetail() {
-        guard detailIsEditing, detailSaveID == nil, detailPrepareID == nil else { return }
+        guard detailIsEditing, detailSaveID == nil, detailPrepareID == nil, detailDiscardID == nil else { return }
         guard let snapshot = detailSnapshot else { prepareDetailEdit(); return }
-        guard let detail = detailWindow, let editor = detailEditor, let onEdit else { return }
-        if !detailIsRenaming, let error = ClipboardEditPlan.validationError(original: snapshot.record, text: editor.string) {
+        guard let detail = detailWindow, let editor = detailEditor, detailStructureError == nil else { return }
+        if !detailIsRenaming, let original = detailEditingRecord,
+           let error = ClipboardEditPlan.validationError(original: original, text: editor.string) {
             detailError = error.localizedDescription; updateDetailEditingState(); return
         }
         guard detailIsDirty else { detail.close(); return }
-        let submitted: ClipboardRecord
+        let submit: (@escaping (Result<ClipboardSelectionReference, Error>) -> Void) -> Void
         do {
-            if detailIsRenaming {
-                var renamed = snapshot.record
-                let title = editor.string.trimmingCharacters(in: .whitespacesAndNewlines)
-                renamed.renamedTitle = title
-                submitted = renamed
-            } else {
+            if let index = detailPartIndex {
+                guard let onEditPart else { return }
                 let contents = NSAttributedString(attributedString: editor.attributedString())
-                submitted = try makeEditedRecord?(snapshot.record, contents) ?? ClipboardEditPlan.makeRecord(original: snapshot.record, contents: contents)
+                let edited = try makeEditedPart?(snapshot.record, index, contents)
+                    ?? ClipboardEditPlan.makePartEdit(original: snapshot.record, partIndex: index, contents: contents)
+                submit = { reply in onEditPart(snapshot, edited, reply) }
+            } else {
+                guard let onEdit else { return }
+                let submitted: ClipboardRecord
+                if detailIsRenaming {
+                    var renamed = snapshot.record
+                    renamed.renamedTitle = editor.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                    submitted = renamed
+                } else {
+                    let contents = NSAttributedString(attributedString: editor.attributedString())
+                    submitted = try makeEditedRecord?(snapshot.record, contents) ?? ClipboardEditPlan.makeRecord(original: snapshot.record, contents: contents)
+                }
+                submit = { reply in onEdit(snapshot, submitted, reply) }
             }
         } catch { detailError = error.localizedDescription; updateDetailEditingState(); return }
         let token = UUID(), session = detailSession
         detailSaveID = token; detailError = nil; updateDetailEditingState()
-        onEdit(snapshot, submitted) { [weak self, weak detail] result in
+        submit { [weak self, weak detail] result in
             guard let self, let detail, self.detailContextIsCurrent(detail, session: session), self.detailSaveID == token else { return }
             self.detailSaveID = nil
             switch result {

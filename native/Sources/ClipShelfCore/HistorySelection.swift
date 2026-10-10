@@ -56,6 +56,7 @@ public struct HistorySelectionEditUndo: Sendable {
     public var committedReference: ClipboardSelectionReference { expected }
     public let original: ClipboardRecord
     let expected: ClipboardSelectionReference
+    let expectedContentFingerprint: String
     let storeIdentity: UUID
     let syncConfiguration: SyncConfiguration
     let sharingConfiguration: SyncConfiguration

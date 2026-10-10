@@ -56,6 +56,13 @@ pending items in memory for explicit retry or discard. Pausing or locking cancel
 waiting saves; a write already in progress may still finish. Polling cannot
 recover copies overwritten between observations.
 
+Mixed clipboard records can edit one supported text, link or color object at a
+time. An object selector keeps the remaining objects intact; switching away from
+an unsaved draft asks whether to keep editing or discard it. Unsupported embedded
+attachments stay read-only, and original-format output preserves the other objects.
+Edit Undo also checks the saved content, so a backup that reuses the same record
+ID and revision cannot be overwritten by a stale Undo action.
+
 Storage Management reports library files, shared caches and the share inbox
 separately, including unavailable scopes. Core writes and backups check volume
 capacity before growing data. OCR caches, PNG exports and file promises, the

@@ -169,6 +169,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                     if [1, 6].contains(index) { record.pinboardID = referenceBoard.id }
                     _ = try store.create(record)
                 }
+                for record in try EditValidationFixtures.records(directory: directory) {
+                    _ = try store.create(record)
+                }
                 if profile.includesSearchFixtures { try SearchValidationFixtures.populate(store) }
             }
             applyRetention()
@@ -453,6 +456,10 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         panel.onEdit = { [weak self] snapshot, edited, completion in
             guard let self else { completion(.failure(EditorOperationError.unavailable)); return }
             self.saveEditor(edited, snapshot: snapshot, completion: completion)
+        }
+        panel.onEditPart = { [weak self] snapshot, edit, completion in
+            guard let self else { completion(.failure(EditorOperationError.unavailable)); return }
+            self.savePartEditor(edit, snapshot: snapshot, completion: completion)
         }
         panel.onNewText = { [weak self] in self?.newText() }
         if !demo {
@@ -1111,6 +1118,32 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             do {
                 let undo = try await ClipboardEditCommitter.commit(edited, snapshot: snapshot,
                                                                  store: store, cache: ocrCache)
+                selectionUndoHistory.register(.edit(undo)) { [weak self] in self?.undoSelection($0, store: store) }
+                selectionMutationInProgress = false
+                completion(.success(undo.committedReference))
+                reload()
+            } catch {
+                selectionMutationInProgress = false
+                completion(.failure(EditorOperationError.wrapping(error)))
+            }
+        }
+    }
+
+    private func savePartEditor(_ edit: ClipboardPartEdit, snapshot: ClipboardEditSnapshot,
+                                completion: @escaping (Result<ClipboardSelectionReference, Error>) -> Void) {
+        guard !isTerminating else { completion(.failure(EditorOperationError.unavailable)); return }
+        if demo {
+            do { saveEditor(try edit.applying(to: snapshot.record), snapshot: snapshot, completion: completion) }
+            catch { completion(.failure(EditorOperationError.wrapping(error))) }
+            return
+        }
+        guard let store else { completion(.failure(EditorOperationError.unavailable)); return }
+        guard !isDataMutationInProgress else { completion(.failure(SelectionOperationError.busy)); return }
+        selectionMutationInProgress = true
+        Task { @MainActor in
+            do {
+                let undo = try await ClipboardEditCommitter.commitPartEdit(edit, snapshot: snapshot,
+                                                                         store: store, cache: ocrCache)
                 selectionUndoHistory.register(.edit(undo)) { [weak self] in self?.undoSelection($0, store: store) }
                 selectionMutationInProgress = false
                 completion(.success(undo.committedReference))

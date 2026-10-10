@@ -7,6 +7,16 @@ import Foundation
 enum ClipboardEditCommitter {
     typealias Recognizer = (Data) async throws -> LocalIntelligenceService.OCRResult
 
+    /// The Core part-edit capability permits only one text object to change and keeps
+    /// image bytes and their trusted OCR intact. No OCR or cache mutation is necessary.
+    static func commitPartEdit(_ edit: ClipboardPartEdit, snapshot: ClipboardEditSnapshot,
+                               store: HistoryStore, cache: OCRDerivedCache) async throws -> HistorySelectionEditUndo {
+        try Task.checkCancellation()
+        return try await Task.detached(priority: .userInitiated) {
+            try store.commitPartEdit(edit, snapshot: snapshot)
+        }.value
+    }
+
     static func commit(_ edited: ClipboardRecord, snapshot: ClipboardEditSnapshot,
                        store: HistoryStore, cache: OCRDerivedCache,
                        recognize: Recognizer? = nil) async throws -> HistorySelectionEditUndo {

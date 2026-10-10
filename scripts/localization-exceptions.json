@@ -198,5 +198,10 @@
     "file": "native/Sources/ClipShelfLocalization/InterfaceLanguage.swift",
     "literal": "\"日本語\"",
     "reason": "Native language self-name"
+  },
+  {
+    "file": "native/Sources/ClipShelf/EditValidationFixtures.swift",
+    "literal": "\"QA last object: UTF16 中文 🧪\"",
+    "reason": "Synthetic acceptance content, kept byte-identical for UTF-16 editing validation"
   }
 ]
