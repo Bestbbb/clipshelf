@@ -139,23 +139,61 @@ final class PanelShortcutRoutingTests: XCTestCase {
         XCTAssertEqual(h.deleteCount + h.undoCount, 0)
     }
 
-    @MainActor func testDoubleClickUsesConfiguredModifierAndAlwaysPlainKeepsFilesRich() throws {
+    @MainActor func testSingleClickUsesConfiguredModifierAndAlwaysPlainKeepsFilesRich() throws {
         let h = PanelShortcutHarness(); defer { h.close() }
         h.panel.applyShortcuts(configured(), alwaysPlainText: false)
         let card = try h.card(0)
+        card.frame = NSRect(x: 0, y: 0, width: 222, height: 180)
         func click(_ flags: NSEvent.ModifierFlags) {
-            let event = NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: flags, timestamp: 1,
-                                          windowNumber: h.panel.window!.windowNumber, context: nil,
-                                          eventNumber: 1, clickCount: 2, pressure: 1)!
-            card.mouseDown(with: event)
+            for kind in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = NSEvent.mouseEvent(with: kind, location: card.convert(NSPoint(x: 40, y: 40), to: nil), modifierFlags: flags, timestamp: 1,
+                                              windowNumber: h.panel.window!.windowNumber, context: nil,
+                                              eventNumber: 1, clickCount: 1, pressure: 1)!
+                if kind == .leftMouseDown { card.mouseDown(with: event) } else { card.mouseUp(with: event) }
+            }
         }
-        click(.shift); XCTAssertEqual(h.pastes.last?.1, false)
+        click([]); XCTAssertEqual(h.pastes.last?.1, false)
         click(.control); XCTAssertEqual(h.pastes.last?.1, true)
         h.panel.applyShortcuts(configured(), alwaysPlainText: true)
         click([]); XCTAssertEqual(h.pastes.last?.1, true)
         let file = ClipboardRecord(text: "Synthetic file", parts: [ClipboardPart(representations: [ClipboardRepresentation(typeIdentifier: NSPasteboard.PasteboardType.fileURL.rawValue, data: Data("file:///synthetic/missing.txt".utf8))])])
         h.panel.show(records: [file]); h.key(36, "\r"); h.key(36, "\r")
         XCTAssertEqual(h.pastes.last?.0, file.id); XCTAssertEqual(h.pastes.last?.1, false)
+    }
+
+    @MainActor func testCardReleasePastesOnceWhileSelectionDragAndOutsideReleaseDoNotPaste() throws {
+        let h = PanelShortcutHarness(); defer { h.close() }
+        let card = try h.card(0)
+        card.frame = NSRect(x: 0, y: 0, width: 222, height: 180)
+        func mouse(_ kind: NSEvent.EventType, flags: NSEvent.ModifierFlags = [], count: Int = 1,
+                   point: NSPoint = NSPoint(x: 40, y: 40)) {
+            let event = NSEvent.mouseEvent(with: kind, location: card.convert(point, to: nil), modifierFlags: flags,
+                timestamp: 1, windowNumber: h.panel.window!.windowNumber, context: nil,
+                eventNumber: 1, clickCount: count, pressure: 1)!
+            switch kind {
+            case .leftMouseDown: card.mouseDown(with: event)
+            case .leftMouseDragged: card.mouseDragged(with: event)
+            default: card.mouseUp(with: event)
+            }
+        }
+        mouse(.leftMouseDown)
+        XCTAssertTrue(h.pastes.isEmpty, "Pressing down must leave time to start a drag")
+        mouse(.leftMouseUp)
+        XCTAssertEqual(h.pastes.map(\.0), [h.records[0].id])
+        mouse(.leftMouseDown, count: 2); mouse(.leftMouseUp, count: 2)
+        XCTAssertEqual(h.pastes.count, 1, "A double click cannot produce a second paste")
+        for flags: NSEvent.ModifierFlags in [.command, .shift, [.command, .shift]] {
+            mouse(.leftMouseDown, flags: flags); mouse(.leftMouseUp, flags: flags)
+        }
+        XCTAssertEqual(h.pastes.count, 1, "Selection modifiers must keep the shelf open")
+        mouse(.leftMouseDown); mouse(.leftMouseDragged, point: NSPoint(x: 55, y: 40)); mouse(.leftMouseUp)
+        XCTAssertEqual(h.pastes.count, 1, "Dragging a card must not paste")
+        mouse(.leftMouseDown); mouse(.leftMouseUp, point: NSPoint(x: 250, y: 40))
+        XCTAssertEqual(h.pastes.count, 1, "Releasing outside the card cancels activation")
+        mouse(.leftMouseDown); card.cancelPendingDrag(); mouse(.leftMouseUp)
+        XCTAssertEqual(h.pastes.count, 1, "Cancelled gestures cannot activate later")
+        card.performClick(nil)
+        XCTAssertEqual(h.pastes.count, 2, "The accessible button action follows single-click activation")
     }
 
     @MainActor func testQuickBadgesUseConfiguredHeldFlagsAndClearOnReopen() throws {

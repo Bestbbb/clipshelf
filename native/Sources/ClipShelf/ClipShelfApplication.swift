@@ -458,7 +458,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             self.panel.setPasteDestination(name: selected.application.localizedName,
                                            available: self.paste.hasPermission && selected.window != nil)
             ValidationTrace.emit(.destinationSelected, pid: pid, bundleID: selected.application.bundleIdentifier, state: .captured)
-            self.setStatus(L10n.text("单击选择，双击粘贴；回车粘贴，Shift 回车以纯文本粘贴。"))
+            self.setStatus(L10n.text("单击粘贴；⌘/Shift 单击多选；回车粘贴，Shift 回车以纯文本粘贴。"))
         }
         panel.onDismiss = { [weak self] in
             ValidationTrace.emit(.panelDismissed, state: .hidden)

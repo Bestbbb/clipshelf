@@ -232,7 +232,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
             detailLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -15)
         ]
         setAccessibilityLabel("\(record.sourceApp ?? L10n.text("剪贴板"))，\(kind)，\(record.text.prefix(140))")
-        setAccessibilityHelp(L10n.text("单击选择，双击粘贴；回车粘贴，Shift 回车以纯文本粘贴。"))
+        setAccessibilityHelp(L10n.text("单击粘贴；⌘/Shift 单击多选；回车粘贴，Shift 回车以纯文本粘贴。"))
         InterfaceLayout.apply(to: self)
         layoutIsConfigured = true
         applyLayoutMode(for: bounds.height)
@@ -322,7 +322,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     }
 
     @objc private func pressed() {
-        if NSApp.currentEvent?.clickCount == 2 { onOpen?(NSApp.currentEvent?.modifierFlags ?? []) } else { onSelect?() }
+        onOpen?([])
     }
 
     // All children are decorative; the card owns selection and drag gestures.
@@ -331,7 +331,8 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     override func mouseDown(with event: NSEvent) {
         trace("mouseDown clicks=\(event.clickCount) event=\(event.eventNumber) flags=\(event.modifierFlags.rawValue)")
         resetDragGesture()
-        guard event.clickCount < 2 else { onOpen?(event.modifierFlags); return }
+        // The first release already activates the card; a second click must not paste twice.
+        guard event.clickCount < 2 else { return }
         activeGestureID = UUID()
         mouseDownLocation = event.locationInWindow
         onSelect?()
@@ -353,7 +354,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         if !isDragging {
             let wasClick = activeGestureID != nil && latestDragEvent == nil
             resetDragGesture()
-            if wasClick { onClick?(event) }
+            if wasClick, bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?(event) }
         }
     }
 

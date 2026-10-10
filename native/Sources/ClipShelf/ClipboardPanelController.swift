@@ -181,7 +181,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func updateShortcutPresentation() {
         let quick = shortcutConfiguration.quickPaste.symbol, plain = shortcutConfiguration.plainText.symbol
-        shortcutHints.stringValue = L10n.text("单击选择 · 双击或 ↵ 粘贴 · esc 收起")
+        shortcutHints.stringValue = L10n.text("单击或 ↵ 粘贴 · ⌘/Shift 多选 · esc 收起")
         shortcutHints.toolTip = L10n.text("↵ 粘贴   \(plain)↵ 纯文本   \(quick)1–9 快速粘贴   esc 收起") + "\n" + L10n.text("切换分组：\(shortcutConfiguration.previousPinboard.displayName) / \(shortcutConfiguration.nextPinboard.displayName)")
         emptyDescription.stringValue = L10n.text("在其他 App 中复制文本，再按 \(shortcutConfiguration.activation.displayName) 打开 ClipShelf。")
         cardViews.forEach(updateShortcutLabel)
@@ -220,7 +220,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         canPasteToDestination = available && name != nil
         pasteButton.title = requiresChoice ? L10n.text("粘贴") : canPasteToDestination ? L10n.text("粘贴到 \(name!)") : L10n.text("复制")
         pasteButton.toolTip = requiresChoice ? L10n.text("从应用图标打开时，请先选择接收内容的应用。") : canPasteToDestination
-            ? L10n.text("单击选择，双击粘贴；回车粘贴，Shift 回车以纯文本粘贴。")
+            ? L10n.text("单击粘贴；⌘/Shift 单击多选；回车粘贴，Shift 回车以纯文本粘贴。")
             : L10n.text("内容已复制，请切回目标应用按 ⌘V。")
     }
 
@@ -1226,10 +1226,10 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             }
             self.select(record.id, focusResults: true, extending: modifiers.contains(.shift), toggling: modifiers.contains(.command))
         }
-        card.onClick = { [weak self] event in
+        card.onClick = { [weak self, weak card] event in
             guard let self, self.detailWindow == nil, !event.modifierFlags.contains(.shift), !event.modifierFlags.contains(.command),
-                  self.selectedIDs.count > 1, self.selectedIDs.contains(record.id) else { return }
-            self.select(record.id, focusResults: true)
+                  !self.queryPending else { return }
+            card?.onOpen?(event.modifierFlags)
         }
         card.onOpen = { [weak self] modifiers in
             guard let self, self.detailWindow == nil, !self.isComposing else { return }
@@ -1239,10 +1239,10 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         }
         if manualOrder {
             card.toolTip = L10n.text("拖动以调整分组内顺序；按住 ⌥ 拖出内容，图片会作为 PNG 文件。")
-            card.setAccessibilityHelp(L10n.text("单击选择，双击粘贴；拖动调整分组内顺序，⌥ 拖出内容，图片转为 PNG 文件；⌥⌘左右箭头调整顺序。"))
+            card.setAccessibilityHelp(L10n.text("单击粘贴；⌘/Shift 单击多选；拖动调整分组内顺序，⌥ 拖出内容，图片转为 PNG 文件；⌥⌘左右箭头调整顺序。"))
         } else if record.hasImageFileParts {
             card.toolTip = L10n.text("拖动保留图片格式；按住 ⌥ 拖出 PNG 文件。")
-            card.setAccessibilityHelp(L10n.text("单击选择，双击粘贴；拖动保留图片格式，按住 Option 拖出 PNG 文件。"))
+            card.setAccessibilityHelp(L10n.text("单击粘贴；⌘/Shift 单击多选；拖动保留图片格式，按住 Option 拖出 PNG 文件。"))
         }
         card.onPrepareDrag = { [weak self, weak card] event in
             guard let self, self.detailWindow == nil, let card, let gestureID = card.activeGestureID else { return }

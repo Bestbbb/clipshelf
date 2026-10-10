@@ -407,7 +407,7 @@ final class ImageFileInteractionTests: XCTestCase {
         card.cancelPendingDrag()
     }
 
-    @MainActor func testOnCopiedRunsAfterSuccessfulPrivatePasteboardWriteBeforeDismissWithoutDispatch() throws {
+    @MainActor func testOnCopiedRunsAfterSuccessfulPrivatePasteboardWriteWithoutDismissingWhenTargetIsMissing() throws {
         let pasteboard = board(); defer { pasteboard.releaseGlobally() }
         XCTAssertTrue(pasteboard.setString("before", forType: .string))
         let first = try existing("first.png"), second = try existing("second.png")
@@ -420,7 +420,7 @@ final class ImageFileInteractionTests: XCTestCase {
             XCTAssertEqual(pasteboard.pasteboardItems?.map { $0.string(forType: .fileURL) }, [first.absoluteString, second.absoluteString])
             events.append("copied")
         }, onDispatched: { events.append("dispatched") })
-        XCTAssertEqual(events, ["write", "copied", "dismiss"])
+        XCTAssertEqual(events, ["write", "copied"], "Without a destination, keep the shelf and explanation visible")
         XCTAssertEqual(messages.count, 1)
         XCTAssertTrue(try XCTUnwrap(messages.first).contains("已复制"))
     }

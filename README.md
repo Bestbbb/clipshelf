@@ -3,9 +3,13 @@
 A free, open-source clipboard manager for macOS. The goal is the full Paste for
 Mac feature set and its smooth cross-app workflow.
 
-**Status (2026-10-10): this replication attempt failed user acceptance.**
-The user still found the app unusable after the latest fixes. It has not met the
-daily-use goal or full Paste for Mac parity and is not a validated replacement.
+**Status (2026-10-10): basic functionality is usable according to the user's
+latest feedback; the workflow still falls short of Paste.** Cards now paste with
+one click. Local automated checks verified insertion and continued typing in
+Cursor's chat input and code editor; see the
+[single-click workflow record](docs/SINGLE_CLICK_WORKFLOW.zh-CN.md).
+Full Paste for Mac parity and broad daily-use acceptance remain incomplete.
+Earlier failed acceptance and its retrospective are preserved as history.
 An additional local diagnostic run is recorded in the
 [core-flow rerun](docs/CORE_FLOW_RERUN.zh-CN.md). A later user trace showed app
 launches capturing Finder as the paste destination. The focused local fixes and
@@ -31,7 +35,9 @@ open build/ClipShelf.app
 
 Launch adds the menu bar item. The first time you open history or start recording,
 the welcome flow lets you start or postpone capture. Open the panel with **⌘⇧V**,
-or from the menu bar. Direct paste requires Accessibility
+or from the menu bar. Find an item and **click once to paste into the original
+input**. ⌘/Shift-click selects multiple items; dragging keeps its existing
+behavior. Direct paste requires Accessibility
 permission; without it, the app copies the selected content for manual pasting.
 
 The shelf enters with a short upward motion and fade, while search and keyboard
