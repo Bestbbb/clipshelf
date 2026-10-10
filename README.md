@@ -7,6 +7,11 @@ Mac feature set and its smooth cross-app workflow.
 locally. Full Paste parity, cross-app compatibility, cloud deployment, and a
 signed public release are still being developed and verified.
 
+Text workflows have been checked in TextEdit, Chrome textareas, and VS Code:
+search, insertion at the original caret, repeated paste, double-click, and cancel.
+These checks use the app-opening entry point; physical global-hotkey delivery and
+rich-format compatibility remain unverified. See the [acceptance record](docs/LOCAL_USABILITY_QA.zh-CN.md).
+
 ## Build and run
 
 Requires macOS 14 or later and Xcode with its Swift toolchain. Development is
@@ -26,6 +31,7 @@ permission; without it, the app copies the selected content for manual pasting.
 
 The shelf enters with a short upward motion and fade, while search and keyboard
 selection are available immediately. Reduce Motion skips the entrance animation.
+Escape dismisses the main shelf in one press, including while searching.
 Dismissal remains immediate, including during an unfinished animation; reopening
 cannot revive an earlier transition or lose a preserved editing draft.
 

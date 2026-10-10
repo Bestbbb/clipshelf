@@ -2099,8 +2099,10 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             guard !event.isARepeat else { return true }
             cardViews.forEach { $0.cancelPendingDrag() }
             pendingActionID = nil
-            if !searchField.stringValue.isEmpty { searchField.stringValue = ""; issueQuery(resetLimit: true); window?.makeFirstResponder(searchField) }
-            else { dismiss() }
+            // Escape ends the invocation even while searching. Leaving the
+            // panel open here makes the next global shortcut close it instead
+            // of capturing a fresh destination, contrary to the footer hint.
+            dismiss()
             return true
         case 36, 76:
             guard flags.isEmpty || flags == plainFlags else { return false }

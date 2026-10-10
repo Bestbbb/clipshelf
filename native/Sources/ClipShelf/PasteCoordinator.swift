@@ -46,7 +46,11 @@ final class PasteCoordinator {
 
     var hasPermission: Bool { environment.hasPermission }
     func requestPermission() { environment.requestPermission() }
-    func captureTarget() -> Target? { environment.captureTarget() }
+    func captureTarget() -> Target? {
+        let target = environment.captureTarget()
+        Self.outcomeLogger.notice("captured bundle=\(target?.application.bundleIdentifier ?? "none", privacy: .public) window=\(target?.window != nil, privacy: .public) input=\(target?.focusedElement != nil, privacy: .public)")
+        return target
+    }
 
     @discardableResult
     func copy(_ record: ClipboardRecord, plainText: Bool = false) -> Bool { copy([record], plainText: plainText) }
@@ -216,7 +220,7 @@ final class PasteCoordinator {
         trace(.pasteCompleted, target: request.target, state: state, failure: failure)
         // Keep cancellation reasons available after the panel has dismissed.
         // Never log clipboard data, window titles, paths or input contents.
-        Self.outcomeLogger.notice("outcome=\(state.rawValue, privacy: .public) failure=\(failure?.rawValue ?? "none", privacy: .public) target=\(request.target != nil, privacy: .public) window=\(request.target?.window != nil, privacy: .public) input=\(request.target?.focusedElement != nil, privacy: .public)")
+        Self.outcomeLogger.notice("outcome=\(state.rawValue, privacy: .public) failure=\(failure?.rawValue ?? "none", privacy: .public) target=\(request.target != nil, privacy: .public) bundle=\(request.target?.application.bundleIdentifier ?? "none", privacy: .public) window=\(request.target?.window != nil, privacy: .public) input=\(request.target?.focusedElement != nil, privacy: .public)")
         if let message { onResult?(message) }
         if outcome == .dispatched { request.onDispatched?() }
         request.onCompleted?(outcome)

@@ -64,10 +64,7 @@ import ClipShelfCore
         XCTAssertEqual(h.requests.count, 2)
         XCTAssertEqual(h.requests.last?.0.query.text, search.stringValue)
         XCTAssertTrue(h.key(53))
-        XCTAssertEqual(search.stringValue, "", "First Escape keeps the existing clear-search contract")
-        XCTAssertTrue(h.panel.isVisible)
-        XCTAssertTrue(h.key(53))
-        XCTAssertFalse(h.panel.isVisible)
+        XCTAssertFalse(h.panel.isVisible, "One Escape must end the invocation even with a search query")
         XCTAssertEqual(h.dismissals, 1)
         XCTAssertEqual(animation.cancellations, 1)
         h.requests[1].1(.success(.init(records: [], offset: 0, hasMore: false, focusID: nil)))
@@ -114,7 +111,7 @@ import ClipShelfCore
             switch change {
             case 0:
                 h.panel.setCompactMode(true)
-                XCTAssertEqual(window.frame.height, 376)
+                XCTAssertEqual(window.frame.height, 240, "Compact mode uses the current 240-point shelf")
             case 1:
                 h.panel.windowWillStartLiveResize(Notification(name: NSWindow.willStartLiveResizeNotification, object: window))
                 var frame = window.frame; frame.size.height = 510
