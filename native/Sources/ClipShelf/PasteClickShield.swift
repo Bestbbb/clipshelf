@@ -10,9 +10,10 @@ final class PasteClickShield {
         override var canBecomeMain: Bool { false }
     }
     private final class Surface: NSView {
-        var onDown: (() -> Void)?
+        var onDown: ((NSEvent) -> Void)?
         var onUp: (() -> Void)?
-        override func mouseDown(with event: NSEvent) { onDown?() }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override func mouseDown(with event: NSEvent) { onDown?(event) }
         override func mouseUp(with event: NSEvent) { onUp?() }
     }
     static func protectedFrame(at point: NSPoint) -> NSRect? {
@@ -34,13 +35,20 @@ final class PasteClickShield {
     init() {
         window.isReleasedWhenClosed = false
         window.isOpaque = false
-        window.backgroundColor = .clear
+        // Completely transparent pixels are not a reliable WindowServer hit
+        // surface. Retain a barely visible backing pixel in the small click area.
+        window.backgroundColor = NSColor.black.withAlphaComponent(0.01)
+        window.ignoresMouseEvents = false
+        window.hidesOnDeactivate = false
         window.hasShadow = false
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         window.setAccessibilityElement(false)
         let surface = Surface()
-        surface.onDown = { [weak self] in self?.pressed = true }
+        surface.onDown = { [weak self] event in
+            self?.pressed = true
+            ValidationTrace.emit(.pasteClickShieldCaptured, mouseClickCount: event.clickCount)
+        }
         surface.onUp = { [weak self] in
             guard let self else { return }
             self.pressed = false
@@ -57,6 +65,8 @@ final class PasteClickShield {
                                                     interval: NSEvent.doubleClickInterval) else { return }
         window.setFrame(frame, display: false)
         window.orderFrontRegardless()
+        window.displayIfNeeded()
+        ValidationTrace.emit(.pasteClickShieldArmed)
         timer = Timer(timeInterval: duration, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }

@@ -17,6 +17,8 @@ enum ValidationTrace {
         case workspaceActivated = "workspace_activated", workspaceHidesPanel = "workspace_hides_panel"
         case outsideClick = "outside_click", interactionCancelled = "interaction_cancelled"
         case pastePointerChange = "paste_pointer_change"
+        case pasteClickShieldArmed = "paste_click_shield_armed"
+        case pasteClickShieldCaptured = "paste_click_shield_captured"
         case targetCaptured = "target_captured", pastePrepared = "paste_prepared"
         case focusChecked = "focus_checked", pasteDispatch = "paste_dispatch"
         case pasteCompleted = "paste_completed", pasteCancelledByActivation = "paste_cancelled_by_activation"
