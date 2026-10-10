@@ -180,8 +180,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func updateShortcutPresentation() {
         let quick = shortcutConfiguration.quickPaste.symbol, plain = shortcutConfiguration.plainText.symbol
-        shortcutHints.stringValue = L10n.text("↵ 粘贴   \(plain)↵ 纯文本   \(quick)1–9 快速粘贴   esc 收起")
-        shortcutHints.toolTip = L10n.text("切换分组：\(shortcutConfiguration.previousPinboard.displayName) / \(shortcutConfiguration.nextPinboard.displayName)")
+        shortcutHints.stringValue = L10n.text("单击选择 · 双击或 ↵ 粘贴 · esc 收起")
+        shortcutHints.toolTip = L10n.text("↵ 粘贴   \(plain)↵ 纯文本   \(quick)1–9 快速粘贴   esc 收起") + "\n" + L10n.text("切换分组：\(shortcutConfiguration.previousPinboard.displayName) / \(shortcutConfiguration.nextPinboard.displayName)")
         emptyDescription.stringValue = L10n.text("在其他 App 中复制文本，再按 \(shortcutConfiguration.activation.displayName) 打开 ClipShelf。")
         cardViews.forEach(updateShortcutLabel)
     }
@@ -207,6 +207,23 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private let searchField = NSSearchField()
     private let statusLabel = NSTextField(labelWithString: "")
+    private let pasteButton = NSButton(title: "", target: nil, action: nil)
+    private var canPasteToDestination = false
+    private var trackingMenus: Set<ObjectIdentifier> = []
+    private var menuTrackingObservers: [NSObjectProtocol] = []
+
+    func setPasteDestination(name: String?, available: Bool) {
+        canPasteToDestination = available && name != nil
+        pasteButton.title = canPasteToDestination ? L10n.text("粘贴到 \(name!)") : L10n.text("复制")
+        pasteButton.toolTip = canPasteToDestination
+            ? L10n.text("单击选择，双击粘贴；回车粘贴，Shift 回车以纯文本粘贴。")
+            : L10n.text("内容已复制，请切回目标应用按 ⌘V。")
+    }
+
+    @objc private func performPrimaryPaste() {
+        if canPasteToDestination { pasteSelection(plain: false) }
+        else { copySelection() }
+    }
     private var baseStatus = ""
     private let countLabel = NSTextField(labelWithString: "")
     private let emptyTitle = NSTextField(labelWithString: L10n.text("复制一点内容，从这里开始"))
@@ -359,6 +376,17 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         panel.delegate = self
         thumbnailCache.totalCostLimit = 32 * 1_024 * 1_024
         buildInterface()
+        for name in [NSMenu.didBeginTrackingNotification, NSMenu.didEndTrackingNotification] {
+            menuTrackingObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                MainActor.assumeIsolated {
+                    guard let self, let menu = notification.object as? NSMenu else { return }
+                    if name == NSMenu.didBeginTrackingNotification {
+                        self.trackingMenus.insert(ObjectIdentifier(menu))
+                        self.invalidateOutputContext()
+                    } else { self.trackingMenus.remove(ObjectIdentifier(menu)) }
+                }
+            })
+        }
         screenParametersObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                                            object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -930,6 +958,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         boardActions.bezelStyle = .inline
         boardActions.setAccessibilityLabel(L10n.text("分组操作"))
         let addBoard = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: L10n.text("新建分组…")) ?? NSImage(), target: self, action: #selector(createBoard))
+        addBoard.title = L10n.text("新建分组…")
+        addBoard.imagePosition = .imageLeading
+        addBoard.setAccessibilityIdentifier("pinboard.create")
         addBoard.bezelStyle = .inline
         allFiltersButton.image = NSImage(systemSymbolName: "line.3.horizontal.decrease.circle", accessibilityDescription: L10n.text("全部筛选"))
         allFiltersButton.imagePosition = .imageOnly
@@ -938,13 +969,17 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         clearFiltersButton.imagePosition = .imageOnly
         clearFiltersButton.setAccessibilityLabel(L10n.text("清除条件"))
         clearFiltersButton.isHidden = true
-        let header = NSStackView(views: [searchField, boardTabs, addBoard, allFiltersButton, clearFiltersButton, boardActions, close])
+        let toolbarSpace = NSView()
+        toolbarSpace.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let header = NSStackView(views: [boardTabs, addBoard, toolbarSpace, searchField, allFiltersButton, clearFiltersButton, boardActions, close])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.spacing = 12
         header.setAccessibilityIdentifier("shelf.toolbar")
-        boardTabs.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        for button in [addBoard, allFiltersButton, clearFiltersButton, close] {
+        boardTabs.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        boardTabs.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        addBoard.setContentCompressionResistancePriority(.required, for: .horizontal)
+        for button in [allFiltersButton, clearFiltersButton, close] {
             button.widthAnchor.constraint(equalToConstant: 26).isActive = true
         }
         boardActions.widthAnchor.constraint(equalToConstant: 32).isActive = true
@@ -1002,14 +1037,23 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         let hints = shortcutHints
         updateShortcutPresentation()
         hints.font = .systemFont(ofSize: 10)
-        hints.textColor = .tertiaryLabelColor
-        hints.setContentHuggingPriority(.required, for: .horizontal)
+        hints.textColor = .secondaryLabelColor
+        hints.lineBreakMode = .byTruncatingTail
+        hints.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        pasteButton.target = self
+        pasteButton.action = #selector(performPrimaryPaste)
+        pasteButton.bezelStyle = .rounded
+        pasteButton.controlSize = .regular
+        pasteButton.font = .systemFont(ofSize: 12, weight: .semibold)
+        pasteButton.setAccessibilityIdentifier("shelf.paste")
+        pasteButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        setPasteDestination(name: nil, available: false)
         retryLoadingButton.target = self
         retryLoadingButton.action = #selector(retryPageLoading)
         retryLoadingButton.bezelStyle = .inline
         retryLoadingButton.controlSize = .small
         retryLoadingButton.isHidden = true
-        let footer = NSStackView(views: [statusLabel, retryLoadingButton, NSView(), countLabel, previousPageButton, loadMoreButton, hints])
+        let footer = NSStackView(views: [pasteButton, statusLabel, retryLoadingButton, NSView(), countLabel, previousPageButton, loadMoreButton, hints])
         footer.orientation = .horizontal
         footer.alignment = .centerY
         footer.spacing = 16
@@ -1024,6 +1068,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             header.topAnchor.constraint(equalTo: background.topAnchor, constant: 14),
             header.heightAnchor.constraint(equalToConstant: 32),
             searchField.widthAnchor.constraint(equalToConstant: 230),
+            boardTabs.widthAnchor.constraint(greaterThanOrEqualToConstant: 104),
             boardTabs.heightAnchor.constraint(equalToConstant: 30),
             scrollView.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 18),
             scrollView.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -18),
@@ -1033,8 +1078,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             emptyStack.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor),
             footer.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 24),
             footer.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -24),
-            footer.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -16),
-            footer.heightAnchor.constraint(equalToConstant: 16)
+            footer.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -12),
+            footer.heightAnchor.constraint(equalToConstant: 28)
         ])
     }
 
@@ -1216,10 +1261,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             item.representedObject = record.id
-            if action == #selector(pasteFromMenu(_:)) { item.keyEquivalent = "\r"; item.keyEquivalentModifierMask = [] }
-            if action == #selector(pastePlainFromMenu(_:)) {
-                item.keyEquivalent = "\r"; item.keyEquivalentModifierMask = shortcutConfiguration.plainText.eventFlags
-            }
+            // Return confirms the highlighted native menu item. Registering it
+            // as Paste's equivalent also fires Paste from the pinboard submenu.
+            // Shelf Return/Shift-Return shortcuts are handled outside menus.
             menu.addItem(item)
         }
         if canReorderItems {
@@ -1503,6 +1547,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func updateSelectionCount() {
+        pasteButton.isEnabled = !selection.references.isEmpty && !selection.isInvalid && resultPresentation == .ready
         orderingActions.isEnabled = canReorderItems && !selectedIDs.isEmpty
         if resultPresentation == .loading {
             countLabel.stringValue = L10n.text("正在读取条目…")
@@ -2012,6 +2057,10 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     func handleKey(_ event: NSEvent) -> Bool {
         guard event.type == .keyDown else { return false }
+        // Native menus own Return, arrows, Escape and menu equivalents until
+        // tracking ends, even if an input provider associates the event with
+        // the shelf window instead of AppKit's transient menu window.
+        guard trackingMenus.isEmpty else { return false }
         if detailWindow != nil, event.window === window {
             if event.keyCode == 53, !event.isARepeat { closeDetail() }
             return true
@@ -3284,6 +3333,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     @objc private func closePanel() { dismiss() }
 
     deinit {
+        for observer in menuTrackingObservers { NotificationCenter.default.removeObserver(observer) }
         if let screenParametersObserver { NotificationCenter.default.removeObserver(screenParametersObserver) }
     }
 }

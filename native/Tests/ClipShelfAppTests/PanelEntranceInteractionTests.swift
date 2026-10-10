@@ -51,6 +51,66 @@ import ClipShelfCore
 }
 
 @MainActor final class PanelEntranceInteractionTests: XCTestCase {
+    func testNativeMenuOwnsReturnAndEscapeUntilTrackingEnds() throws {
+        let h = EntranceHarness(); defer { h.close() }
+        let record = ClipboardRecord(text: "menu must not paste")
+        var pastes = 0
+        h.panel.resolveOutputSelection = { _, reply in reply(.success([record])) }
+        h.panel.onPaste = { _, _ in pastes += 1 }
+        h.panel.show(records: [record])
+        let collection = try h.find(NSCollectionView.self)
+        let item = h.panel.collectionView(collection, itemForRepresentedObjectAt: IndexPath(item: 0, section: 0))
+        let card = try XCTUnwrap(item.view.subviews.compactMap { $0 as? ClipboardCardView }.first)
+        let menuItems = try XCTUnwrap(card.menu?.items)
+        XCTAssertFalse(menuItems.contains { $0.keyEquivalent == "\r" }, "Return must confirm the highlighted submenu item, not an unrelated Paste equivalent")
+        XCTAssertTrue(h.key(36)) // enter results
+        let menu = NSMenu()
+        NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: menu)
+        XCTAssertFalse(h.key(36)); XCTAssertFalse(h.key(53))
+        XCTAssertEqual(pastes, 0); XCTAssertTrue(h.panel.isVisible)
+        NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: menu)
+        XCTAssertTrue(h.key(36)); XCTAssertEqual(pastes, 1)
+    }
+
+    func testVisiblePrimaryActionPastesOnceAndCopyOnlyRemainsVisible() throws {
+        let h = EntranceHarness(); defer { h.close() }
+        let record = ClipboardRecord(text: "visible primary action")
+        h.panel.resolveOutputSelection = { _, reply in reply(.success([record])) }
+        h.panel.show(records: [record])
+        func button(_ id: String) throws -> NSButton {
+            func walk(_ v: NSView) -> NSButton? {
+                if let b = v as? NSButton, b.accessibilityIdentifier() == id { return b }
+                return v.subviews.lazy.compactMap(walk).first
+            }
+            return try XCTUnwrap(walk(h.panel.window!.contentView!))
+        }
+        let primary = try button("shelf.paste")
+        var pastes = 0, copies = 0
+        h.panel.onPaste = { value, _ in XCTAssertEqual(value.id, record.id); pastes += 1 }
+        h.panel.onCopy = { value in XCTAssertEqual(value.id, record.id); copies += 1 }
+        h.panel.setPasteDestination(name: "TextEdit", available: true)
+        XCTAssertTrue(primary.title.contains("TextEdit"))
+        XCTAssertTrue(primary.isEnabled)
+        primary.performClick(nil)
+        XCTAssertEqual(pastes, 1); XCTAssertEqual(copies, 0)
+        h.panel.setPasteDestination(name: nil, available: false)
+        primary.performClick(nil)
+        XCTAssertEqual(pastes, 1); XCTAssertEqual(copies, 1)
+        XCTAssertTrue(h.panel.isVisible)
+
+        let history = try button("pinboard.all"), create = try button("pinboard.create")
+        let width: CGFloat = 720
+        h.panel.window?.setContentSize(NSSize(width: width, height: 330))
+        h.panel.window?.contentView?.layoutSubtreeIfNeeded()
+        let historyRect = history.convert(history.bounds, to: h.panel.window?.contentView)
+        let createRect = create.convert(create.bounds, to: h.panel.window?.contentView)
+        XCTAssertGreaterThanOrEqual(historyRect.width, 104)
+        XCTAssertLessThanOrEqual(historyRect.maxX, createRect.minX)
+        XCTAssertLessThan(createRect.maxX, width)
+        XCTAssertFalse(history.isHiddenOrHasHiddenAncestor)
+        XCTAssertFalse(create.isHiddenOrHasHiddenAncestor)
+    }
+
     func testSearchAndEscapeWorkBeforeEntranceOrFirstPageCompletes() throws {
         let h = EntranceHarness(); defer { h.close() }
         h.panel.onPageRequest = { [unowned h] request, reply in h.requests.append((request, reply)) }

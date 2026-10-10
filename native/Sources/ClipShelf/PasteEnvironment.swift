@@ -60,6 +60,29 @@ final class PasteSystemClipboard: PasteClipboard {
 
 @MainActor
 final class PasteSystemEnvironment: PasteEnvironment {
+    private var targetHistory = PasteTargetHistory<PasteCoordinator.Target>(ownPID: ProcessInfo.processInfo.processIdentifier)
+    private var observers: [NSObjectProtocol] = []
+    private let workspaceCenter = NSWorkspace.shared.notificationCenter
+
+    init() {
+        if let app = NSWorkspace.shared.frontmostApplication { targetHistory.activated(app.processIdentifier) }
+        for name in [NSWorkspace.didActivateApplicationNotification, NSWorkspace.didDeactivateApplicationNotification] {
+            observers.append(workspaceCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                MainActor.assumeIsolated {
+                    guard let self, let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+                    if name == NSWorkspace.didActivateApplicationNotification { self.targetHistory.activated(app.processIdentifier) }
+                    else { self.targetHistory.deactivated(app.processIdentifier, capture: Self.snapshot) }
+                }
+            })
+        }
+        for name in [NSWorkspace.activeSpaceDidChangeNotification, NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.willSleepNotification] {
+            observers.append(workspaceCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.targetHistory.clear() }
+            })
+        }
+    }
+
+    deinit { for observer in observers { workspaceCenter.removeObserver(observer) } }
     var hasPermission: Bool { AXIsProcessTrusted() }
     var uptime: TimeInterval { ProcessInfo.processInfo.systemUptime }
     var ownProcessIdentifier: pid_t { ProcessInfo.processInfo.processIdentifier }
@@ -68,17 +91,22 @@ final class PasteSystemEnvironment: PasteEnvironment {
         _ = AXIsProcessTrustedWithOptions(options)
     }
     func captureTarget() -> PasteCoordinator.Target? {
-        guard let application = NSWorkspace.shared.frontmostApplication,
-              application.processIdentifier != ownProcessIdentifier else {
+        guard let target = targetHistory.resolve(foregroundPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                                                 capture: Self.snapshot), !target.application.isTerminated else {
             ValidationTrace.emit(.targetCaptured, state: .unavailable)
             return nil
         }
-        let app = AXUIElementCreateApplication(application.processIdentifier)
-        let target = PasteCoordinator.Target(application: application, window: Self.attribute(app, kAXFocusedWindowAttribute),
-                                             focusedElement: Self.attribute(app, kAXFocusedUIElementAttribute))
+        let application = target.application
         ValidationTrace.emit(.targetCaptured, pid: application.processIdentifier, bundleID: application.bundleIdentifier,
                              hasTargetWindow: target.window != nil, hasInputElement: target.focusedElement != nil, state: .captured)
         return target
+    }
+
+    private static func snapshot(_ pid: pid_t) -> PasteCoordinator.Target? {
+        guard let application = NSRunningApplication(processIdentifier: pid), !application.isTerminated else { return nil }
+        let app = AXUIElementCreateApplication(application.processIdentifier)
+        return PasteCoordinator.Target(application: application, window: Self.attribute(app, kAXFocusedWindowAttribute),
+                                             focusedElement: Self.attribute(app, kAXFocusedUIElementAttribute))
     }
     func processIdentifier(of target: PasteCoordinator.Target) -> pid_t { target.application.processIdentifier }
     func isRunning(_ target: PasteCoordinator.Target) -> Bool { !target.application.isTerminated }

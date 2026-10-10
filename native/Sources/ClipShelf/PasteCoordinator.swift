@@ -46,6 +46,12 @@ final class PasteCoordinator {
 
     var hasPermission: Bool { environment.hasPermission }
     func requestPermission() { environment.requestPermission() }
+    func returnToTargetIfIdle(_ target: Target?) {
+        guard attempt == nil, let target, environment.isRunning(target),
+              environment.foreground(for: target) == .clipShelf else { return }
+        guard environment.activate(target), environment.hasWindow(target), environment.raiseWindow(target) else { return }
+        environment.restoreFocusedElement(target)
+    }
     func captureTarget() -> Target? {
         let target = environment.captureTarget()
         Self.outcomeLogger.notice("captured bundle=\(target?.application.bundleIdentifier ?? "none", privacy: .public) window=\(target?.window != nil, privacy: .public) input=\(target?.focusedElement != nil, privacy: .public)")
@@ -105,12 +111,14 @@ final class PasteCoordinator {
         // already published on the clipboard instead of discarding them.
         onCopied?()
         guard contextIsCurrent(request), clipboardIsCurrent(writtenCount, request: request) else { return }
-        dismiss()
-        guard contextIsCurrent(request) else { return }
-        guard clipboardIsCurrent(writtenCount, request: request) else { return }
         guard hasPermission, let target, environment.isRunning(target), environment.hasWindow(target) else {
             finish(request, .copiedOnly, message: L10n.text("内容已复制，请切回目标应用按 ⌘V。"), failure: .restoreUnavailable); return
         }
+        // Keep the shelf and its explanation visible when direct paste is not
+        // possible. Previously we hid the only place displaying this failure.
+        dismiss()
+        guard contextIsCurrent(request) else { return }
+        guard clipboardIsCurrent(writtenCount, request: request) else { return }
         guard targetIsCurrent(target, request: request) else { return }
         guard environment.activate(target) else {
             finish(request, .copiedOnly, message: L10n.text("未能恢复目标应用；内容已复制。"), failure: .activationFailed); return

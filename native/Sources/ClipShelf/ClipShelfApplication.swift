@@ -439,6 +439,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         panel.onPermissions = { [weak self] in self?.enableDirectPaste() }
         panel.onDismiss = { [weak self] in
             ValidationTrace.emit(.panelDismissed, state: .hidden)
+            self?.paste.returnToTargetIfIdle(self?.target)
             self?.target = nil
             self?.pageQueries.cancel()
         }
@@ -956,6 +957,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             return
         }
         target = paste.captureTarget()
+        panel.setPasteDestination(name: target?.application.localizedName,
+                                  available: paste.hasPermission && target?.window != nil)
         if !demo, !preferences.bool(forKey: "hasSeenWelcome"), !showWelcome() { return }
         statusMessage = demo ? L10n.text("演示模式 · 合成内容 · 不读取或写入系统剪贴板") : nil
         let pointer = NSEvent.mouseLocation

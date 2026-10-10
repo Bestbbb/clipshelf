@@ -16,7 +16,7 @@ final class PinboardTabStrip: NSView {
     private(set) var selectedIDs: Set<UUID> = []
     var selectedID: UUID? { selectedIDs.count == 1 ? selectedIDs.first : nil }
     private(set) var tabButtons: [PinboardTabButton] = []
-    let allButton = NSButton(title: L10n.text("全部内容"), target: nil, action: nil)
+    let allButton = NSButton(title: L10n.text("剪贴板历史"), target: nil, action: nil)
     let scrollView = NSScrollView()
     private let document = PinboardTabDocument()
     private let insertionLine = NSView()
@@ -72,7 +72,10 @@ final class PinboardTabStrip: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 30) }
+    override var intrinsicContentSize: NSSize {
+        let boards = tabButtons.map { min(240, max(58, $0.fittingSize.width + 18)) }.reduce(0, +)
+        return NSSize(width: max(104, allButton.fittingSize.width + 16) + (tabButtons.isEmpty ? 0 : 10 + boards + CGFloat(max(0, tabButtons.count - 1)) * 6), height: 30)
+    }
 
     func setPinboards(_ boards: [Pinboard], selectedID: UUID?) {
         setPinboards(boards, selectedIDs: Set(selectedID.map { [$0] } ?? []))
@@ -104,6 +107,7 @@ final class PinboardTabStrip: NSView {
             return button
         }
         allButton.state = newSelection.isEmpty ? .on : .off
+        invalidateIntrinsicContentSize()
         InterfaceLayout.apply(to: self, direction: userInterfaceLayoutDirection)
         needsLayout = true
     }
@@ -112,7 +116,7 @@ final class PinboardTabStrip: NSView {
         super.layout()
         let direction = userInterfaceLayoutDirection
         if let gesture, gesture.direction != direction { cancelDrag() }
-        let allWidth = min(max(75, allButton.fittingSize.width + 16), max(0, bounds.width - 32))
+        let allWidth = min(max(104, allButton.fittingSize.width + 16), max(0, bounds.width))
         let height = min(30, bounds.height)
         let top = max(0, (bounds.height - height) / 2)
         let available = max(0, bounds.width - allWidth - 10)

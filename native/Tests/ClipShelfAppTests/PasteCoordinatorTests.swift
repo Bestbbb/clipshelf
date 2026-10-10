@@ -155,10 +155,11 @@ final class PasteCoordinatorTests: XCTestCase {
             if mode == 2 { h.environment.running = false }
             h.paste(); await h.settle()
             XCTAssertEqual(h.clipboard.writes, 1); XCTAssertEqual(h.outcomes, [.copiedOnly])
+            XCTAssertEqual(h.dismissed, 0, "Keep the copy-only explanation visible")
             XCTAssertEqual(h.environment.activates, 0); XCTAssertEqual(h.environment.dispatches, 0)
         }
         let h = PasteHarness()
-        h.coordinator.paste([ClipboardRecord(text: "copy only")], plainText: true, target: nil, dismiss: {},
+        h.coordinator.paste([ClipboardRecord(text: "copy only")], plainText: true, target: nil, dismiss: { XCTFail("Missing target must not hide feedback") },
                             onCompleted: { h.outcomes.append($0) })
         XCTAssertEqual(h.outcomes, [.copiedOnly])
         XCTAssertEqual(h.clipboard.text, "copy only")
