@@ -145,7 +145,7 @@ public final class HistoryStore: @unchecked Sendable {
         }
     }
 
-    /// Stores a capture, coalescing only the immediately preceding identical capture.
+    /// Reuses an identical capture from the same source/device and promotes it in history.
     @discardableResult
     public func record(_ candidate: ClipboardRecord) throws -> ClipboardRecord {
         try validate(candidate)
@@ -155,16 +155,15 @@ public final class HistoryStore: @unchecked Sendable {
     }
 
     func recordWithoutLock(_ candidate: ClipboardRecord) throws -> ClipboardRecord {
-        let latest = try latestRecord()
         var stored = try assigningLocalOrigin(candidate, preserveOrigin: false)
         stored.isInHistory = true
-        if let latest, latest.hasSameContents(as: stored), latest.originDeviceID == stored.originDeviceID,
-           latest.originDeviceConflict == stored.originDeviceConflict, try canCoalesceSyncItem(id: latest.id) {
+        if let latest = try matchingCaptureWithoutLock(stored) {
             stored = latest
             stored.copiedAt = candidate.copiedAt
             stored.isInHistory = true
             stored.revision += 1
             try reserveRecordWriteWithoutLock(stored)
+            try promoteHistoryOrderWithoutLock(id: stored.id)
             let statement = try prepare("UPDATE clipboard_records SET copied_at = ?, is_in_history = 1, revision = revision + 1 WHERE id = ?")
             defer { sqlite3_finalize(statement) }
             try check(sqlite3_bind_double(statement, 1, candidate.copiedAt.timeIntervalSinceReferenceDate))
@@ -848,6 +847,9 @@ public final class HistoryStore: @unchecked Sendable {
             sqlite3_finalize(validation)
             try execute("CREATE INDEX IF NOT EXISTS clipboard_pinboard ON clipboard_records(pinboard_id)")
             try execute("CREATE INDEX IF NOT EXISTS clipboard_date ON clipboard_records(copied_at)")
+            // Bounded keys avoid indexing full clipboard payloads. Exact source,
+            // text, format and original bytes are still checked before reuse.
+            try execute("CREATE INDEX IF NOT EXISTS clipboard_capture_lookup ON clipboard_records(substr(text, 1, 128), source_bundle_id)")
             try execute("CREATE INDEX IF NOT EXISTS clipboard_pinboard_order ON clipboard_records(pinboard_id, pinboard_order, id)")
             try createSyncSchema(previousVersion: version)
             try createSharingSchema()
@@ -892,6 +894,38 @@ public final class HistoryStore: @unchecked Sendable {
         }
         let keys = found.filter { $0.value.key > 0 }.sorted { $0.value.key < $1.value.key }.map(\.key)
         guard keys == primaryKey else { throw HistoryStoreError.invalidStoredRecord }
+    }
+
+    private func matchingCaptureWithoutLock(_ candidate: ClipboardRecord) throws -> ClipboardRecord? {
+        let statement = try prepare("""
+            SELECT \(Self.columns) FROM clipboard_records
+            WHERE substr(text, 1, 128) = substr(?, 1, 128) AND source_bundle_id IS ?
+                AND text = ? AND source_app IS ? AND origin_device_id IS ? AND origin_device_conflict = ?
+            ORDER BY local_history_order DESC
+            """)
+        defer { sqlite3_finalize(statement) }
+        try bind(candidate.text, at: 1, to: statement)
+        try bind(candidate.sourceBundleID, at: 2, to: statement)
+        try bind(candidate.text, at: 3, to: statement)
+        try bind(candidate.sourceApp, at: 4, to: statement)
+        try bind(candidate.originDeviceID?.uuidString, at: 5, to: statement)
+        try check(sqlite3_bind_int(statement, 6, candidate.originDeviceConflict ? 1 : 0))
+        let descriptors = candidate.parts.map { part in
+            part.representations.map { StoredRepresentation(typeIdentifier: $0.typeIdentifier,
+                digest: RepresentationStorage.digest($0.data), byteCount: $0.data.count) }
+        }
+        while true {
+            let status = sqlite3_step(statement)
+            if status == SQLITE_DONE { return nil }
+            try check(status, allowingRow: true)
+            guard dataColumn(statement, 5) == candidate.rtf, dataColumn(statement, 6) == candidate.html else { continue }
+            let storedParts = try dataColumn(statement, 7).map { try JSONDecoder().decode([[StoredRepresentation]].self, from: $0) } ?? []
+            guard storedParts == descriptors, let rawID = textColumn(statement, 0), let id = UUID(uuidString: rawID),
+                  try canCoalesceSyncItem(id: id) else { continue }
+            // Only read attachment files for a matching descriptor, never every history item.
+            let record = try decode(statement)
+            if record.hasSameContents(as: candidate) { return record }
+        }
     }
 
     func latestRecord() throws -> ClipboardRecord? {

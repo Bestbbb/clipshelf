@@ -2,7 +2,7 @@ import CryptoKit
 import Darwin
 import Foundation
 
-struct StoredRepresentation: Codable {
+struct StoredRepresentation: Codable, Equatable {
     var typeIdentifier: String
     var digest: String
     var byteCount: Int

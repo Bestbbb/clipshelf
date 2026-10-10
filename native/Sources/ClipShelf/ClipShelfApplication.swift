@@ -248,6 +248,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         ingestion.onSaved = { [weak self] input, retained in
             guard let self, !self.isTerminating, let stored = retained.records.first else { return }
             // An earlier capture must never enter a newly started Stack session.
+            self.panel.didRecapture(stored)
             self.stack.appendCaptured(stored, lease: retained.lease, capturedIn: input.stackSessionID)
             if self.capture.isRunning { self.statusMessage = nil }
             self.scheduleOCR(for: stored)

@@ -23,7 +23,9 @@ trap 'rm -rf "$STAGING"' EXIT
 STAGED_FRAMEWORK="$STAGING/Sparkle.framework"
 
 SIGNING_ARGS=(--force --sign "$SIGNING_IDENTITY")
-if [[ "$SIGNING_IDENTITY" != "-" ]]; then
+if [[ "${CLIPSHELF_LOCAL_SIGNING:-}" == "1" ]]; then
+    SIGNING_ARGS+=(--keychain "$CLIPSHELF_SIGNING_KEYCHAIN" --timestamp=none)
+elif [[ "$SIGNING_IDENTITY" != "-" ]]; then
     SIGNING_ARGS+=(--options runtime --timestamp)
 fi
 # Follow Sparkle's documented inside-out order. Do not pass the host app's

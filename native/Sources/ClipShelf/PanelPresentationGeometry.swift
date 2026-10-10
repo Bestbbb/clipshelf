@@ -3,7 +3,7 @@ import Foundation
 /// Presentation geometry is independent of NSScreen so screen changes can be
 /// checked without ordering a window onto the user's desktop.
 enum PanelPresentationGeometry {
-    static let minimumHeight: CGFloat = 376
+    static let minimumHeight: CGFloat = 240
     static let defaultVisibleFrame = CGRect(x: 0, y: 0, width: 1280, height: 800)
 
     static func usable(_ frame: CGRect) -> CGRect {
@@ -13,7 +13,7 @@ enum PanelPresentationGeometry {
     }
 
     static func preferredHeight(_ value: CGFloat, compact: Bool) -> CGFloat {
-        guard value.isFinite, value > 0 else { return compact ? minimumHeight : 430 }
+        guard value.isFinite, value > 0 else { return compact ? minimumHeight : 330 }
         return max(minimumHeight, value)
     }
 

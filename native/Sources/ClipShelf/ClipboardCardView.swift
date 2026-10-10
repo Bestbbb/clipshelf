@@ -94,6 +94,8 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     private var isDragging = false
 
     private let accent = NSView()
+    private let sourceIcon = NSImageView()
+    private static var appIcons: [String: NSImage] = [:]
     private let sourceLabel = NSTextField(labelWithString: "")
     private let bodyLabel = NSTextField(wrappingLabelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
@@ -115,7 +117,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         isBordered = false
         title = ""
         wantsLayer = true
-        layer?.cornerRadius = 15
+        layer?.cornerRadius = 12
         layer?.borderWidth = 1
         setButtonType(.momentaryChange)
         target = self
@@ -123,7 +125,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
 
         accent.translatesAutoresizingMaskIntoConstraints = false
         accent.wantsLayer = true
-        accent.layer?.cornerRadius = 2
+        accent.layer?.cornerRadius = 0
         accent.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
 
         sourceLabel.stringValue = record.sourceApp ?? L10n.text("剪贴板")
@@ -160,11 +162,24 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         let kind = Self.contentKind(record)
         let elapsed = Date().timeIntervalSince(record.copiedAt)
         let relativeTime = abs(elapsed) < 10 ? L10n.text("刚刚") : formatter.localizedString(for: record.copiedAt, relativeTo: Date())
-        detailLabel.stringValue = "\(kind) · \(relativeTime)"
+        sourceLabel.stringValue = "\(kind) · \(relativeTime)"
+        detailLabel.stringValue = record.sourceApp ?? L10n.text("剪贴板")
+        sourceIcon.setAccessibilityIdentifier("clipboard.source-icon")
+        sourceIcon.imageScaling = .scaleProportionallyDown
+        if let bundleID = record.sourceBundleID {
+            if let cached = Self.appIcons[bundleID] { sourceIcon.image = cached }
+            else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+                let icon = NSWorkspace.shared.icon(forFile: url.path)
+                if Self.appIcons.count < 256 { Self.appIcons[bundleID] = icon }
+                sourceIcon.image = icon
+            }
+        }
+        if sourceIcon.image == nil { sourceIcon.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: nil) }
         detailLabel.font = .systemFont(ofSize: 10, weight: .medium)
-        detailLabel.textColor = .tertiaryLabelColor
+        detailLabel.textColor = .secondaryLabelColor
         detailLabel.lineBreakMode = .byTruncatingTail
 
+        previewImage.setAccessibilityIdentifier("clipboard.preview")
         previewImage.imageScaling = .scaleProportionallyUpOrDown
         previewImage.isEditable = false
         previewImage.wantsLayer = true
@@ -183,7 +198,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
             previewImage.isHidden = true
         }
 
-        for child in [accent, sourceLabel, shortcutLabel, previewImage, bodyLabel, detailLabel] {
+        for child in [accent, sourceLabel, sourceIcon, shortcutLabel, previewImage, bodyLabel, detailLabel] {
             child.translatesAutoresizingMaskIntoConstraints = false
             addSubview(child)
         }
@@ -191,28 +206,32 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         // never forces an intrinsic text height or a negative image height.
         addSubview(shortTitleLabel)
         normalLayoutConstraints = [
-            accent.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 15),
-            accent.topAnchor.constraint(equalTo: topAnchor, constant: 18),
-            accent.widthAnchor.constraint(equalToConstant: 4),
-            accent.heightAnchor.constraint(equalToConstant: 13),
-            sourceLabel.leadingAnchor.constraint(equalTo: accent.trailingAnchor, constant: 7),
+            accent.leadingAnchor.constraint(equalTo: leadingAnchor),
+            accent.trailingAnchor.constraint(equalTo: trailingAnchor),
+            accent.topAnchor.constraint(equalTo: topAnchor),
+            accent.heightAnchor.constraint(equalToConstant: 40),
+            sourceLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 13),
             sourceLabel.centerYAnchor.constraint(equalTo: accent.centerYAnchor),
-            sourceLabel.trailingAnchor.constraint(lessThanOrEqualTo: shortcutLabel.leadingAnchor, constant: -7),
-            shortcutLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -15),
-            shortcutLabel.centerYAnchor.constraint(equalTo: sourceLabel.centerYAnchor),
+            sourceLabel.trailingAnchor.constraint(lessThanOrEqualTo: sourceIcon.leadingAnchor, constant: -8),
+            sourceIcon.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -13),
+            sourceIcon.centerYAnchor.constraint(equalTo: accent.centerYAnchor),
+            sourceIcon.widthAnchor.constraint(equalToConstant: 20),
+            sourceIcon.heightAnchor.constraint(equalToConstant: 20),
+            shortcutLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -13),
+            shortcutLabel.centerYAnchor.constraint(equalTo: detailLabel.centerYAnchor),
             bodyLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 15),
             bodyLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -15),
-            bodyLabel.topAnchor.constraint(equalTo: sourceLabel.bottomAnchor, constant: 18),
+            bodyLabel.topAnchor.constraint(equalTo: accent.bottomAnchor, constant: 14),
             bodyLabel.bottomAnchor.constraint(lessThanOrEqualTo: detailLabel.topAnchor, constant: -12),
             previewImage.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 15),
             previewImage.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -15),
-            previewImage.topAnchor.constraint(equalTo: sourceLabel.bottomAnchor, constant: 16),
+            previewImage.topAnchor.constraint(equalTo: accent.bottomAnchor, constant: 8),
             previewImage.bottomAnchor.constraint(equalTo: detailLabel.topAnchor, constant: -12),
             detailLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 15),
             detailLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -15),
             detailLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -15)
         ]
-        setAccessibilityLabel("\(sourceLabel.stringValue)，\(kind)，\(record.text.prefix(140))")
+        setAccessibilityLabel("\(record.sourceApp ?? L10n.text("剪贴板"))，\(kind)，\(record.text.prefix(140))")
         setAccessibilityHelp(L10n.text("单击选择，双击粘贴；回车粘贴，Shift 回车以纯文本粘贴。"))
         InterfaceLayout.apply(to: self)
         layoutIsConfigured = true
@@ -252,6 +271,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         usesShortLayout = shortened
         accent.isHidden = shortened
         sourceLabel.isHidden = shortened
+        sourceIcon.isHidden = shortened
         shortcutLabel.isHidden = shortened || !showsQuickPasteLabel
         detailLabel.isHidden = shortened
         let showsPreview = record.kind == .image || record.kind == .color
@@ -517,7 +537,16 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
 
     private func updateAppearance() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = (isSelected ? NSColor.controlAccentColor.withAlphaComponent(0.09) : NSColor.controlBackgroundColor.withAlphaComponent(isHovered ? 0.95 : 0.72)).cgColor
+            let tint: NSColor
+            switch record.kind {
+            case .text: tint = .systemBlue
+            case .link: tint = .systemTeal
+            case .image: tint = .systemPink
+            case .file: tint = .systemOrange
+            case .color: tint = .systemPurple
+            }
+            accent.layer?.backgroundColor = tint.withAlphaComponent(0.12).cgColor
+            layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(isHovered ? 1 : 0.94).cgColor
             layer?.borderColor = (isSelected ? NSColor.controlAccentColor.withAlphaComponent(0.75) : NSColor.separatorColor.withAlphaComponent(isHovered ? 0.8 : 0.45)).cgColor
             layer?.borderWidth = isSelected ? 2 : 1
         }

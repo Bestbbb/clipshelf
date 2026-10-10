@@ -173,6 +173,41 @@ final class PanelCallbackOrderingTests: XCTestCase {
         try h.completeLastPage()
     }
 
+    @MainActor func testRecopyRebasesSelectionBeforeRefreshAndStillPastes() async throws {
+        let h = try PanelCallbackHarness(); defer { h.close() }
+        let selectedID = try h.firstPageAndSelectLast()
+        let original = try XCTUnwrap(h.store.item(id: selectedID))
+        let recopied = try h.store.record(ClipboardRecord(text: original.text))
+        XCTAssertEqual(recopied.id, selectedID)
+        h.panel.didRecapture(recopied)
+        h.panel.refreshPage()
+        try h.completeLastPage()
+        let pasted = expectation(description: "Recopied selection remains usable")
+        h.panel.onPaste = { record, _ in
+            XCTAssertEqual(record.id, selectedID)
+            XCTAssertEqual(record.revision, recopied.revision)
+            pasted.fulfill()
+        }
+        h.key(36, characters: "\r")
+        await fulfillment(of: [pasted], timeout: 2)
+    }
+
+    @MainActor func testRecopyCannotSilentlyAdoptAnInterveningEdit() throws {
+        let h = try PanelCallbackHarness(); defer { h.close() }
+        let selectedID = try h.firstPageAndSelectLast()
+        var changed = try XCTUnwrap(h.store.item(id: selectedID))
+        changed.text = "changed after selection"
+        try h.store.update(record: changed)
+        let recopied = try h.store.record(ClipboardRecord(text: changed.text))
+        h.panel.didRecapture(recopied)
+        h.panel.refreshPage()
+        try h.completeLastPage()
+        var outputs = 0
+        h.panel.onPaste = { _, _ in outputs += 1 }
+        h.key(36, characters: "\r")
+        XCTAssertEqual(outputs, 0)
+    }
+
     @MainActor func testBackgroundRefreshKeepsPageEndSelectionWhenNewRecordIsPrepended() async throws {
         let h = try PanelCallbackHarness(); defer { h.close() }
         let selectedID = try h.firstPageAndSelectLast()

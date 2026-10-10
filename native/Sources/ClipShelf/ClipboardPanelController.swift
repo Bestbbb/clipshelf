@@ -215,7 +215,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private let pauseButton = NSButton(title: L10n.text("暂停记录"), target: nil, action: nil)
     private let compactButton = NSButton(title: L10n.text("紧凑"), target: nil, action: nil)
     private var compactMode = false
-    private var preferredNormalHeight: CGFloat = 430
+    private var preferredNormalHeight: CGFloat = 330
     private var preferredCompactHeight: CGFloat = PanelPresentationGeometry.minimumHeight
     private var applyingPresentationGeometry = false
     private var presentedVisibleFrame: NSRect?
@@ -344,7 +344,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     init(layoutDirection: NSUserInterfaceLayoutDirection? = nil, presentationMotion: PanelPresentationMotion? = nil) {
         self.layoutDirection = layoutDirection ?? InterfaceLayout.direction
         self.presentationMotion = presentationMotion ?? PanelPresentationMotion()
-        let panel = ShelfPanel(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 430), styleMask: [.borderless, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
+        let panel = ShelfPanel(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 330), styleMask: [.borderless, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isReleasedWhenClosed = false
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
@@ -476,6 +476,23 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     func updateStatus(_ status: String) {
         baseStatus = status
         statusLabel.stringValue = selectionStatus ?? pageStatus ?? reorderStatus ?? status
+    }
+
+    /// Called only after persistence has coalesced byte-identical captured content.
+    /// Rebase the exact preceding selection revision, never an unrelated edit,
+    /// pending output, stale multi-selection, or the editor's frozen draft snapshot.
+    func didRecapture(_ record: ClipboardRecord) {
+        guard isVisible, !selection.isInvalid, pendingActionID == nil,
+              selectionRequestID == nil, orderingRequestID == nil,
+              let previous = selection.references.first(where: { $0.id == record.id }),
+              record.revision > 1, previous.revision == record.revision - 1 else { return }
+        let refs = selection.references.map { $0.id == record.id
+            ? ClipboardSelectionReference(id: record.id, revision: record.revision) : $0 }
+        do {
+            try selection.adoptCommitted(refs)
+            validationRequestID = nil
+            selectionStatus = nil
+        } catch { return }
     }
 
     /// Refresh the current window after storage changes without rereading a growing prefix.
@@ -783,11 +800,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private func buildInterface() {
         guard let panel = window else { return }
         let background = ShelfDropSurface()
-        background.material = .hudWindow
+        background.material = .sidebar
         background.blendingMode = .behindWindow
         background.state = .active
         background.wantsLayer = true
-        background.layer?.cornerRadius = 22
+        background.layer?.cornerRadius = 18
         background.layer?.masksToBounds = true
         let dragTypes: [NSPasteboard.PasteboardType] = [.string, .rtf, .rtfd, .html, .png, .tiff, .fileURL, .URL, NSPasteboard.PasteboardType("public.jpeg"), NSPasteboard.PasteboardType("io.github.bestbbb.clipshelf.record-id")]
         background.registerForDraggedTypes(dragTypes)
@@ -795,20 +812,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         panel.contentView = background
         defer { InterfaceLayout.apply(to: background, direction: layoutDirection) }
 
-        let logo = NSTextField(labelWithString: "ClipShelf")
-        logo.font = .systemFont(ofSize: 20, weight: .bold)
-        let subtitle = NSTextField(labelWithString: L10n.text("你的剪贴板，触手可及"))
-        subtitle.font = .systemFont(ofSize: 10, weight: .medium)
-        subtitle.textColor = .secondaryLabelColor
-        let branding = NSStackView(views: [logo, subtitle])
-        branding.orientation = .vertical
-        branding.alignment = .leading
-        branding.spacing = 3
-        branding.setContentHuggingPriority(.required, for: .horizontal)
-
         searchField.placeholderString = L10n.text("搜索内容或来源 App")
         searchField.font = .systemFont(ofSize: 13)
-        searchField.controlSize = .large
+        searchField.controlSize = .regular
         searchField.sendsSearchStringImmediately = true
         searchField.delegate = self
         searchField.setAccessibilityLabel(L10n.text("搜索剪贴板历史"))
@@ -829,11 +835,6 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         compactButton.target = self
         compactButton.action = #selector(toggleCompactMode)
         compactButton.setAccessibilityLabel(L10n.text("切换紧凑卡片"))
-        let header = NSStackView(views: [branding, searchField, pauseButton, compactButton, permissions, close])
-        header.orientation = .horizontal
-        header.alignment = .centerY
-        header.spacing = 16
-
         boardPopup.addItem(withTitle: L10n.text("全部内容"))
         boardPopup.target = self
         boardPopup.action = #selector(boardChanged)
@@ -873,8 +874,6 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         datePopup.target = self
         datePopup.action = #selector(dateChanged)
         datePopup.setAccessibilityLabel(L10n.text("按复制时间筛选"))
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         loadMoreButton.bezelStyle = .inline
         loadMoreButton.target = self
         loadMoreButton.action = #selector(loadMore)
@@ -905,19 +904,50 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             orderingActions.menu?.addItem(item)
         }
         orderingActions.toolTip = L10n.text("拖动卡片在分组内排序；⌥ 拖动原始内容到其他 App；⌥⌘← / ⌥⌘→ 移动选中条目")
-        let boardRow = NSStackView(views: [boardPopup, multiBoardButton, boardActions, devicePopup, spacer, clearFiltersButton])
-        let filterRow = NSStackView(views: [typePopup, sourcePopup, datePopup, orderPopup, orderingActions, allFiltersButton, NSView(), previousPageButton, loadMoreButton])
-        for row in [boardRow, filterRow] { row.orientation = .horizontal; row.alignment = .centerY; row.spacing = 10 }
-        let filters = NSStackView(views: [boardTabs, boardRow, filterRow])
-        filters.orientation = .vertical
-        filters.alignment = .leading
-        filters.spacing = 6
-        boardTabs.widthAnchor.constraint(equalTo: filters.widthAnchor).isActive = true
-        boardTabs.heightAnchor.constraint(equalToConstant: 32).isActive = true
-        boardRow.widthAnchor.constraint(equalTo: filters.widthAnchor).isActive = true
-        filterRow.widthAnchor.constraint(equalTo: filters.widthAnchor).isActive = true
-        [boardPopup, typePopup, sourcePopup, devicePopup, datePopup, boardActions, orderPopup, orderingActions].forEach { $0.controlSize = .small; $0.font = .systemFont(ofSize: 11) }
-        [multiBoardButton, clearFiltersButton, allFiltersButton].forEach { $0.controlSize = .small; $0.font = .systemFont(ofSize: 11) }
+        let queryControls = NSView()
+        queryControls.isHidden = true
+        for control in [boardPopup, typePopup, sourcePopup, devicePopup, datePopup, orderPopup, orderingActions, multiBoardButton, pauseButton, compactButton, permissions] {
+            queryControls.addSubview(control)
+        }
+        background.addSubview(queryControls)
+        // Secondary controls keep their state for the query, while the complete
+        // filter editor is opened on demand from the single shelf toolbar.
+        for control in [boardPopup, typePopup, sourcePopup, devicePopup, datePopup, orderPopup, orderingActions] {
+            control.controlSize = .small
+            control.font = .systemFont(ofSize: 11)
+        }
+        for (title, action) in [(L10n.text("暂停记录"), #selector(togglePause)),
+                                (L10n.text("切换紧凑卡片"), #selector(toggleCompactMode)),
+                                (L10n.text("粘贴权限"), #selector(openPermissions)),
+                                (L10n.text("设置…"), #selector(openSettings))] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            boardActions.menu?.addItem(item)
+        }
+        boardActions.item(at: 0)?.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: L10n.text("分组操作"))
+        boardActions.imagePosition = .imageOnly
+        (boardActions.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
+        boardActions.bezelStyle = .inline
+        boardActions.setAccessibilityLabel(L10n.text("分组操作"))
+        let addBoard = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: L10n.text("新建分组…")) ?? NSImage(), target: self, action: #selector(createBoard))
+        addBoard.bezelStyle = .inline
+        allFiltersButton.image = NSImage(systemSymbolName: "line.3.horizontal.decrease.circle", accessibilityDescription: L10n.text("全部筛选"))
+        allFiltersButton.imagePosition = .imageOnly
+        allFiltersButton.bezelStyle = .inline
+        clearFiltersButton.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: L10n.text("清除条件"))
+        clearFiltersButton.imagePosition = .imageOnly
+        clearFiltersButton.setAccessibilityLabel(L10n.text("清除条件"))
+        clearFiltersButton.isHidden = true
+        let header = NSStackView(views: [searchField, boardTabs, addBoard, allFiltersButton, clearFiltersButton, boardActions, close])
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 12
+        header.setAccessibilityIdentifier("shelf.toolbar")
+        boardTabs.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        for button in [addBoard, allFiltersButton, clearFiltersButton, close] {
+            button.widthAnchor.constraint(equalToConstant: 26).isActive = true
+        }
+        boardActions.widthAnchor.constraint(equalToConstant: 32).isActive = true
 
         scrollView.drawsBackground = false
         scrollView.hasHorizontalScroller = true
@@ -979,31 +1009,26 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         retryLoadingButton.bezelStyle = .inline
         retryLoadingButton.controlSize = .small
         retryLoadingButton.isHidden = true
-        let footer = NSStackView(views: [statusLabel, retryLoadingButton, countLabel, hints])
+        let footer = NSStackView(views: [statusLabel, retryLoadingButton, NSView(), countLabel, previousPageButton, loadMoreButton, hints])
         footer.orientation = .horizontal
         footer.alignment = .centerY
         footer.spacing = 16
 
-        for view in [header, filters, scrollView, emptyStack, footer] {
+        for view in [header, scrollView, emptyStack, footer] {
             view.translatesAutoresizingMaskIntoConstraints = false
             background.addSubview(view)
         }
         NSLayoutConstraint.activate([
-            header.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 22),
-            header.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -22),
-            header.topAnchor.constraint(equalTo: background.topAnchor, constant: 20),
-            header.heightAnchor.constraint(equalToConstant: 43),
-            searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 160),
-            filters.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 22),
-            filters.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -22),
-            filters.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 13),
-            filters.heightAnchor.constraint(equalToConstant: 88),
-            boardPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 110),
-            sourcePopup.widthAnchor.constraint(lessThanOrEqualToConstant: 200),
-            scrollView.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 22),
-            scrollView.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -22),
-            scrollView.topAnchor.constraint(equalTo: filters.bottomAnchor, constant: 17),
-            scrollView.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -18),
+            header.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 18),
+            header.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -18),
+            header.topAnchor.constraint(equalTo: background.topAnchor, constant: 14),
+            header.heightAnchor.constraint(equalToConstant: 32),
+            searchField.widthAnchor.constraint(equalToConstant: 230),
+            boardTabs.heightAnchor.constraint(equalToConstant: 30),
+            scrollView.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 18),
+            scrollView.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -18),
+            scrollView.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14),
+            scrollView.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12),
             emptyStack.centerXAnchor.constraint(equalTo: scrollView.centerXAnchor),
             emptyStack.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor),
             footer.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 24),
@@ -1528,6 +1553,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         multiBoardButton.title = count == 0 ? L10n.text("多板筛选…") : L10n.text("已筛选 \(count) 个分组…")
         multiBoardButton.toolTip = pinboards.filter { boardScope.filteredIDs.contains($0.id) }.map(\.name).joined(separator: "、")
         clearFiltersButton.isEnabled = hasFilters
+        clearFiltersButton.isHidden = !hasFilters
+        allFiltersButton.contentTintColor = hasFilters ? .controlAccentColor : .secondaryLabelColor
         if boardScope.singleBoardID == nil { manualOrder = false }
         orderPopup.isEnabled = boardScope.singleBoardID != nil
         orderPopup.selectItem(at: manualOrder ? 1 : 0)
@@ -2459,6 +2486,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         case #selector(copyImageFileFromMenu(_:)), #selector(pasteImageFileFromMenu(_:)):
             guard let content = recordFromMenu(menuItem), !selection.isInvalid, !queryPending else { return false }
             return content.hasImageFileParts || (selectedIDs.contains(content.id) && selectedIDs.count > 1)
+        case #selector(togglePause): menuItem.title = pauseButton.title; return true
+        case #selector(toggleCompactMode): menuItem.state = compactMode ? .on : .off; return true
         case #selector(renameBoard), #selector(deleteBoard): return boardScope.singleBoardID != nil
         case #selector(moveBoardEarlier): return pinboardReorderRequestID == nil && (pinboards.firstIndex(where: { $0.id == boardScope.singleBoardID }).map { $0 > 0 } ?? false)
         case #selector(moveBoardLater): return pinboardReorderRequestID == nil && (pinboards.firstIndex(where: { $0.id == boardScope.singleBoardID }).map { $0 + 1 < pinboards.count } ?? false)
@@ -2912,6 +2941,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         layout.invalidateLayout()
         resultsView.reloadData()
     }
+
+    @objc private func openSettings() { onSettings?() }
 
     @objc private func toggleCompactMode() { setCompactMode(!compactMode); onCompactModeChange?(compactMode) }
 

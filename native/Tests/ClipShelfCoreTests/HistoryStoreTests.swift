@@ -41,7 +41,7 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(try store.load(), [stored])
     }
 
-    func testSourceAndFormatChangesAndNonAdjacentDuplicatesRemainDistinct() throws {
+    func testSourceAndFormatChangesRemainDistinct() throws {
         let store = try HistoryStore(databaseURL: databaseURL)
         let records = [
             ClipboardRecord(text: "same", sourceApp: "A", sourceBundleID: "a"),
@@ -50,10 +50,54 @@ final class HistoryStoreTests: XCTestCase {
             ClipboardRecord(text: "same", sourceApp: "B", sourceBundleID: "b", rtf: Data()),
             ClipboardRecord(text: "same", sourceApp: "B", sourceBundleID: "b", rtf: Data(), html: Data()),
             ClipboardRecord(text: "other"),
-            ClipboardRecord(text: "same", sourceApp: "A", sourceBundleID: "a"),
         ]
         for record in records { try store.record(record) }
         XCTAssertEqual(try store.load(), records.reversed())
+    }
+
+    func testInterleavedRecopyPromotesOriginalAcrossRestartAndRetainsPinboard() throws {
+        let first: ClipboardRecord
+        let board: Pinboard
+        do {
+            let store = try HistoryStore(databaseURL: databaseURL)
+            board = try store.createPinboard(name: "Saved")
+            first = try store.record(ClipboardRecord(text: "alpha", sourceApp: "Editor", pinboardID: board.id))
+            try store.record(ClipboardRecord(text: "beta"))
+        }
+        let reopened = try HistoryStore(databaseURL: databaseURL)
+        let recopied = try reopened.record(ClipboardRecord(text: "alpha", sourceApp: "Editor"))
+        XCTAssertEqual(recopied.id, first.id)
+        XCTAssertEqual(recopied.revision, first.revision + 1)
+        XCTAssertEqual(recopied.pinboardID, board.id)
+        XCTAssertEqual(recopied.pinboardOrder, first.pinboardOrder)
+        XCTAssertEqual(try reopened.load().map(\.text), ["alpha", "beta"])
+        XCTAssertEqual(try reopened.load().count, 2)
+    }
+
+    func testRecopyPreservesRepresentationAndObjectDistinctions() throws {
+        let store = try HistoryStore(databaseURL: databaseURL)
+        func record(_ parts: [[String]]) -> ClipboardRecord {
+            ClipboardRecord(text: "same", parts: parts.map { part in
+                ClipboardPart(representations: part.enumerated().map { ClipboardRepresentation(typeIdentifier: $0.offset == 0 ? "public.utf8-plain-text" : "public.html", data: Data($0.element.utf8)) })
+            })
+        }
+        let first = try store.record(record([["a"], ["b"]]))
+        let reversed = try store.record(record([["b"], ["a"]]))
+        let merged = try store.record(record([["a", "b"]]))
+        let different = try store.record(record([["a"], ["c"]]))
+        let recopied = try store.record(record([["a"], ["b"]]))
+        XCTAssertEqual(recopied.id, first.id)
+        XCTAssertEqual(try store.load().map(\.id), [first.id, different.id, merged.id, reversed.id])
+    }
+
+    func testRecopyDoesNotMergeEqualPrefixesOrNullSuffixes() throws {
+        let store = try HistoryStore(databaseURL: databaseURL)
+        let prefix = String(repeating: "👩🏽‍💻", count: 140)
+        let values = [prefix + "a", prefix + "b", "null\0one", "null\0two"]
+        for value in values { try store.record(ClipboardRecord(text: value)) }
+        let original = try XCTUnwrap(store.load().last)
+        XCTAssertEqual(try store.record(ClipboardRecord(text: values[0])).id, original.id)
+        XCTAssertEqual(try store.load().count, 4)
     }
 
     func testSQLLikeTextIsStoredAsData() throws {

@@ -131,6 +131,17 @@ extension HistoryStore {
         return value
     }
 
+    func promoteHistoryOrderWithoutLock(id: UUID) throws {
+        if try syncScalar("SELECT id FROM clipboard_records ORDER BY local_history_order DESC LIMIT 1", []) == id.uuidString { return }
+        let counter = try historyOrderCounterWithoutLock()
+        guard counter < Int64.max else { throw HistoryStoreError.invalidStoredRecord }
+        let update = try prepare("UPDATE history_order_state SET last_position = ? WHERE singleton = 1")
+        defer { sqlite3_finalize(update) }
+        try check(sqlite3_bind_int64(update, 1, counter + 1))
+        try stepToCompletion(update)
+        try restoreHistoryOrderWithoutLock(id: id, order: counter + 1)
+    }
+
     func requireHistoryOrderColumn(_ statement: OpaquePointer, at index: Int32) throws {
         guard sqlite3_column_count(statement) > index, sqlite3_column_type(statement, index) == SQLITE_INTEGER,
               sqlite3_column_int64(statement, index) > 0 else { throw HistoryStoreError.invalidStoredRecord }
