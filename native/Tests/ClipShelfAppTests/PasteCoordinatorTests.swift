@@ -32,6 +32,8 @@ private final class PasteFakeEnvironment: PasteEnvironment {
     var raiseSucceeds = true
     var eventCreationSucceeds = true
     var focusSettleInterval: TimeInterval = 0
+    var compatibleFocusSettleInterval: TimeInterval = 0
+    var hasPressedMouseButtons = false
     var dispatchAccepted = true
     var dispatchMethods: [PasteDispatch.Method] = []
     var launcherSurface = false
@@ -48,7 +50,7 @@ private final class PasteFakeEnvironment: PasteEnvironment {
     func requestPermission() { XCTFail("Tests must not request system permissions") }
     func captureTarget() -> PasteCoordinator.Target? { target }
     func isLauncherSurface(_ target: PasteCoordinator.Target) -> Bool { launcherSurface }
-    func destinationChoices() -> [PasteCoordinator.Target] { [target] }
+    func destinationChoices() -> [PasteDestinationChoice] { [.init(application: .current)] }
     func processIdentifier(of target: PasteCoordinator.Target) -> pid_t { targetPID }
     func isRunning(_ target: PasteCoordinator.Target) -> Bool { running }
     func hasWindow(_ target: PasteCoordinator.Target) -> Bool { windowAvailable }
@@ -88,15 +90,17 @@ private final class PasteHarness {
     var copied = 0, dismissed = 0, acknowledged = 0
     init() {
         coordinator = PasteCoordinator(clipboard: clipboard, environment: environment)
+        coordinator.preferences.strictness = .strict
         coordinator.onResult = { [weak self] in self?.messages.append($0) }
     }
     func paste(allowHeldCommand: Bool = false, context: (() -> Bool)? = nil,
                onCopied: (() -> Void)? = nil, onDismiss: (() -> Void)? = nil,
+               handoff: PasteClickHandoff? = nil,
                completion: ((PasteCoordinator.Outcome) -> Void)? = nil) {
         coordinator.paste([ClipboardRecord(text: "intended content")], plainText: true, target: environment.target,
             dismiss: { self.dismissed += 1; onDismiss?() },
             onCopied: { self.copied += 1; onCopied?() }, onDispatched: { self.acknowledged += 1 },
-            allowHeldCommand: allowHeldCommand, isContextCurrent: context,
+            allowHeldCommand: allowHeldCommand, isContextCurrent: context, clickHandoff: handoff,
             onCompleted: { self.outcomes.append($0); completion?($0) })
     }
     func settle() async { for _ in 0..<20 { await Task.yield() } }
@@ -104,6 +108,107 @@ private final class PasteHarness {
 }
 
 final class PasteCoordinatorTests: XCTestCase {
+    @MainActor func testCompatibleAcceptsChangedAXIdentityButStrictStillWaits() async {
+        for focus in [PasteFocusState.differentWindow, .differentElement, .differentSelection] {
+            let compatible = PasteHarness(); compatible.coordinator.preferences.strictness = .compatible
+            compatible.environment.focus = focus
+            compatible.paste(); await compatible.settle()
+            XCTAssertEqual(compatible.outcomes, [.dispatched])
+            XCTAssertEqual(compatible.environment.dispatches, 1)
+            let strict = PasteHarness(); strict.environment.focus = focus
+            strict.paste(); await strict.settle(); strict.environment.advance(1); await strict.settle()
+            XCTAssertEqual(strict.outcomes, [.copiedOnly]); XCTAssertEqual(strict.environment.dispatches, 0)
+        }
+    }
+
+    @MainActor func testCompatibleKeepsForegroundClipboardAndModifierGuards() async {
+        for mutation in 0...3 {
+            let h = PasteHarness(); h.coordinator.preferences.strictness = .compatible
+            h.environment.heldModifiers = .shift
+            h.paste(); await h.settle()
+            XCTAssertEqual(h.environment.dispatches, 0)
+            if mutation == 0 { h.environment.front = .other }
+            if mutation == 1 { h.clipboard.replaceExternally() }
+            if mutation == 2 { h.environment.hasPermission = false }
+            if mutation == 3 { h.environment.running = false }
+            h.environment.heldModifiers = []; h.environment.advance(); await h.settle()
+            XCTAssertNotEqual(h.outcomes.first, .dispatched); XCTAssertEqual(h.environment.dispatches, 0)
+        }
+    }
+
+    @MainActor func testModeAndPerAppOverrideAreFrozenForEachAttempt() async {
+        let h = PasteHarness(); h.coordinator.preferences.strictness = .compatible
+        let bundle = h.environment.target.application.bundleIdentifier ?? "synthetic.bundle"
+        // Runtime test bundles have an identifier; the per-app lookup is also covered purely below.
+        if h.environment.target.application.bundleIdentifier != nil { h.coordinator.preferences.overrides[bundle] = .strict }
+        else { h.coordinator.preferences.strictness = .strict }
+        h.environment.focus = .differentSelection
+        h.paste(); await h.settle()
+        h.coordinator.preferences = .init(strictness: .compatible)
+        h.environment.advance(1); await h.settle()
+        XCTAssertEqual(h.outcomes, [.copiedOnly])
+        h.paste(); await h.settle()
+        XCTAssertEqual(h.outcomes, [.copiedOnly, .dispatched])
+        XCTAssertEqual(h.coordinator.outcomeLog.entries.map(\.mode), [.strict, .compatible])
+        let preferences = PastePreferences(strictness: .compatible, overrides: ["synthetic.editor": .copyOnly])
+        XCTAssertEqual(preferences.mode(for: "synthetic.editor"), .copyOnly)
+        XCTAssertEqual(preferences.mode(for: nil), .compatible)
+    }
+
+    @MainActor func testCopyOnlyAcknowledgesWriteWithoutAnyRestoreAndWriteFailureStillFails() async {
+        let h = PasteHarness(); h.coordinator.preferences.strictness = .copyOnly
+        h.environment.hasPermission = false
+        h.paste(); await h.settle()
+        XCTAssertEqual(h.outcomes, [.copiedOnly]); XCTAssertEqual(h.copied, 1)
+        XCTAssertEqual(h.environment.activates + h.environment.raises + h.environment.prepares, 0)
+        XCTAssertEqual(h.dismissed, 0)
+        XCTAssertEqual(h.coordinator.outcomeLog.entries.last?.failure, .copyOnlyMode)
+        h.clipboard.succeeds = false; h.paste(); await h.settle()
+        XCTAssertEqual(h.outcomes, [.copiedOnly, .failed]); XCTAssertEqual(h.copied, 1)
+    }
+
+    @MainActor func testMouseHandoffWaitsBeforeDismissAndOwnsHeldContinuationRelease() async {
+        let h = PasteHarness(); var releaseDelivered = true
+        h.paste(handoff: .init(mouseUpTimestamp: 100, doubleClickInterval: 0.5, isReleased: { releaseDelivered }))
+        await h.settle()
+        XCTAssertEqual(h.dismissed, 0); XCTAssertEqual(h.environment.activates, 0)
+        releaseDelivered = false; h.environment.hasPressedMouseButtons = true
+        h.environment.advance(0.6); await h.settle()
+        XCTAssertEqual(h.dismissed, 0)
+        h.environment.hasPressedMouseButtons = false; h.environment.advance(); await h.settle()
+        XCTAssertEqual(h.dismissed, 0, "Physical release alone cannot hide before the queued mouse-up is owned")
+        releaseDelivered = true; h.environment.advance(); await h.settle()
+        XCTAssertEqual(h.dismissed, 1); XCTAssertEqual(h.environment.dispatches, 1)
+        XCTAssertEqual(h.outcomes, [.dispatched])
+    }
+
+    @MainActor func testClickReadUsesOriginalTimestampAndCancelCannotDismissLater() async {
+        let resolvedLate = PasteHarness()
+        resolvedLate.paste(handoff: .init(mouseUpTimestamp: 99, doubleClickInterval: 0.5))
+        await resolvedLate.settle()
+        XCTAssertEqual(resolvedLate.dismissed, 1, "A slow read must not add a second double-click delay")
+        let canceled = PasteHarness()
+        canceled.paste(handoff: .init(mouseUpTimestamp: 100, doubleClickInterval: 0.5)); await canceled.settle()
+        canceled.coordinator.cancel(); canceled.environment.advance(0.6); await canceled.settle()
+        XCTAssertEqual(canceled.dismissed, 0); XCTAssertEqual(canceled.outcomes, [.cancelled])
+        canceled.paste(); await canceled.settle()
+        XCTAssertEqual(canceled.outcomes, [.cancelled, .dispatched])
+        XCTAssertEqual(canceled.environment.dispatches, 1)
+    }
+
+    @MainActor func testMouseHandoffCancelsForClipboardOrRealOutsideClickAndHeldMouseDeadline() async {
+        for mode in 0...3 {
+            let h = PasteHarness()
+            h.paste(handoff: .init(mouseUpTimestamp: 100, doubleClickInterval: 0.5)); await h.settle()
+            if mode == 0 { h.clipboard.replaceExternally() }
+            if mode == 1 { XCTAssertTrue(h.coordinator.cancelForMouseDown(at: 100.2)) }
+            if mode == 2 { h.environment.hasPressedMouseButtons = true }
+            h.environment.advance(2); await h.settle()
+            XCTAssertEqual(h.outcomes, [.cancelled]); XCTAssertEqual(h.environment.dispatches, 0)
+            XCTAssertEqual(h.dismissed, 0)
+        }
+    }
+
     @MainActor func testQueuedMouseDownCannotCancelNewerPasteButNewClickCan() async {
         let h = PasteHarness(); h.environment.focusSettleInterval = 0.08
         h.paste(); await h.settle()

@@ -31,6 +31,18 @@ struct GlobalShortcutRegistrationError: LocalizedError {
     private let makeRegistration: Factory
     private var handles: [ShortcutChord: any GlobalHotKeyRegistration] = [:]
     private var actions: [ShortcutChord: GlobalShortcutAction] = [:]
+    private(set) var registrationFailures: [GlobalShortcutRegistrationError] = []
+
+    struct StartupResult {
+        let configuration: KeyboardShortcutConfiguration
+        let failures: [GlobalShortcutRegistrationError]
+        let usedFallback: Bool
+    }
+    static let activationFallbacks: [ShortcutChord] = [
+        .init(keyCode: UInt16(kVK_ANSI_V), modifiers: [.control, .shift]),
+        .init(keyCode: UInt16(kVK_ANSI_V), modifiers: [.option, .shift]),
+        .init(keyCode: UInt16(kVK_Space), modifiers: [.command, .shift])
+    ]
 
     init(makeRegistration: @escaping Factory = { GlobalHotKey() }) {
         self.makeRegistration = makeRegistration
@@ -52,6 +64,26 @@ struct GlobalShortcutRegistrationError: LocalizedError {
             } catch let error as GlobalShortcutRegistrationError { failures.append(error) }
         }
         return failures
+    }
+
+    /// Recover only activation at startup. Preserve an already registered Stack
+    /// handle, and skip any fallback reserved by the current local bindings.
+    func startWithActivationFallback(_ configuration: KeyboardShortcutConfiguration) throws -> StartupResult {
+        let failures = try start(configuration)
+        guard failures.contains(where: { $0.action == .activation }) else {
+            return .init(configuration: configuration, failures: failures, usedFallback: false)
+        }
+        for chord in Self.activationFallbacks where chord != configuration.activation {
+            var candidate = configuration
+            candidate.activation = chord
+            guard (try? candidate.validate()) != nil else { continue }
+            do {
+                let handle = try register(chord, for: .activation)
+                handles[chord] = handle; actions[chord] = .activation
+                return .init(configuration: candidate, failures: failures.filter { $0.action != .activation }, usedFallback: true)
+            } catch { continue }
+        }
+        return .init(configuration: configuration, failures: failures, usedFallback: false)
     }
 
     func apply(_ configuration: KeyboardShortcutConfiguration) throws {
@@ -142,7 +174,10 @@ struct GlobalShortcutRegistrationError: LocalizedError {
                              status: result, shortcut: action == .activation ? .activation : .stack)
         guard result == noErr else {
             handle.unregister()
-            throw GlobalShortcutRegistrationError(action: action, chord: chord, status: result)
+            let failure = GlobalShortcutRegistrationError(action: action, chord: chord, status: result)
+            registrationFailures.append(failure)
+            if registrationFailures.count > 20 { registrationFailures.removeFirst(registrationFailures.count - 20) }
+            throw failure
         }
         return handle
     }

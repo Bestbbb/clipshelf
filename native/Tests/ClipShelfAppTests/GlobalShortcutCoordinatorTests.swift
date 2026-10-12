@@ -29,6 +29,47 @@ import XCTest
 }
 
 @MainActor final class GlobalShortcutCoordinatorTests: XCTestCase {
+    func testStartupFallbackKeepsStackAndReportsActualActivationChord() throws {
+        let rig = RegistrationRig(), defaults = KeyboardShortcutConfiguration.defaults
+        rig.failingChords = [defaults.activation, GlobalShortcutCoordinator.activationFallbacks[0]]
+        let result = try rig.coordinator.startWithActivationFallback(defaults)
+        XCTAssertTrue(result.usedFallback)
+        XCTAssertEqual(result.configuration.activation, GlobalShortcutCoordinator.activationFallbacks[1])
+        XCTAssertTrue(result.failures.isEmpty)
+        XCTAssertEqual(rig.coordinator.activeBindings[.stack], defaults.stack)
+        XCTAssertEqual(rig.handles[1].unregisterCount, 0)
+        XCTAssertEqual(rig.coordinator.registrationFailures.map(\.status), [OSStatus(eventHotKeyExistsErr), OSStatus(eventHotKeyExistsErr)])
+        var fired: [GlobalShortcutAction] = []
+        rig.coordinator.onPressed = { fired.append($0); _ = $1 }
+        rig.handles.forEach { $0.onPressed?() }
+        XCTAssertEqual(fired, [.stack, .activation])
+        rig.coordinator.stop()
+    }
+
+    func testFallbackDoesNotReuseStackChordAndExhaustionKeepsWorkingStack() throws {
+        var defaults = KeyboardShortcutConfiguration.defaults
+        defaults.stack = GlobalShortcutCoordinator.activationFallbacks[0]
+        let rig = RegistrationRig()
+        rig.failingChords = [defaults.activation, GlobalShortcutCoordinator.activationFallbacks[1], GlobalShortcutCoordinator.activationFallbacks[2]]
+        let result = try rig.coordinator.startWithActivationFallback(defaults)
+        XCTAssertFalse(result.usedFallback); XCTAssertEqual(result.configuration, defaults)
+        XCTAssertEqual(result.failures.map(\.action), [.activation])
+        XCTAssertEqual(rig.coordinator.activeBindings, [.stack: defaults.stack])
+        XCTAssertEqual(rig.handles[1].unregisterCount, 0)
+        XCTAssertEqual(rig.handles.count, 4, "Skip the chord already reserved by Stack")
+        rig.coordinator.stop()
+    }
+
+    func testFallbackDoesNotHideIndependentStackRegistrationFailure() throws {
+        let rig = RegistrationRig(), defaults = KeyboardShortcutConfiguration.defaults
+        rig.failingChords = [defaults.activation, defaults.stack]
+        let result = try rig.coordinator.startWithActivationFallback(defaults)
+        XCTAssertTrue(result.usedFallback)
+        XCTAssertEqual(result.failures.map(\.action), [.stack])
+        XCTAssertEqual(rig.coordinator.activeBindings, [.activation: result.configuration.activation])
+        rig.coordinator.stop()
+    }
+
     private func replacement() -> KeyboardShortcutConfiguration {
         var configuration = KeyboardShortcutConfiguration.defaults
         configuration.activation = ShortcutChord(keyCode: UInt16(kVK_ANSI_V), modifiers: [.control, .option])

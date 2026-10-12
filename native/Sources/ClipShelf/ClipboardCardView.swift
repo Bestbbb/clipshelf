@@ -387,7 +387,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         if !isDragging {
             let wasClick = activeGestureID != nil && latestDragEvent == nil
             resetDragGesture()
-            if wasClick, bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?(event) }
+            if wasClick, event.clickCount < 2, bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?(event) }
         }
     }
 

@@ -35,6 +35,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     private let globalShortcuts = GlobalShortcutCoordinator()
     private var shortcutConfiguration = KeyboardShortcutConfiguration.defaults
     private var shortcutSettings: ShortcutSettingsController?
+    private var diagnostics: DiagnosticsController?
+    private var shortcutFallbackNotice: String?
     private var shortcutConfigurationWarning: String?
     private var shortcutRegistrationFailures: [String] = []
     private var shortcutLayoutWarning: String?
@@ -42,7 +44,6 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     private let stack = StackCoordinator()
     private let stackPanel = StackPanelController()
     private let stackKeys = StackKeyMonitor()
-    private let pasteClickShield = PasteClickShield()
     private lazy var stackGestures: StackPasteGestureCoordinator<PasteCoordinator.Target> = StackPasteGestureCoordinator(
         ownProcessIdentifier: ProcessInfo.processInfo.processIdentifier,
         isAvailable: { [weak self] in self?.stackInputIsAvailable == true },
@@ -82,7 +83,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     private var records: [ClipboardRecord] = []
     private var metadata: [ClipboardRecordMetadata] = []
     private var target: PasteCoordinator.Target?
-    private var pasteDestinationChoices: [PasteCoordinator.Target] = []
+    private var pasteDestinationChoices: [PasteDestinationChoice] = []
     private var requiresPasteDestinationChoice = false
     private let pasteFeedback = PasteFeedbackController()
     private var statusMessage: String?
@@ -204,6 +205,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         capture.excludedBundleIDs = Set(excluded)
         configureCaptureIngestion()
         capture.onStatus = { [weak self] message in self?.setStatus(message) }
+        paste.preferences = PastePreferences(preferences: preferences)
         paste.onResult = { [weak self] message in self?.setStatus(message) }
         paste.onFailureMessage = { [weak self] message in
             guard let self, self.interactionLifecycle.isAllowed, !self.panel.isVisible else { return }
@@ -222,9 +224,19 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             case .stack: self.toggleStack()
             }
         }
-        do { shortcutRegistrationFailures = try globalShortcuts.start(shortcutConfiguration).map(\.localizedDescription) }
+        do {
+            let result = try globalShortcuts.startWithActivationFallback(shortcutConfiguration)
+            shortcutRegistrationFailures = result.failures.map(\.localizedDescription)
+            if result.usedFallback {
+                try result.configuration.save(to: preferences)
+                shortcutConfiguration = result.configuration
+                panel.applyShortcuts(shortcutConfiguration, alwaysPlainText: preferences.bool(forKey: "alwaysPlainText"))
+                shortcutFallbackNotice = L10n.text("原快捷键被占用，打开剪贴板已改为 \(shortcutConfiguration.activation.displayName)。可在设置中修改。")
+            }
+        }
         catch { shortcutLayoutWarning = error.localizedDescription }
         if let message = shortcutRegistrationMessage { statusMessage = message }
+        if !demo, !validation, let message = shortcutRegistrationMessage { ShortcutNotification.postIfAuthorized(message) }
         installShortcutInputSourceObserver()
         installObservers()
         if let deadline = preferences.object(forKey: "pauseUntil") as? Date, deadline > Date() {
@@ -361,6 +373,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         menu.addItem(item(L10n.text("打开数据文件夹"), #selector(revealData)))
         menu.addItem(item(L10n.text("登录时启动…"), #selector(toggleLoginItem)))
         menu.addItem(item(L10n.text("设置…"), #selector(showSettings)))
+        menu.addItem(item(L10n.text("诊断…"), #selector(showDiagnostics)))
         menu.addItem(item(L10n.text("语言 / Language…"), #selector(showLanguageSettings)))
         menu.addItem(item(L10n.text("MCP 与 AI 工具…"), #selector(showMCPSettings)))
         menu.addItem(item(L10n.text("智能建议…"), #selector(showSuggestions)))
@@ -382,6 +395,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         appMenu.addItem(appCheckUpdate); updateCheckItems.append(appCheckUpdate)
         appMenu.addItem(item(L10n.text("更新设置…"), #selector(showUpdateSettings)))
         appMenu.addItem(item(L10n.text("语言 / Language…"), #selector(showLanguageSettings)))
+        appMenu.addItem(item(L10n.text("诊断…"), #selector(showDiagnostics)))
         let appQuit = NSMenuItem(title: L10n.text("退出 ClipShelf"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appMenu.addItem(appQuit)
         appRoot.submenu = appMenu
@@ -434,10 +448,15 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                 completion(record ?? nil)
             }
         }
-        panel.onCardPasteClick = { [weak self] event in
-            guard let self, !self.demo, self.interactionLifecycle.isAllowed,
-                  !self.requiresPasteDestinationChoice, self.paste.hasPermission, self.target?.window != nil else { return }
-            self.pasteClickShield.protect(event)
+        panel.onCancelClickPaste = { [weak self] in
+            if self?.paste.isWaitingForClickRelease == true { self?.paste.cancel() }
+        }
+        panel.onClickPaste = { [weak self] record, plain, handoff in
+            guard let self, self.interactionLifecycle.isAllowed else { return }
+            if self.demo { self.setStatus(L10n.text("演示：已选择「\(record.title)」；不会写入剪贴板。")); return }
+            guard !self.requiresPasteDestinationChoice else { self.panel.requestPasteDestinationChoice(); return }
+            self.paste.paste(record, plainText: self.outputAsPlainText([record], requested: plain), target: self.target,
+                             clickHandoff: handoff) { self.panel.dismiss() }
         }
         panel.onPaste = { [weak self] record, plain in
             guard let self, self.interactionLifecycle.isAllowed else { return }
@@ -457,8 +476,12 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         panel.onPermissions = { [weak self] in self?.enableDirectPaste() }
         panel.onSelectPasteDestination = { [weak self] pid in
             guard let self, self.panel.isVisible,
-                  let selected = self.pasteDestinationChoices.first(where: { $0.application.processIdentifier == pid }),
+                  self.pasteDestinationChoices.contains(where: { $0.application.processIdentifier == pid }),
+                  let selected = self.paste.captureDestination(processIdentifier: pid),
                   !selected.application.isTerminated else { return }
+            guard selected.window != nil else {
+                self.setStatus(L10n.text("无法读取目标窗口，请重新选择或稍后重试。")); return
+            }
             self.target = selected
             self.requiresPasteDestinationChoice = false
             self.panel.setPasteDestination(name: selected.application.localizedName,
@@ -468,6 +491,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         }
         panel.onDismiss = { [weak self] in
             ValidationTrace.emit(.panelDismissed, state: .hidden)
+            if self?.paste.isWaitingForClickRelease == true { self?.paste.cancel() }
             self?.paste.returnToTargetIfIdle(self?.target)
             self?.target = nil
             self?.pageQueries.cancel()
@@ -966,7 +990,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         discardCaptureItem?.isEnabled = interactionLifecycle.isAllowed
         permissionItem?.isEnabled = !demo
         permissionItem?.title = paste.hasPermission ? L10n.text("检查直接粘贴权限…") : L10n.text("开启直接粘贴…")
-        statusItem?.button?.toolTip = "ClipShelf · \(capture.isRunning ? L10n.text("记录中") : L10n.text("已暂停"))"
+        statusItem?.button?.toolTip = shortcutRegistrationMessage ?? "ClipShelf · \(capture.isRunning ? L10n.text("记录中") : L10n.text("已暂停"))"
+        statusItem?.button?.image = NSImage(systemSymbolName: shortcutRegistrationMessage == nil ? "clipboard" : "exclamationmark.triangle",
+                                          accessibilityDescription: L10n.text("ClipShelf 剪贴板"))
         activationItem?.title = L10n.text("打开剪贴板    \(shortcutConfiguration.activation.displayName)")
         stackActivationItem?.title = L10n.text("顺序粘贴 Stack    \(shortcutConfiguration.stack.displayName)")
         for entry in retentionMenu?.items ?? [] {
@@ -984,7 +1010,10 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         requested || (preferences.bool(forKey: "alwaysPlainText") && selected.allSatisfy(ClipboardCodec.supportsPlainText))
     }
 
-    @objc private func openFromMenu() { togglePanel() }
+    @objc private func openFromMenu() {
+        ValidationTrace.emit(.menuInvocation, state: .requested)
+        togglePanel()
+    }
 
     private func togglePanel(forApplicationLaunch: Bool = false) {
         ValidationTrace.emit(.invocation, state: panel.isVisible ? .visible : .hidden)
@@ -1354,7 +1383,6 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
 
     private func cancelPendingInteraction() {
         ValidationTrace.emit(.interactionCancelled, state: .requested)
-        pasteClickShield.cancel()
         stackGestures.invalidate()
         stack.cancelPendingPastes()
         paste.cancel()
@@ -1845,7 +1873,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                     else { try self.globalShortcuts.probe(configuration) }
                 }
             }
-            controller.onApply = { [weak self] configuration, alwaysPlain in
+            controller.onApplyFull = { [weak self] configuration, alwaysPlain, pastePreferences in
                 guard let self else { return .failure(ShortcutSettingsError.unavailable) }
                 guard !self.demo else { return .failure(ShortcutSettingsError.demo) }
                 do {
@@ -1854,6 +1882,9 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                     self.shortcutConfigurationWarning = nil
                     self.shortcutLayoutWarning = nil
                     self.shortcutRegistrationFailures = []
+                    self.shortcutFallbackNotice = nil
+                    pastePreferences.save(to: self.preferences)
+                    self.paste.preferences = pastePreferences
                     self.panel.applyShortcuts(configuration, alwaysPlainText: alwaysPlain)
                     self.setStatus(L10n.text("快捷键与粘贴设置已保存。"))
                     return .success(())
@@ -1863,14 +1894,39 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             shortcutSettings = controller
         }
         shortcutSettings?.show(configuration: shortcutConfiguration, alwaysPlainText: preferences.bool(forKey: "alwaysPlainText"),
-                               registrationMessage: shortcutRegistrationMessage)
+                               registrationMessage: shortcutRegistrationMessage, pastePreferences: paste.preferences,
+                               targetBundleID: paste.lastCapturedTarget?.application.bundleIdentifier,
+                               targetName: paste.lastCapturedTarget?.application.localizedName)
     }
 
     private var shortcutRegistrationMessage: String? {
         var messages = shortcutRegistrationFailures
+        if let shortcutFallbackNotice { messages.append(shortcutFallbackNotice) }
         if let shortcutConfigurationWarning { messages.append(shortcutConfigurationWarning) }
         if let shortcutLayoutWarning { messages.append(shortcutLayoutWarning) }
         return messages.isEmpty ? nil : messages.joined(separator: "\n")
+    }
+
+    @objc private func showDiagnostics() {
+        guard interactionLifecycle.isAllowed else { return }
+        cancelPendingInteraction(); cancelSuggestions()
+        panel.dismissForAction { [weak self] in
+            guard let self else { return }
+            if self.diagnostics == nil {
+                let controller = DiagnosticsController()
+                controller.snapshot = { [weak self] in
+                    guard let self else {
+                        return .init(hasPermission: false, activeBindings: [:], registrationFailures: [],
+                                     pastePreferences: .init(), attempts: [], footprintBytes: nil)
+                    }
+                    return .init(hasPermission: self.paste.hasPermission, activeBindings: self.globalShortcuts.activeBindings,
+                                 registrationFailures: self.globalShortcuts.registrationFailures, pastePreferences: self.paste.preferences,
+                                 attempts: self.paste.outcomeLog.entries, footprintBytes: MemoryFootprint.bytes())
+                }
+                self.diagnostics = controller
+            }
+            self.diagnostics?.present()
+        }
     }
 
     private func installShortcutInputSourceObserver() {

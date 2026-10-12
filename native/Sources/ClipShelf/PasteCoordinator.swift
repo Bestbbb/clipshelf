@@ -24,15 +24,20 @@ final class PasteCoordinator {
     enum Outcome: Equatable { case dispatched, copiedOnly, cancelled, failed, busy }
 
     private final class Attempt {
+        let id = UUID().uuidString
         let startedAt: TimeInterval
+        let mode: PasteStrictness
         let target: Target?
         let isContextCurrent: (() -> Bool)?
         let onDispatched: (() -> Void)?
         let onCompleted: ((Outcome) -> Void)?
         var task: Task<Void, Never>?
         var dispatching = false
-        init(startedAt: TimeInterval, target: Target?, isContextCurrent: (() -> Bool)?, onDispatched: (() -> Void)?, onCompleted: ((Outcome) -> Void)?) {
+        var waitingForClickRelease = false
+        var method: PasteDispatch.Method?
+        init(startedAt: TimeInterval, mode: PasteStrictness, target: Target?, isContextCurrent: (() -> Bool)?, onDispatched: (() -> Void)?, onCompleted: ((Outcome) -> Void)?) {
             self.startedAt = startedAt
+            self.mode = mode
             self.target = target; self.isContextCurrent = isContextCurrent
             self.onDispatched = onDispatched; self.onCompleted = onCompleted
         }
@@ -42,6 +47,9 @@ final class PasteCoordinator {
     var onResult: ((String) -> Void)?
     var onFailureMessage: ((String) -> Void)?
     var publications: OwnedFilePublicationCoordinator?
+    var preferences = PastePreferences()
+    let outcomeLog = PasteOutcomeLog()
+    private(set) var lastCapturedTarget: Target?
     private var attempt: Attempt?
     private let clipboard: PasteClipboard
     private let environment: PasteEnvironment
@@ -55,6 +63,7 @@ final class PasteCoordinator {
 
     var hasPermission: Bool { environment.hasPermission }
     var hasPendingAttempt: Bool { attempt != nil }
+    var isWaitingForClickRelease: Bool { attempt?.waitingForClickRelease == true }
     func requestPermission() { environment.requestPermission() }
     func returnToTargetIfIdle(_ target: Target?) {
         guard attempt == nil, let target, environment.isRunning(target),
@@ -64,6 +73,7 @@ final class PasteCoordinator {
     }
     func captureTarget(forApplicationLaunch: Bool = false) -> Target? {
         let target = environment.captureTarget()
+        lastCapturedTarget = target
         if forApplicationLaunch, let target, environment.isLauncherSurface(target) {
             ValidationTrace.emit(.destinationChoiceRequired, bundleID: target.application.bundleIdentifier, state: .unavailable)
             return nil
@@ -71,7 +81,12 @@ final class PasteCoordinator {
         Self.outcomeLogger.notice("captured bundle=\(target?.application.bundleIdentifier ?? "none", privacy: .public) window=\(target?.window != nil, privacy: .public) input=\(target?.focusedElement != nil, privacy: .public)")
         return target
     }
-    func destinationChoices() -> [Target] { environment.destinationChoices() }
+    func destinationChoices() -> [PasteDestinationChoice] { environment.destinationChoices() }
+    func captureDestination(processIdentifier: pid_t) -> Target? {
+        let target = environment.captureDestination(processIdentifier: processIdentifier)
+        lastCapturedTarget = target
+        return target
+    }
 
     @discardableResult
     func copy(_ record: ClipboardRecord, plainText: Bool = false) -> Bool { copy([record], plainText: plainText) }
@@ -99,21 +114,28 @@ final class PasteCoordinator {
         return write.succeeded ? write.changeCount : nil
     }
 
-    func paste(_ record: ClipboardRecord, plainText: Bool, target: Target?, dismiss: () -> Void) {
-        paste([record], plainText: plainText, target: target, dismiss: dismiss)
+    func paste(_ record: ClipboardRecord, plainText: Bool, target: Target?,
+               clickHandoff: PasteClickHandoff? = nil, dismiss: @escaping () -> Void) {
+        paste([record], plainText: plainText, target: target, dismiss: dismiss, clickHandoff: clickHandoff)
     }
 
-    func paste(_ records: [ClipboardRecord], plainText: Bool, target: Target?, dismiss: () -> Void,
+    func paste(_ records: [ClipboardRecord], plainText: Bool, target: Target?, dismiss: @escaping () -> Void,
                onCopied: (() -> Void)? = nil, onDispatched: (() -> Void)? = nil,
                allowHeldCommand: Bool = false, isContextCurrent: (() -> Bool)? = nil,
+               clickHandoff: PasteClickHandoff? = nil,
                onCompleted: ((Outcome) -> Void)? = nil) {
         guard attempt == nil else {
-            trace(.pasteCompleted, target: target, state: .busy)
+            let mode = preferences.mode(for: target?.application.bundleIdentifier)
+            ValidationTrace.emit(.pasteCompleted, bundleID: target?.application.bundleIdentifier,
+                state: .busy, attemptID: UUID().uuidString, elapsedMS: 0, strictness: mode)
+            outcomeLog.append(.init(timestamp: Date(), bundleID: target?.application.bundleIdentifier,
+                mode: mode, outcome: .busy, failure: nil, method: nil, elapsedMS: 0))
             onCompleted?(.busy); return
         }
         // Claim the attempt before any callback. Dismissal, copy notifications,
         // and Stack callbacks can cancel or reenter synchronously.
-        let request = Attempt(startedAt: environment.uptime, target: target, isContextCurrent: isContextCurrent,
+        let request = Attempt(startedAt: environment.uptime, mode: preferences.mode(for: target?.application.bundleIdentifier),
+                              target: target, isContextCurrent: isContextCurrent,
                               onDispatched: onDispatched, onCompleted: onCompleted)
         attempt = request
         trace(.pastePrepared, target: target, state: .prepared)
@@ -126,11 +148,49 @@ final class PasteCoordinator {
         // already published on the clipboard instead of discarding them.
         onCopied?()
         guard contextIsCurrent(request), clipboardIsCurrent(writtenCount, request: request) else { return }
+        if request.mode == .copyOnly {
+            finish(request, .copiedOnly, message: L10n.text("内容已复制，可在目标应用按 ⌘V。"), failure: .copyOnlyMode)
+            return
+        }
         guard hasPermission, let target, environment.isRunning(target), environment.hasWindow(target) else {
             finish(request, .copiedOnly, message: L10n.text("内容已复制，请切回目标应用按 ⌘V。"), failure: .restoreUnavailable); return
         }
-        // Keep the shelf and its explanation visible when direct paste is not
-        // possible. Previously we hid the only place displaying this failure.
+        if let clickHandoff, clickHandoff.mouseUpTimestamp.isFinite, clickHandoff.doubleClickInterval.isFinite,
+           environment.uptime < clickHandoff.releaseAfter || environment.hasPressedMouseButtons || !clickHandoff.isReleased() {
+            request.waitingForClickRelease = true
+            ValidationTrace.emit(.pasteClickHandoffWaiting, state: .prepared, attemptID: request.id)
+            request.task = Task { @MainActor [weak self] in
+                await self?.waitForClickRelease(request, target: target, writtenCount: writtenCount,
+                    handoff: clickHandoff, allowHeldCommand: allowHeldCommand, dismiss: dismiss)
+            }
+            return
+        }
+        restoreAndDispatch(request, target: target, writtenCount: writtenCount, allowHeldCommand: allowHeldCommand, dismiss: dismiss)
+    }
+
+    private func waitForClickRelease(_ request: Attempt, target: Target, writtenCount: Int,
+                                    handoff: PasteClickHandoff, allowHeldCommand: Bool, dismiss: @escaping () -> Void) async {
+        let deadline = max(environment.uptime, handoff.releaseAfter) + 0.9
+        while contextIsCurrent(request) {
+            guard clipboardIsCurrent(writtenCount, request: request), targetIsCurrent(target, request: request) else { return }
+            guard environment.uptime < deadline else {
+                finish(request, .cancelled, failure: .mouseReleaseDeadline); return
+            }
+            if environment.uptime >= handoff.releaseAfter && !environment.hasPressedMouseButtons && handoff.isReleased() {
+                request.waitingForClickRelease = false
+                restoreAndDispatch(request, target: target, writtenCount: writtenCount, allowHeldCommand: allowHeldCommand, dismiss: dismiss)
+                return
+            }
+            do { try await environment.waitForReadiness() }
+            catch { finish(request, .cancelled, failure: .waitCancelled); return }
+        }
+    }
+
+    private func restoreAndDispatch(_ request: Attempt, target: Target, writtenCount: Int,
+                                    allowHeldCommand: Bool, dismiss: () -> Void) {
+        guard contextIsCurrent(request), clipboardIsCurrent(writtenCount, request: request),
+              targetIsCurrent(target, request: request) else { return }
+        let deadline = environment.uptime + 0.9
         dismiss()
         guard contextIsCurrent(request) else { return }
         guard clipboardIsCurrent(writtenCount, request: request) else { return }
@@ -139,19 +199,18 @@ final class PasteCoordinator {
             finish(request, .copiedOnly, message: L10n.text("未能恢复目标应用；内容已复制。"), failure: .activationFailed); return
         }
         guard contextIsCurrent(request), targetIsCurrent(target, request: request) else { return }
-        guard environment.raiseWindow(target) else {
+        if !environment.raiseWindow(target), request.mode == .strict {
             finish(request, .copiedOnly, message: L10n.text("原窗口已不可用；内容已复制，请手动粘贴。"), failure: .windowRaiseFailed); return
         }
         guard contextIsCurrent(request), targetIsCurrent(target, request: request) else { return }
         environment.restoreFocusedElement(target)
         guard contextIsCurrent(request) else { return }
         request.task = Task { @MainActor [weak self] in
-            await self?.waitAndDispatch(request, target: target, writtenCount: writtenCount, allowHeldCommand: allowHeldCommand)
+            await self?.waitAndDispatch(request, target: target, writtenCount: writtenCount, allowHeldCommand: allowHeldCommand, deadline: deadline)
         }
     }
 
-    private func waitAndDispatch(_ request: Attempt, target: Target, writtenCount: Int, allowHeldCommand: Bool) async {
-        let deadline = environment.uptime + 0.9
+    private func waitAndDispatch(_ request: Attempt, target: Target, writtenCount: Int, allowHeldCommand: Bool, deadline: TimeInterval) async {
         var lastFocus: PasteFocusState?
         var readySince: TimeInterval?
         var restoredAfterActivation = false
@@ -159,7 +218,10 @@ final class PasteCoordinator {
             guard environment.uptime < deadline else { break }
             guard clipboardIsCurrent(writtenCount, request: request), targetIsCurrent(target, request: request) else { return }
             if environment.foreground(for: target) == .target && modifiersAreReady(allowHeldCommand) {
-                var focus = environment.focusState(for: target)
+                // Compatible mode samples AX for diagnosis once. Custom editors
+                // can replace their AX objects on activation; identity is not an insertion acknowledgement.
+                var focus = lastFocus ?? .ready
+                if request.mode == .strict || lastFocus == nil { focus = environment.focusState(for: target) }
                 // Activation can complete after the initial restoration. Retry
                 // the original input once after its process is actually active.
                 if !restoredAfterActivation && (focus == .differentElement || focus == .differentSelection) {
@@ -170,10 +232,11 @@ final class PasteCoordinator {
                     focus = environment.focusState(for: target)
                 }
                 lastFocus = focus
-                if focus == .ready {
+                if focus == .ready || request.mode == .compatible {
                     let since = readySince ?? environment.uptime
                     readySince = since
-                    if environment.uptime - since < environment.focusSettleInterval {
+                    let settleInterval = request.mode == .strict ? environment.focusSettleInterval : environment.compatibleFocusSettleInterval
+                    if environment.uptime - since < settleInterval {
                         do { try await environment.waitForReadiness() }
                         catch { finish(request, .cancelled, failure: .waitCancelled); return }
                         continue
@@ -187,11 +250,17 @@ final class PasteCoordinator {
                     guard contextIsCurrent(request), clipboardIsCurrent(writtenCount, request: request),
                           targetIsCurrent(target, request: request) else { return }
                     guard environment.uptime < deadline, environment.foreground(for: target) == .target, modifiersAreReady(allowHeldCommand),
-                          environment.focusState(for: target) == .ready else {
+                          (request.mode != .strict || environment.focusState(for: target) == .ready) else {
                         finish(request, .cancelled, message: L10n.text("目标已改变；内容已复制，请手动粘贴。"), failure: .finalReadinessChanged); return
                     }
-                    guard attempt === request, clipboardIsCurrent(writtenCount, request: request) else { return }
+                    guard contextIsCurrent(request), clipboardIsCurrent(writtenCount, request: request),
+                          targetIsCurrent(target, request: request) else { return }
+                    guard environment.uptime < deadline, environment.foreground(for: target) == .target,
+                          modifiersAreReady(allowHeldCommand) else {
+                        finish(request, .cancelled, failure: .finalReadinessChanged); return
+                    }
                     request.dispatching = true
+                    request.method = dispatch.method
                     let accepted = dispatch.send()
                     guard accepted else {
                         request.dispatching = false
@@ -201,7 +270,7 @@ final class PasteCoordinator {
                     }
                     ValidationTrace.emit(.pasteDispatch, pid: target.application.processIdentifier,
                         bundleID: target.application.bundleIdentifier, hasTargetWindow: target.window != nil,
-                        hasInputElement: target.focusedElement != nil, state: .dispatched, method: dispatch.method)
+                        hasInputElement: target.focusedElement != nil, state: .dispatched, method: dispatch.method, attemptID: request.id)
                     finish(request, .dispatched, message: L10n.text("已发出粘贴操作。"))
                     return
                 }
@@ -269,7 +338,10 @@ final class PasteCoordinator {
         case .failed: state = .failed
         case .busy: state = .busy
         }
-        trace(.pasteCompleted, target: request.target, state: state, failure: failure)
+        trace(.pasteCompleted, target: request.target, state: state, failure: failure, request: request)
+        outcomeLog.append(.init(timestamp: Date(), bundleID: request.target?.application.bundleIdentifier,
+            mode: request.mode, outcome: outcome, failure: failure, method: request.method,
+            elapsedMS: max(0, environment.uptime - request.startedAt) * 1000))
         // Keep cancellation reasons available after the panel has dismissed.
         // Never log clipboard data, window titles, paths or input contents.
         Self.outcomeLogger.notice("outcome=\(state.rawValue, privacy: .public) failure=\(failure?.rawValue ?? "none", privacy: .public) target=\(request.target != nil, privacy: .public) bundle=\(request.target?.application.bundleIdentifier ?? "none", privacy: .public) window=\(request.target?.window != nil, privacy: .public) input=\(request.target?.focusedElement != nil, privacy: .public)")
@@ -309,10 +381,13 @@ final class PasteCoordinator {
     }
 
     private func trace(_ event: ValidationTrace.Event, target: Target?, state: ValidationTrace.State,
-                       failure: ValidationTrace.Failure? = nil) {
+                       failure: ValidationTrace.Failure? = nil, request: Attempt? = nil) {
         guard ValidationTrace.enabled else { return }
+        let request = request ?? attempt
         ValidationTrace.emit(event, pid: target?.application.processIdentifier, bundleID: target?.application.bundleIdentifier,
                              hasTargetWindow: target?.window != nil, hasInputElement: target?.focusedElement != nil,
-                             state: state, failure: failure)
+                             state: state, failure: failure, attemptID: request?.id,
+                             elapsedMS: request.map { max(0, environment.uptime - $0.startedAt) * 1000 },
+                             strictness: request?.mode)
     }
 }

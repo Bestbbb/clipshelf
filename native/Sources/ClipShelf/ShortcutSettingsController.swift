@@ -10,6 +10,13 @@ final class ShortcutSettingsController: NSWindowController, NSWindowDelegate {
     var onValidate: ((KeyboardShortcutConfiguration) -> Result<Void, Error>)?
     var onApply: ((KeyboardShortcutConfiguration, Bool) -> Result<Void, Error>)?
     var onTryActivation: (() -> Void)?
+    var onApplyFull: ((KeyboardShortcutConfiguration, Bool, PastePreferences) -> Result<Void, Error>)?
+    private(set) var draftPastePreferences = PastePreferences()
+    private var targetBundleID: String?
+    private let strictnessPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let targetModePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let targetOverride = NSButton(checkboxWithTitle: L10n.text("为当前目标应用单独设置"), target: nil, action: nil)
+    private let targetLabel = NSTextField(wrappingLabelWithString: "")
     var isVisible: Bool { window?.isVisible == true }
     var isKeyWindow: Bool { window?.isKeyWindow == true }
     private(set) var draft = KeyboardShortcutConfiguration.defaults
@@ -39,10 +46,13 @@ final class ShortcutSettingsController: NSWindowController, NSWindowDelegate {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func show(configuration: KeyboardShortcutConfiguration, alwaysPlainText: Bool, registrationMessage: String? = nil) {
+    func show(configuration: KeyboardShortcutConfiguration, alwaysPlainText: Bool, registrationMessage: String? = nil,
+              pastePreferences: PastePreferences = .init(), targetBundleID: String? = nil, targetName: String? = nil) {
         self.registrationMessage = registrationMessage
         if !hasDraftSession {
             draft = configuration; draftAlwaysPlainText = alwaysPlainText
+            draftPastePreferences = pastePreferences; self.targetBundleID = targetBundleID
+            targetLabel.stringValue = targetName ?? L10n.text("尚未捕获目标应用")
             hasDraftSession = true
             errorLabel.stringValue = registrationMessage ?? ""
             refreshDraftControls()
@@ -182,6 +192,26 @@ final class ShortcutSettingsController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(fixedHeading); stack.addArrangedSubview(fixed)
         fixed.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
+        for popup in [strictnessPopup, targetModePopup] {
+            for mode in PasteStrictness.allCases {
+                popup.addItem(withTitle: mode.title)
+                popup.lastItem?.representedObject = mode.rawValue
+            }
+            popup.target = self; popup.action = #selector(pasteModeChanged)
+        }
+        strictnessPopup.setAccessibilityIdentifier("paste.mode.default")
+        targetModePopup.setAccessibilityIdentifier("paste.mode.target")
+        targetOverride.setAccessibilityIdentifier("paste.mode.override")
+        targetOverride.target = self; targetOverride.action = #selector(pasteModeChanged)
+        targetLabel.font = .systemFont(ofSize: 11); targetLabel.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(row(L10n.text("自动粘贴模式"), control: strictnessPopup))
+        let modeHelp = NSTextField(wrappingLabelWithString: L10n.text("兼容模式尽量恢复原输入位置后粘贴；严格模式要求窗口、输入框和选区一致。只复制模式需手动粘贴。"))
+        modeHelp.font = .systemFont(ofSize: 11); modeHelp.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(modeHelp); modeHelp.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        stack.addArrangedSubview(targetOverride)
+        stack.addArrangedSubview(targetLabel)
+        stack.addArrangedSubview(row(L10n.text("目标应用模式"), control: targetModePopup))
+
         errorLabel.font = .systemFont(ofSize: 11); errorLabel.textColor = .systemRed
         errorLabel.maximumNumberOfLines = 3
         errorLabel.setAccessibilityLabel(L10n.text("快捷键设置错误"))
@@ -233,6 +263,12 @@ final class ShortcutSettingsController: NSWindowController, NSWindowDelegate {
             if let item = popup.itemArray.first(where: { $0.representedObject as? String == modifier.rawValue }) { popup.select(item) }
         }
         alwaysPlain.state = draftAlwaysPlainText ? .on : .off
+        strictnessPopup.selectItem(at: PasteStrictness.allCases.firstIndex(of: draftPastePreferences.strictness) ?? 0)
+        let override = targetBundleID.flatMap { draftPastePreferences.overrides[$0] }
+        targetOverride.state = override == nil ? .off : .on
+        targetOverride.isEnabled = targetBundleID != nil
+        targetModePopup.isEnabled = override != nil
+        targetModePopup.selectItem(at: PasteStrictness.allCases.firstIndex(of: override ?? draftPastePreferences.strictness) ?? 0)
     }
 
     @discardableResult
@@ -255,6 +291,17 @@ final class ShortcutSettingsController: NSWindowController, NSWindowDelegate {
         if let value = plainPopup.selectedItem?.representedObject as? String, let modifier = ShortcutModifier(rawValue: value) { draft.plainText = modifier }
         validateDraftInline()
     }
+    @objc private func pasteModeChanged() {
+        if let value = strictnessPopup.selectedItem?.representedObject as? String, let mode = PasteStrictness(rawValue: value) {
+            draftPastePreferences.strictness = mode
+        }
+        if let bundleID = targetBundleID {
+            if targetOverride.state == .on, let value = targetModePopup.selectedItem?.representedObject as? String,
+               let mode = PasteStrictness(rawValue: value) { draftPastePreferences.overrides[bundleID] = mode }
+            else { draftPastePreferences.overrides.removeValue(forKey: bundleID) }
+        }
+        targetModePopup.isEnabled = targetOverride.state == .on && targetBundleID != nil
+    }
     @objc private func alwaysPlainChanged() { draftAlwaysPlainText = alwaysPlain.state == .on }
     @objc private func restoreDefaults() {
         stopRecording(); draft = .defaults
@@ -268,8 +315,9 @@ final class ShortcutSettingsController: NSWindowController, NSWindowDelegate {
     @objc private func applyChanges() {
         stopRecording()
         guard validateDraftInline() else { return }
-        guard let onApply else { errorLabel.stringValue = L10n.text("设置尚未就绪，请稍后重试。"); return }
-        switch onApply(draft, draftAlwaysPlainText) {
+        guard onApplyFull != nil || onApply != nil else { errorLabel.stringValue = L10n.text("设置尚未就绪，请稍后重试。"); return }
+        let result = onApplyFull?(draft, draftAlwaysPlainText, draftPastePreferences) ?? onApply!(draft, draftAlwaysPlainText)
+        switch result {
         case .success: registrationMessage = nil; errorLabel.stringValue = ""; finishDraftSession()
         case .failure(let error): errorLabel.stringValue = error.localizedDescription
         }

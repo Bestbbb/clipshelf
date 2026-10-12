@@ -3,6 +3,15 @@ import XCTest
 @testable import ClipShelf
 
 final class ValidationTraceTests: XCTestCase {
+    func testAttemptCorrelationIsMetadataOnlyAndRejectsNonfiniteElapsedTime() throws {
+        let id = UUID().uuidString
+        let data = try XCTUnwrap(ValidationTrace.encodedLine(event: .pasteCompleted, timestamp: 42,
+            state: .cancelled, failure: .pointerChanged, attemptID: id, elapsedMS: 50, strictness: .compatible))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(Set(object.keys), ["timestamp", "event", "state", "failure", "attemptID", "elapsedMS", "strictness"])
+        XCTAssertEqual(object["attemptID"] as? String, id)
+        XCTAssertNil(ValidationTrace.encodedLine(event: .pasteCompleted, timestamp: 42, elapsedMS: .infinity))
+    }
     func testPointerCancellationRecordsOnlyClickCountAndRelativeTime() throws {
         let data = try XCTUnwrap(ValidationTrace.encodedLine(event: .pastePointerChange, timestamp: 42,
             state: .cancelled, failure: .pointerChanged, mouseClickCount: 2, mouseDeltaMS: 44))

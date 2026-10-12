@@ -49,6 +49,35 @@ import XCTest
 }
 
 final class PanelShortcutRoutingTests: XCTestCase {
+    @MainActor func testContinuationClickPreservesSlowFirstPayloadAndWaitsForOwnedMouseUp() throws {
+        let h = PanelShortcutHarness(); defer { h.close() }
+        let card = try h.card(0)
+        card.frame = NSRect(x: 0, y: 0, width: 222, height: 180)
+        var pending: [(Result<[ClipboardRecord], Error>) -> Void] = []
+        h.panel.resolveOutputSelection = { _, completion in pending.append(completion) }
+        var handoffs: [PasteClickHandoff] = []
+        h.panel.onClickPaste = { _, _, handoff in handoffs.append(handoff) }
+        func mouse(_ type: NSEvent.EventType, _ timestamp: TimeInterval, _ clicks: Int) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: card.convert(NSPoint(x: 40, y: 40), to: nil), modifierFlags: [],
+                timestamp: timestamp, windowNumber: h.panel.window!.windowNumber, context: nil,
+                eventNumber: 1, clickCount: clicks, pressure: 1)!
+        }
+        card.mouseDown(with: mouse(.leftMouseDown, 100, 1))
+        card.mouseUp(with: mouse(.leftMouseUp, 100.01, 1))
+        XCTAssertFalse(pending.isEmpty)
+        let doubleDown = mouse(.leftMouseDown, 100.02, 2)
+        XCTAssertTrue(h.panel.consumeClickContinuation(doubleDown))
+        pending.last?(.success([h.records[0]]))
+        XCTAssertEqual(handoffs.count, 1)
+        XCTAssertEqual(handoffs.first?.mouseUpTimestamp, 100.01)
+        XCTAssertFalse(handoffs[0].isReleased())
+        // The release may arrive after the double-click interval, but still belongs to this panel.
+        XCTAssertTrue(h.panel.consumeClickContinuation(mouse(.leftMouseUp, 102, 2)))
+        XCTAssertTrue(handoffs[0].isReleased())
+        XCTAssertFalse(h.panel.consumeClickContinuation(mouse(.leftMouseDown, 103, 2)))
+        XCTAssertEqual(handoffs.count, 1)
+    }
+
     @MainActor private func configured() -> KeyboardShortcutConfiguration {
         var configuration = KeyboardShortcutConfiguration.defaults
         configuration.quickPaste = .option; configuration.plainText = .control

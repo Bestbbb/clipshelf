@@ -37,6 +37,36 @@ import XCTest
 }
 
 final class ShortcutSettingsTests: XCTestCase {
+    @MainActor func testPasteModeOverrideIsADraftAndCancelLeavesCommittedSettingsUntouched() throws {
+        let h = ShortcutSettingsHarness(); defer { h.close() }
+        let initial = PastePreferences(strictness: .compatible, overrides: ["synthetic.other": .copyOnly])
+        h.controller.show(configuration: .defaults, alwaysPlainText: false, pastePreferences: initial,
+                          targetBundleID: "synthetic.editor", targetName: "Synthetic Editor")
+        let popup = try XCTUnwrap(h.views(NSPopUpButton.self).first { $0.accessibilityIdentifier() == "paste.mode.target" })
+        let checkbox = try XCTUnwrap(h.views(NSButton.self).first { $0.accessibilityIdentifier() == "paste.mode.override" })
+        checkbox.state = .on
+        popup.selectItem(at: 1)
+        h.invoke("pasteModeChanged")
+        XCTAssertTrue(popup.isEnabled)
+        XCTAssertEqual(h.controller.draftPastePreferences.overrides["synthetic.editor"], .strict)
+        var applied = 0
+        h.controller.onApplyFull = { _, _, _ in applied += 1; return .success(()) }
+        h.close()
+        XCTAssertEqual(applied, 0)
+        h.controller.show(configuration: .defaults, alwaysPlainText: false, pastePreferences: initial,
+                          targetBundleID: "synthetic.editor", targetName: "Synthetic Editor")
+        XCTAssertEqual(h.controller.draftPastePreferences, initial)
+        checkbox.state = .on; h.invoke("pasteModeChanged")
+        h.controller.onApplyFull = { _, _, preferences in
+            applied += 1
+            XCTAssertEqual(preferences.overrides["synthetic.other"], .copyOnly)
+            XCTAssertEqual(preferences.overrides["synthetic.editor"], .compatible)
+            return .success(())
+        }
+        h.invoke("applyChanges")
+        XCTAssertEqual(applied, 1); XCTAssertFalse(h.controller.isVisible)
+    }
+
     enum Failure: Error, LocalizedError { case occupied; var errorDescription: String? { "合成占用错误" } }
 
     @MainActor func testDraftCancelDoesNotApplyAndReopenUsesCommittedValues() throws {

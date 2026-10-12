@@ -123,7 +123,10 @@ private final class ClipboardCollectionItem: NSCollectionViewItem {
 /// Presents history without activating ClipShelf or performing clipboard side effects.
 @MainActor
 final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate, NSTextViewDelegate, NSWindowDelegate, NSPopoverDelegate, NSCollectionViewDataSource, NSMenuItemValidation {
-    var onCardPasteClick: ((NSEvent) -> Void)?
+    var onClickPaste: ((ClipboardRecord, Bool, PasteClickHandoff) -> Void)?
+    var onCancelClickPaste: (() -> Void)?
+    private var clickPasteReleaseAfter: TimeInterval?
+    private var ownsContinuationMouseUp = false
     var onPaste: ((ClipboardRecord, Bool) -> Void)?
     var onPasteRecords: (([ClipboardRecord], Bool) -> Void)?
     var onCopy: ((ClipboardRecord) -> Void)?
@@ -825,6 +828,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             return
         }
         cancelBoundaryNavigation()
+        clickPasteReleaseAfter = nil
+        ownsContinuationMouseUp = false
         closeAllFilters(restoreFocus: false)
         cardViews.forEach { $0.cancelPendingDrag() }
         boardTabs.cancelDrag()
@@ -1326,8 +1331,16 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         card.onClick = { [weak self, weak card] event in
             guard let self, self.detailWindow == nil, !event.modifierFlags.contains(.shift), !event.modifierFlags.contains(.command),
                   !self.queryPending, !self.isComposing else { return }
-            self.onCardPasteClick?(event)
-            card?.onOpen?(event.modifierFlags)
+            guard card != nil else { return }
+            self.select(record.id, focusResults: true)
+            self.clickPasteReleaseAfter = event.timestamp + NSEvent.doubleClickInterval
+            let handoff = PasteClickHandoff(mouseUpTimestamp: event.timestamp, doubleClickInterval: NSEvent.doubleClickInterval,
+                isReleased: { [weak self] in self?.ownsContinuationMouseUp == false })
+            let plain = ShortcutChord.normalizedModifiers(event.modifierFlags).contains(self.shortcutConfiguration.plainText.eventFlags)
+            self.resolve(record, forOutput: true) {
+                if let onClickPaste = self.onClickPaste { onClickPaste($0, self.outputPlainText([$0], requested: plain), handoff) }
+                else { self.onPaste?($0, self.outputPlainText([$0], requested: plain)) }
+            }
         }
         card.onOpen = { [weak self] modifiers in
             guard let self, self.detailWindow == nil, !self.isComposing else { return }
@@ -2102,7 +2115,28 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         }
     }
 
-    private func invalidateOutputContext() { outputActionGeneration = UUID() }
+    private func invalidateOutputContext() {
+        outputActionGeneration = UUID()
+        clickPasteReleaseAfter = nil
+        ownsContinuationMouseUp = false
+        onCancelClickPaste?()
+    }
+
+    /// Retain the actual panel until both halves of a continuation click have
+    /// arrived. Never invalidate the first card's asynchronous payload read.
+    @discardableResult
+    func consumeClickContinuation(_ event: NSEvent) -> Bool {
+        if event.type == .leftMouseUp, ownsContinuationMouseUp {
+            ownsContinuationMouseUp = false
+            return true
+        }
+        if event.type == .leftMouseDown, event.clickCount >= 2,
+           let releaseAfter = clickPasteReleaseAfter, event.timestamp <= releaseAfter {
+            ownsContinuationMouseUp = true
+            return true
+        }
+        return false
+    }
 
     func controlTextDidBeginEditing(_ notification: Notification) {
         if notification.object as? NSSearchField === searchField { invalidateOutputContext() }
@@ -2176,8 +2210,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func installEventMonitor() {
         guard eventMonitor == nil else { return }
-        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged, .leftMouseDown, .rightMouseDown]) { [weak self] event in
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged, .leftMouseDown, .leftMouseUp, .rightMouseDown]) { [weak self] event in
             guard let self, self.isVisible, event.window === self.window else { return event }
+            if self.consumeClickContinuation(event) { return nil }
             if event.type == .leftMouseDown || event.type == .rightMouseDown {
                 self.invalidateOutputContext(); return event
             }

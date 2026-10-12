@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import ClipShelfLocalization
 
 struct PasteModifiers: OptionSet, Sendable {
     let rawValue: UInt8
@@ -11,6 +12,49 @@ struct PasteModifiers: OptionSet, Sendable {
 
 enum PasteForeground { case target, clipShelf, other }
 enum PasteFocusState { case ready, differentWindow, differentElement, differentSelection }
+
+enum PasteStrictness: String, Codable, CaseIterable, Sendable {
+    case compatible, strict, copyOnly
+    var title: String {
+        switch self {
+        case .compatible: return L10n.text("兼容模式（推荐）")
+        case .strict: return L10n.text("严格模式")
+        case .copyOnly: return L10n.text("只复制")
+        }
+    }
+}
+
+struct PastePreferences: Equatable {
+    var strictness: PasteStrictness = .compatible
+    var overrides: [String: PasteStrictness] = [:]
+
+    init(strictness: PasteStrictness = .compatible, overrides: [String: PasteStrictness] = [:]) {
+        self.strictness = strictness; self.overrides = overrides
+    }
+    init(preferences: UserDefaults) {
+        strictness = preferences.string(forKey: "pasteStrictness").flatMap(PasteStrictness.init(rawValue:)) ?? .compatible
+        overrides = (preferences.dictionary(forKey: "pasteStrictnessOverrides") ?? [:]).compactMapValues {
+            ($0 as? String).flatMap(PasteStrictness.init(rawValue:))
+        }
+    }
+    func mode(for bundleID: String?) -> PasteStrictness { bundleID.flatMap { overrides[$0] } ?? strictness }
+    func save(to preferences: UserDefaults) {
+        preferences.set(strictness.rawValue, forKey: "pasteStrictness")
+        preferences.set(overrides.mapValues(\.rawValue), forKey: "pasteStrictnessOverrides")
+    }
+}
+
+struct PasteDestinationChoice {
+    let application: NSRunningApplication
+}
+
+/// Use the original release time, not the later completion of a payload read.
+struct PasteClickHandoff {
+    let mouseUpTimestamp: TimeInterval
+    let doubleClickInterval: TimeInterval
+    var isReleased: () -> Bool = { true }
+    var releaseAfter: TimeInterval { mouseUpTimestamp + max(0, doubleClickInterval) }
+}
 
 struct PasteDispatch {
     enum Method: String, Codable, Sendable { case menu, keyboard }
@@ -28,7 +72,8 @@ protocol PasteEnvironment: AnyObject {
     var ownProcessIdentifier: pid_t { get }
     func requestPermission()
     func captureTarget() -> PasteCoordinator.Target?
-    func destinationChoices() -> [PasteCoordinator.Target]
+    func destinationChoices() -> [PasteDestinationChoice]
+    func captureDestination(processIdentifier: pid_t) -> PasteCoordinator.Target?
     func isLauncherSurface(_ target: PasteCoordinator.Target) -> Bool
     func processIdentifier(of target: PasteCoordinator.Target) -> pid_t
     func isRunning(_ target: PasteCoordinator.Target) -> Bool
@@ -40,15 +85,20 @@ protocol PasteEnvironment: AnyObject {
     func focusState(for target: PasteCoordinator.Target) -> PasteFocusState
     var heldModifiers: PasteModifiers { get }
     var focusSettleInterval: TimeInterval { get }
+    var compatibleFocusSettleInterval: TimeInterval { get }
+    var hasPressedMouseButtons: Bool { get }
     func preparePaste(for target: PasteCoordinator.Target) -> PasteDispatch?
     func prepareCommandV() -> (() -> Void)?
     func waitForReadiness() async throws
 }
 
 extension PasteEnvironment {
-    func destinationChoices() -> [PasteCoordinator.Target] { [] }
+    func destinationChoices() -> [PasteDestinationChoice] { [] }
+    func captureDestination(processIdentifier: pid_t) -> PasteCoordinator.Target? { nil }
     func isLauncherSurface(_ target: PasteCoordinator.Target) -> Bool { false }
     var focusSettleInterval: TimeInterval { 0.08 }
+    var compatibleFocusSettleInterval: TimeInterval { 0.04 }
+    var hasPressedMouseButtons: Bool { NSEvent.pressedMouseButtons != 0 }
     func preparePaste(for target: PasteCoordinator.Target) -> PasteDispatch? {
         guard let send = prepareCommandV() else { return nil }
         return PasteDispatch(method: .keyboard, send: { send(); return true })
@@ -86,6 +136,7 @@ final class PasteSystemEnvironment: PasteEnvironment {
     private let workspaceCenter = NSWorkspace.shared.notificationCenter
 
     init() {
+        _ = AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.25)
         if let app = NSWorkspace.shared.frontmostApplication { targetHistory.activated(app.processIdentifier) }
         for name in [NSWorkspace.didActivateApplicationNotification, NSWorkspace.didDeactivateApplicationNotification] {
             observers.append(workspaceCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
@@ -123,25 +174,29 @@ final class PasteSystemEnvironment: PasteEnvironment {
         return target
     }
 
-    func destinationChoices() -> [PasteCoordinator.Target] {
+    func destinationChoices() -> [PasteDestinationChoice] {
         NSWorkspace.shared.runningApplications
             .filter { $0.activationPolicy == .regular && $0.processIdentifier != ownProcessIdentifier && !$0.isTerminated }
             .sorted { ($0.localizedName ?? "").localizedCaseInsensitiveCompare($1.localizedName ?? "") == .orderedAscending }
-            .compactMap { Self.snapshot($0.processIdentifier) }
-            .filter { $0.window != nil }
+            .map { PasteDestinationChoice(application: $0) }
     }
 
+    func captureDestination(processIdentifier: pid_t) -> PasteCoordinator.Target? { Self.snapshot(processIdentifier) }
+
     func isLauncherSurface(_ target: PasteCoordinator.Target) -> Bool {
-        let role = target.focusedElement.flatMap { Self.stringAttribute($0, kAXRoleAttribute) }
+        let query = PasteAXSession(pid: target.application.processIdentifier)
+        let role = target.focusedElement.flatMap { query.value($0, kAXRoleAttribute) as? String }
         return PasteLaunchPolicy.requiresDestinationChoice(bundleID: target.application.bundleIdentifier, focusedRole: role)
     }
 
     private static func snapshot(_ pid: pid_t) -> PasteCoordinator.Target? {
         guard let application = NSRunningApplication(processIdentifier: pid), !application.isTerminated else { return nil }
-        let app = AXUIElementCreateApplication(application.processIdentifier)
-        let input = Self.focusedElement(app: app, pid: pid)
-        return PasteCoordinator.Target(application: application, window: Self.attribute(app, kAXFocusedWindowAttribute),
-                                       focusedElement: input, selectedRange: input.flatMap(Self.selectedRange))
+        let query = PasteAXSession(pid: pid)
+        let app = PasteAXSession.application(pid)
+        let window = query.element(app, kAXFocusedWindowAttribute)
+        let input = Self.focusedElement(app: app, pid: pid, query: query)
+        return PasteCoordinator.Target(application: application, window: window,
+                                       focusedElement: input, selectedRange: input.flatMap { Self.selectedRange($0, query: query) })
     }
     func processIdentifier(of target: PasteCoordinator.Target) -> pid_t { target.application.processIdentifier }
     func isRunning(_ target: PasteCoordinator.Target) -> Bool { !target.application.isTerminated }
@@ -158,15 +213,17 @@ final class PasteSystemEnvironment: PasteEnvironment {
     }
     func raiseWindow(_ target: PasteCoordinator.Target) -> Bool {
         guard let window = target.window else { return false }
-        let app = AXUIElementCreateApplication(target.application.processIdentifier)
-        if let current = Self.attribute(app, kAXFocusedWindowAttribute), CFEqual(current, window) { return true }
-        return AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success
+        let query = PasteAXSession(pid: target.application.processIdentifier)
+        let app = PasteAXSession.application(target.application.processIdentifier)
+        if let current = query.element(app, kAXFocusedWindowAttribute), CFEqual(current, window) { return true }
+        return query.perform(on: window) { AXUIElementPerformAction(window, kAXRaiseAction as CFString) } == .success
     }
     func restoreFocusedElement(_ target: PasteCoordinator.Target) {
+        let query = PasteAXSession(pid: target.application.processIdentifier)
         if let element = target.focusedElement {
-            _ = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            _ = query.perform(on: element) { AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue) }
             if var range = target.selectedRange, let value = AXValueCreate(.cfRange, &range) {
-                _ = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value)
+                _ = query.perform(on: element) { AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value) }
             }
         }
     }
@@ -177,16 +234,17 @@ final class PasteSystemEnvironment: PasteEnvironment {
                                  bundleID: target.application.bundleIdentifier, hasTargetWindow: target.window != nil,
                                  hasInputElement: target.focusedElement != nil, state: traceState)
         }
-        let app = AXUIElementCreateApplication(target.application.processIdentifier)
-        guard let original = target.window, let current = Self.attribute(app, kAXFocusedWindowAttribute),
+        let query = PasteAXSession(pid: target.application.processIdentifier)
+        let app = PasteAXSession.application(target.application.processIdentifier)
+        guard let original = target.window, let current = query.element(app, kAXFocusedWindowAttribute),
               CFEqual(original, current) else { traceState = .differentWindow; return .differentWindow }
         if let original = target.focusedElement {
-            guard let current = Self.focusedElement(app: app, pid: target.application.processIdentifier), CFEqual(original, current) else {
+            guard let current = Self.focusedElement(app: app, pid: target.application.processIdentifier, query: query), CFEqual(original, current) else {
                 traceState = .differentElement
                 return .differentElement
             }
             if let expected = target.selectedRange {
-                guard let actual = Self.selectedRange(current), actual.location == expected.location, actual.length == expected.length else {
+                guard let actual = Self.selectedRange(current, query: query), actual.location == expected.location, actual.length == expected.length else {
                     traceState = .differentSelection
                     return .differentSelection
                 }
@@ -242,20 +300,18 @@ final class PasteSystemEnvironment: PasteEnvironment {
         return (down, up)
     }
     func waitForReadiness() async throws { try await Task.sleep(nanoseconds: 15_000_000) }
-    private static func focusedElement(app: AXUIElement, pid: pid_t) -> AXUIElement? {
+    private static func focusedElement(app: AXUIElement, pid: pid_t, query: PasteAXSession) -> AXUIElement? {
         // Some apps expose the current input only through system-wide focus.
         // Never borrow an element from another process as a destination.
-        for source in [app, AXUIElementCreateSystemWide()] {
-            guard let element = attribute(source, kAXFocusedUIElementAttribute) else { continue }
+        for source in [app, PasteAXSession.systemWide()] {
+            guard let element = query.element(source, kAXFocusedUIElementAttribute) else { continue }
             var actualPID: pid_t = 0
             if AXUIElementGetPid(element, &actualPID) == .success, actualPID == pid { return element }
         }
         return nil
     }
-    private static func selectedRange(_ element: AXUIElement) -> CFRange? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &value) == .success else { return nil }
-        return decodeSelectedRange(value)
+    private static func selectedRange(_ element: AXUIElement, query: PasteAXSession) -> CFRange? {
+        decodeSelectedRange(query.value(element, kAXSelectedTextRangeAttribute))
     }
     static func decodeSelectedRange(_ value: CFTypeRef?) -> CFRange? {
         guard let value, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
@@ -264,16 +320,5 @@ final class PasteSystemEnvironment: PasteEnvironment {
         guard AXValueGetType(axValue) == .cfRange, AXValueGetValue(axValue, .cfRange, &range),
               range.location >= 0, range.length >= 0, range.location <= Int.max - range.length else { return nil }
         return range
-    }
-    private static func attribute(_ element: AXUIElement, _ name: String) -> AXUIElement? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success,
-              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
-        return (value as! AXUIElement)
-    }
-    private static func stringAttribute(_ element: AXUIElement, _ name: String) -> String? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
-        return value as? String
     }
 }

@@ -3,15 +3,21 @@
 A free, open-source clipboard manager for macOS. The goal is the full Paste for
 Mac feature set and its smooth cross-app workflow.
 
-**Status (2026-10-10): basic functionality is usable according to the user's
-latest feedback; the workflow still falls short of Paste.** Cards now paste with
-one click. Local automated checks verified insertion and continued typing in
-Cursor's chat input and code editor; see the
+**Status (2026-10-12): first-stage candidate fixes are installed locally;
+physical-hotkey and mouse acceptance remains pending.** Earlier user feedback
+reported usable basic functionality, while the workflow still fell short of Paste.
+Cards support one-click paste. Earlier automated observations of insertion and
+continued typing in Cursor's chat input and code editor are recorded in the
 [single-click workflow record](docs/SINGLE_CLICK_WORKFLOW.zh-CN.md).
 The latest input-selection restoration changes and their verified scope are
 recorded in the [generic paste workflow record](docs/GENERIC_PASTE_WORKFLOW.zh-CN.md).
 Full Paste for Mac parity and broad daily-use acceptance remain incomplete.
 Earlier failed acceptance and its retrospective are preserved as history.
+The [2026-10-12 implementation record](docs/IMPROVEMENT_IMPLEMENTATION.zh-CN.md)
+tracks the first stage of the colleague's [improvement specification](docs/IMPROVEMENT_SPEC.zh-CN.md).
+It adds compatible/strict/copy-only modes, bounded AX queries, click handoff and
+session diagnostics. Physical-hotkey and mouse acceptance remains pending;
+local storage-coordination failures also reproduce on the unchanged baseline.
 An additional local diagnostic run is recorded in the
 [core-flow rerun](docs/CORE_FLOW_RERUN.zh-CN.md). A later user trace showed app
 launches capturing Finder as the paste destination. The focused local fixes and
@@ -42,6 +48,21 @@ input**. ⌘/Shift-click selects multiple items; dragging keeps its existing
 behavior. Direct paste requires Accessibility
 permission; without it, the app copies the selected content for manual pasting.
 
+**Settings… → Automatic paste mode** defaults to Compatible, which attempts to
+restore the original input without rejecting a changed AX object identity.
+Strict retains window/field/selection checks; Copy only never sends a paste.
+The most recently captured target app can have its own override. Each attempt
+keeps its original mode even if settings change while it is waiting.
+Mouse activation keeps the shelf visible for the remaining system double-click
+interval before returning to the target. Keyboard activation skips that wait.
+
+**Diagnostics…** shows Accessibility permission, actual registered shortcuts,
+registration failures, paste modes, physical footprint and the last 20 attempts
+in the current session. It excludes clipboard contents and does not treat command
+dispatch as proof of insertion. If the opening shortcut is occupied at startup,
+ClipShelf tries ⌃⇧V, ⌥⇧V and ⇧⌘Space and saves the first available binding.
+The menu warning reports the actual binding; notifications use existing permission.
+
 The shelf enters with a short upward motion and fade, while search and keyboard
 selection are available immediately. Reduce Motion skips the entrance animation.
 Escape dismisses the main shelf in one press, including while searching.
@@ -71,6 +92,13 @@ temporary library and disables clipboard recording. Adding `--validation-trace`
 prints structured focus/paste events to stderr without clipboard contents,
 window titles, file paths or credentials. These diagnostics are off by default;
 selecting Copy or Paste in validation mode still writes the system clipboard.
+
+`--diagnostic-trace` enables the same metadata-only trace for normal runs.
+Summarize stderr, including native warning lines, with:
+
+```sh
+python3 scripts/summarize-trace.py /path/to/trace.jsonl --output /path/to/summary.md
+```
 
 Quit an existing ClipShelf instance before switching to or from demo mode. The
 build script uses an ad-hoc signature unless `CODESIGN_IDENTITY` is provided;

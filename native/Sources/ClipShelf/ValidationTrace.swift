@@ -10,6 +10,7 @@ enum ValidationTrace {
         case destinationChoiceRequired = "destination_choice_required"
         case destinationSelected = "destination_selected"
         case invocation, reopen
+        case menuInvocation = "menu_invocation"
         case panelShown = "panel_shown", panelDismissed = "panel_dismissed"
         case panelEntranceStarted = "panel_entrance_started"
         case panelEntranceCompleted = "panel_entrance_completed"
@@ -17,8 +18,8 @@ enum ValidationTrace {
         case workspaceActivated = "workspace_activated", workspaceHidesPanel = "workspace_hides_panel"
         case outsideClick = "outside_click", interactionCancelled = "interaction_cancelled"
         case pastePointerChange = "paste_pointer_change"
-        case pasteClickShieldArmed = "paste_click_shield_armed"
-        case pasteClickShieldCaptured = "paste_click_shield_captured"
+        case pasteClickHandoffWaiting = "paste_click_handoff_waiting"
+        case axTimeout = "ax_timeout"
         case targetCaptured = "target_captured", pastePrepared = "paste_prepared"
         case focusChecked = "focus_checked", pasteDispatch = "paste_dispatch"
         case pasteCompleted = "paste_completed", pasteCancelledByActivation = "paste_cancelled_by_activation"
@@ -41,6 +42,7 @@ enum ValidationTrace {
         case deadline, waitCancelled = "wait_cancelled", explicitCancellation = "explicit_cancellation"
         case finalReadinessChanged = "final_readiness_changed"
         case pointerChanged = "pointer_changed"
+        case copyOnlyMode = "copy_only_mode", mouseReleaseDeadline = "mouse_release_deadline"
     }
 
     private struct Entry: Encodable {
@@ -57,6 +59,9 @@ enum ValidationTrace {
         let method: PasteDispatch.Method?
         let mouseClickCount: Int?
         let mouseDeltaMS: Double?
+        let attemptID: String?
+        let elapsedMS: Double?
+        let strictness: PasteStrictness?
     }
 
     static let enabled = isEnabled(arguments: CommandLine.arguments)
@@ -72,12 +77,14 @@ enum ValidationTrace {
                             hasInputElement: Bool? = nil, state: State? = nil,
                             failure: Failure? = nil, status: Int32? = nil, shortcut: Shortcut? = nil,
                             method: PasteDispatch.Method? = nil, mouseClickCount: Int? = nil,
-                            mouseDeltaMS: Double? = nil) -> Data? {
-        guard timestamp.isFinite, mouseDeltaMS?.isFinite != false else { return nil }
+                            mouseDeltaMS: Double? = nil, attemptID: String? = nil,
+                            elapsedMS: Double? = nil, strictness: PasteStrictness? = nil) -> Data? {
+        guard timestamp.isFinite, mouseDeltaMS?.isFinite != false, elapsedMS?.isFinite != false else { return nil }
         let entry = Entry(timestamp: timestamp, event: event, pid: pid, bundleID: bundleID,
                           hasTargetWindow: hasTargetWindow, hasInputElement: hasInputElement,
                           state: state, failure: failure, status: status, shortcut: shortcut, method: method,
-                          mouseClickCount: mouseClickCount, mouseDeltaMS: mouseDeltaMS)
+                          mouseClickCount: mouseClickCount, mouseDeltaMS: mouseDeltaMS,
+                          attemptID: attemptID, elapsedMS: elapsedMS, strictness: strictness)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         guard var data = try? encoder.encode(entry) else { return nil }
@@ -88,11 +95,13 @@ enum ValidationTrace {
     static func emit(_ event: Event, pid: Int32? = nil, bundleID: String? = nil,
                      hasTargetWindow: Bool? = nil, hasInputElement: Bool? = nil,
                      state: State? = nil, failure: Failure? = nil, status: Int32? = nil, shortcut: Shortcut? = nil,
-                     method: PasteDispatch.Method? = nil, mouseClickCount: Int? = nil, mouseDeltaMS: Double? = nil) {
+                     method: PasteDispatch.Method? = nil, mouseClickCount: Int? = nil, mouseDeltaMS: Double? = nil,
+                     attemptID: String? = nil, elapsedMS: Double? = nil, strictness: PasteStrictness? = nil) {
         guard enabled, let data = encodedLine(event: event, timestamp: Date().timeIntervalSince1970,
             pid: pid, bundleID: bundleID, hasTargetWindow: hasTargetWindow,
             hasInputElement: hasInputElement, state: state, failure: failure, status: status, shortcut: shortcut, method: method,
-            mouseClickCount: mouseClickCount, mouseDeltaMS: mouseDeltaMS) else { return }
+            mouseClickCount: mouseClickCount, mouseDeltaMS: mouseDeltaMS,
+            attemptID: attemptID, elapsedMS: elapsedMS, strictness: strictness) else { return }
         try? FileHandle.standardError.write(contentsOf: data)
     }
 }
