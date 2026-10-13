@@ -185,6 +185,14 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             storageSettings?.requestRecovery()
             storageSettings?.requestAutomaticReclamation()
             reload()
+            if let store {
+                // Resolve recent source app icons in the background before the first open.
+                Task.detached(priority: .utility) {
+                    guard let recent = try? store.searchMetadata(HistoryQuery(limit: 300)) else { return }
+                    let bundleIDs = recent.compactMap(\.sourceBundleID)
+                    await MainActor.run { ClipboardCardView.prewarmSourceIcons(bundleIDs) }
+                }
+            }
         } catch {
             statusMessage = L10n.text("无法打开历史数据库，记录已停止。")
         }
@@ -271,6 +279,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         }
         ingestion.onSaved = { [weak self] input, retained in
             guard let self, !self.isTerminating, let stored = retained.records.first else { return }
+            if let bundleID = stored.sourceBundleID { ClipboardCardView.prewarmSourceIcons([bundleID]) }
             // An earlier capture must never enter a newly started Stack session.
             self.panel.didRecapture(stored)
             self.stack.appendCaptured(stored, lease: retained.lease, capturedIn: input.stackSessionID)
@@ -327,65 +336,91 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
 
     private func configureMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "clipboard", accessibilityDescription: L10n.text("ClipShelf 剪贴板"))
+        statusItem.button?.image = Self.statusGlyph
         let menu = NSMenu()
         menu.autoenablesItems = !validation
         let title = NSMenuItem(title: validation ? L10n.text("ClipShelf · 隔离验收") : (profile.isReleaseDistribution ? "ClipShelf" : L10n.text("ClipShelf · 开发预览")), action: nil, keyEquivalent: "")
+        title.attributedTitle = NSAttributedString(string: title.title, attributes: [.font: NSFont.boldSystemFont(ofSize: 13)])
+        title.image = Self.menuAppIcon
         menu.addItem(title)
         stateItem = NSMenuItem(title: L10n.text("记录已暂停"), action: nil, keyEquivalent: "")
         menu.addItem(stateItem)
         menu.addItem(.separator())
-        activationItem = item(L10n.text("打开剪贴板    \(shortcutConfiguration.activation.displayName)"), #selector(openFromMenu))
+
+        activationItem = item(L10n.text("打开剪贴板"), #selector(openFromMenu), symbol: "list.clipboard")
         menu.addItem(activationItem)
-        recordingItem = item(L10n.text("开始记录"), #selector(toggleRecording))
+        stackActivationItem = item(L10n.text("顺序粘贴 Stack"), #selector(toggleStackFromMenu), symbol: "square.stack.3d.up")
+        menu.addItem(stackActivationItem)
+        menu.addItem(item(L10n.text("新建文本…"), #selector(newText), symbol: "square.and.pencil"))
+        menu.addItem(.separator())
+
+        recordingItem = item(L10n.text("开始记录"), #selector(toggleRecording), symbol: "record.circle")
         menu.addItem(recordingItem)
-        retryCaptureItem = item(L10n.text("重试保存并继续记录"), #selector(retryCapturedContents))
-        menu.addItem(retryCaptureItem)
-        discardCaptureItem = item(L10n.text("丢弃未保存的内容…"), #selector(discardCapturedContents))
-        menu.addItem(discardCaptureItem)
-        permissionItem = item(L10n.text("开启直接粘贴…"), #selector(enableDirectPaste))
-        menu.addItem(permissionItem)
-        menu.addItem(item(L10n.text("排除应用…"), #selector(editExclusions)))
         let pauseMenuItem = NSMenuItem(title: L10n.text("定时暂停"), action: nil, keyEquivalent: "")
+        pauseMenuItem.image = Self.menuSymbol("timer")
         let pauseMenu = NSMenu()
         for (label, minutes) in [(L10n.text("暂停 5 分钟"), 5), (L10n.text("暂停 30 分钟"), 30), (L10n.text("暂停 1 小时"), 60)] {
             let action = item(label, #selector(pauseFor(_:))); action.tag = minutes; pauseMenu.addItem(action)
         }
         pauseMenuItem.submenu = pauseMenu; menu.addItem(pauseMenuItem)
-        stackActivationItem = item(L10n.text("顺序粘贴 Stack    \(shortcutConfiguration.stack.displayName)"), #selector(toggleStack))
-        menu.addItem(stackActivationItem)
+        retryCaptureItem = item(L10n.text("重试保存并继续记录"), #selector(retryCapturedContents), symbol: "arrow.clockwise")
+        menu.addItem(retryCaptureItem)
+        discardCaptureItem = item(L10n.text("丢弃未保存的内容…"), #selector(discardCapturedContents), symbol: "trash")
+        menu.addItem(discardCaptureItem)
+        permissionItem = item(L10n.text("开启直接粘贴…"), #selector(enableDirectPaste), symbol: "hand.raised")
+        menu.addItem(permissionItem)
         menu.addItem(.separator())
-        menu.addItem(item(L10n.text("新建文本…"), #selector(newText)))
-        menu.addItem(item(L10n.text("从 iPhone 或 iPad 导入…"), #selector(importFromCamera)))
-        menu.addItem(item(L10n.text("系统分享收件箱…"), #selector(checkShareInbox)))
-        menu.addItem(item(L10n.text("允许快捷指令访问…"), #selector(configureShortcuts)))
-        menu.addItem(item(L10n.text("导出备份…"), #selector(exportBackup)))
-        menu.addItem(item(L10n.text("恢复备份…"), #selector(restoreBackup)))
+
+        let history = NSMenu()
         let retentionRoot = NSMenuItem(title: L10n.text("历史保留期限"), action: nil, keyEquivalent: "")
+        retentionRoot.image = Self.menuSymbol("calendar.badge.clock")
         let retentionMenu = NSMenu()
         self.retentionMenu = retentionMenu
         for (label, days) in [(L10n.text("1 天"), 1), (L10n.text("1 周"), 7), (L10n.text("1 月"), 30), (L10n.text("1 年"), 365), (L10n.text("永久"), 0)] {
             let entry = item(label, #selector(changeRetention(_:))); entry.tag = days; retentionMenu.addItem(entry)
         }
-        retentionRoot.submenu = retentionMenu; menu.addItem(retentionRoot)
-        menu.addItem(item(L10n.text("清空历史…"), #selector(clearHistory)))
-        menu.addItem(item(L10n.text("存储管理…"), #selector(showStorageSettings)))
-        menu.addItem(item(L10n.text("打开数据文件夹"), #selector(revealData)))
-        menu.addItem(item(L10n.text("登录时启动…"), #selector(toggleLoginItem)))
-        menu.addItem(item(L10n.text("设置…"), #selector(showSettings)))
-        menu.addItem(item(L10n.text("诊断…"), #selector(showDiagnostics)))
-        menu.addItem(item(L10n.text("语言 / Language…"), #selector(showLanguageSettings)))
-        menu.addItem(item(L10n.text("MCP 与 AI 工具…"), #selector(showMCPSettings)))
-        menu.addItem(item(L10n.text("智能建议…"), #selector(showSuggestions)))
-        menu.addItem(item(L10n.text("iCloud 同步…"), #selector(showCloudSettings)))
-        menu.addItem(item(L10n.text("共享板…"), #selector(showSharingSettings)))
-        let checkUpdate = item(L10n.text("检查更新…"), #selector(checkAppUpdates))
-        menu.addItem(checkUpdate); updateCheckItems.append(checkUpdate)
-        menu.addItem(item(L10n.text("更新设置…"), #selector(showUpdateSettings)))
+        retentionRoot.submenu = retentionMenu
+        history.addItem(retentionRoot)
+        history.addItem(item(L10n.text("排除应用…"), #selector(editExclusions), symbol: "nosign"))
+        history.addItem(item(L10n.text("存储管理…"), #selector(showStorageSettings), symbol: "internaldrive"))
+        history.addItem(.separator())
+        history.addItem(item(L10n.text("导出备份…"), #selector(exportBackup), symbol: "square.and.arrow.up"))
+        history.addItem(item(L10n.text("恢复备份…"), #selector(restoreBackup), symbol: "square.and.arrow.down"))
+        history.addItem(item(L10n.text("打开数据文件夹"), #selector(revealData), symbol: "folder"))
+        history.addItem(.separator())
+        history.addItem(item(L10n.text("清空历史…"), #selector(clearHistory), symbol: "trash"))
+        menu.addItem(submenuItem(L10n.text("历史与数据"), symbol: "clock.arrow.circlepath", history))
+
+        let connections = NSMenu()
+        connections.addItem(item(L10n.text("iCloud 同步…"), #selector(showCloudSettings), symbol: "icloud"))
+        connections.addItem(item(L10n.text("共享板…"), #selector(showSharingSettings), symbol: "person.2"))
+        connections.addItem(.separator())
+        connections.addItem(item(L10n.text("从 iPhone 或 iPad 导入…"), #selector(importFromCamera), symbol: "iphone"))
+        connections.addItem(item(L10n.text("系统分享收件箱…"), #selector(checkShareInbox), symbol: "tray.and.arrow.down"))
+        connections.addItem(item(L10n.text("允许快捷指令访问…"), #selector(configureShortcuts), symbol: "square.2.layers.3d"))
+        connections.addItem(.separator())
+        connections.addItem(item(L10n.text("MCP 与 AI 工具…"), #selector(showMCPSettings), symbol: "point.3.connected.trianglepath.dotted"))
+        connections.addItem(item(L10n.text("智能建议…"), #selector(showSuggestions), symbol: "sparkles"))
+        menu.addItem(submenuItem(L10n.text("连接与同步"), symbol: "arrow.triangle.2.circlepath", connections))
         menu.addItem(.separator())
-        let quit = item(L10n.text("退出 ClipShelf"), #selector(quitApplication))
+
+        let settings = item(L10n.text("设置…"), #selector(showSettings), symbol: "gearshape")
+        settings.keyEquivalent = ","
+        menu.addItem(settings)
+        menu.addItem(item(L10n.text("登录时启动…"), #selector(toggleLoginItem), symbol: "power"))
+        let help = NSMenu()
+        help.addItem(item(L10n.text("诊断…"), #selector(showDiagnostics), symbol: "stethoscope"))
+        help.addItem(item(L10n.text("语言 / Language…"), #selector(showLanguageSettings), symbol: "globe"))
+        help.addItem(.separator())
+        let checkUpdate = item(L10n.text("检查更新…"), #selector(checkAppUpdates), symbol: "arrow.down.circle")
+        help.addItem(checkUpdate); updateCheckItems.append(checkUpdate)
+        help.addItem(item(L10n.text("更新设置…"), #selector(showUpdateSettings), symbol: "slider.horizontal.3"))
+        menu.addItem(submenuItem(L10n.text("帮助与更新"), symbol: "questionmark.circle", help))
+        menu.addItem(.separator())
+        let quit = item(L10n.text("退出 ClipShelf"), #selector(quitApplication), symbol: "xmark.circle")
         quit.keyEquivalent = "q"
         menu.addItem(quit)
+        applyMenuShortcuts()
         statusItem.menu = menu
 
         let main = NSMenu()
@@ -773,6 +808,64 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         processShareInbox(retryUncertain: choice == .alertThirdButtonReturn, userInitiated: true)
     }
 
+    private func item(_ title: String, _ action: Selector, symbol: String) -> NSMenuItem {
+        let entry = item(title, action)
+        entry.image = Self.menuSymbol(symbol)
+        return entry
+    }
+
+    private func submenuItem(_ title: String, symbol: String, _ submenu: NSMenu) -> NSMenuItem {
+        let entry = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        entry.image = Self.menuSymbol(symbol)
+        entry.submenu = submenu
+        return entry
+    }
+
+    private static func menuSymbol(_ name: String) -> NSImage? {
+        NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
+    }
+
+    /// Built once: refresh() runs often and must not redraw the menu bar glyph each time.
+    private static let statusGlyph = StatusBarIcon.image(accessibilityDescription: L10n.text("ClipShelf 剪贴板"))
+
+    private static var menuAppIcon: NSImage? {
+        guard let icon = NSApp.applicationIconImage?.copy() as? NSImage else { return nil }
+        icon.size = NSSize(width: 18, height: 18)
+        return icon
+    }
+
+    /// Recording state reads at a glance: a green dot while capturing, grey while paused.
+    private static func statusDot(active: Bool) -> NSImage? {
+        let colour: NSColor = active ? .systemGreen : .tertiaryLabelColor
+        return NSImage(systemSymbolName: "circle.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 8, weight: .regular).applying(.init(paletteColors: [colour])))
+    }
+
+    /// Show the live global shortcuts as native right-aligned key equivalents.
+    /// Keys without a menu character keep the shortcut in the title instead.
+    private func applyMenuShortcuts() {
+        for (entry, title, chord) in [(activationItem, L10n.text("打开剪贴板"), shortcutConfiguration.activation),
+                                      (stackActivationItem, L10n.text("顺序粘贴 Stack"), shortcutConfiguration.stack)] {
+            guard let entry else { continue }
+            if let key = Self.menuKeyEquivalent(for: chord) {
+                entry.title = title
+                entry.keyEquivalent = key
+                entry.keyEquivalentModifierMask = chord.modifiers
+            } else {
+                entry.title = "\(title)    \(chord.displayName)"
+                entry.keyEquivalent = ""
+            }
+        }
+    }
+
+    private static func menuKeyEquivalent(for chord: ShortcutChord) -> String? {
+        if chord.keyCode == UInt16(kVK_Space) { return " " }
+        guard chord.isPrintableKey,
+              let character = ShortcutKeyboardLayout.currentTranslator()(chord.keyCode, []), character.count == 1 else { return nil }
+        return character.lowercased()
+    }
+
     private func item(_ title: String, _ action: Selector) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
@@ -987,6 +1080,8 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         appUpdates?.refreshAvailability()
         stateItem?.title = demo ? L10n.text("演示模式 · 记录关闭") : (capture.isRunning ? L10n.text("正在记录") : L10n.text("记录已暂停"))
         recordingItem?.title = capture.isRunning ? L10n.text("暂停记录") : L10n.text("开始记录")
+        stateItem?.image = Self.statusDot(active: !demo && capture.isRunning)
+        recordingItem?.image = Self.menuSymbol(capture.isRunning ? "pause.circle" : "record.circle")
         recordingItem?.isEnabled = !demo && !validation && store != nil
         let pendingCaptures = captureIngestion?.pendingCount ?? 0
         retryCaptureItem?.isHidden = captureIngestion?.hasFailure != true
@@ -995,11 +1090,14 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         discardCaptureItem?.isEnabled = interactionLifecycle.isAllowed
         permissionItem?.isEnabled = !demo
         permissionItem?.title = paste.hasPermission ? L10n.text("检查直接粘贴权限…") : L10n.text("开启直接粘贴…")
+        // Once granted, the permission check lives in Diagnostics; keep the menu short.
+        permissionItem?.isHidden = paste.hasPermission
         statusItem?.button?.toolTip = shortcutRegistrationMessage ?? "ClipShelf · \(capture.isRunning ? L10n.text("记录中") : L10n.text("已暂停"))"
-        statusItem?.button?.image = NSImage(systemSymbolName: shortcutRegistrationMessage == nil ? "clipboard" : "exclamationmark.triangle",
-                                          accessibilityDescription: L10n.text("ClipShelf 剪贴板"))
-        activationItem?.title = L10n.text("打开剪贴板    \(shortcutConfiguration.activation.displayName)")
-        stackActivationItem?.title = L10n.text("顺序粘贴 Stack    \(shortcutConfiguration.stack.displayName)")
+        // Keep the app's own glyph; only a shortcut problem swaps in a warning symbol.
+        statusItem?.button?.image = shortcutRegistrationMessage == nil
+            ? Self.statusGlyph
+            : NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: L10n.text("ClipShelf 剪贴板"))
+        applyMenuShortcuts()
         for entry in retentionMenu?.items ?? [] {
             entry.state = entry.tag == preferences.integer(forKey: "retentionDays") ? .on : .off
         }
@@ -1016,8 +1114,22 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     }
 
     @objc private func openFromMenu() {
+        // The item shows the live global shortcut. Pressing it while the menu is
+        // open also fires the hot key; acting twice would open and close the shelf.
+        guard !menuKeyEquivalentDuplicatesHotKey(.activation) else { return }
         ValidationTrace.emit(.menuInvocation, state: .requested)
         togglePanel()
+    }
+
+    @objc private func toggleStackFromMenu() {
+        guard !menuKeyEquivalentDuplicatesHotKey(.stack) else { return }
+        toggleStack()
+    }
+
+    private func menuKeyEquivalentDuplicatesHotKey(_ action: GlobalShortcutAction) -> Bool {
+        guard NSApp.currentEvent?.type == .keyDown else { return false }
+        let chord = action == .activation ? shortcutConfiguration.activation : shortcutConfiguration.stack
+        return globalShortcuts.activeBindings[action] == chord
     }
 
     private func togglePanel(forApplicationLaunch: Bool = false) {
