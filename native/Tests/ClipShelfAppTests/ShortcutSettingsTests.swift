@@ -173,18 +173,28 @@ final class ShortcutSettingsTests: XCTestCase {
         XCTAssertTrue(h.controller.draftAlwaysPlainText)
     }
 
-    @MainActor func testControlsLayoutFitsUnshownContentBounds() throws {
+    @MainActor func testControlsFitTheirContainerAndCanScrollIntoView() throws {
         let h = ShortcutSettingsHarness(); defer { h.close() }
         h.controller.show(configuration: .defaults, alwaysPlainText: false)
         let content = try XCTUnwrap(h.window.contentView)
+        let scroll = try XCTUnwrap(h.views(NSScrollView.self).first)
+        let document = try XCTUnwrap(scroll.documentView)
         content.layoutSubtreeIfNeeded()
         for button in h.views(NSButton.self) {
-            let rect = button.convert(button.bounds, to: content)
+            // The settings body deliberately scrolls. Controls must fit the
+            // document and be reachable, rather than all being visible at once.
+            let container = button.isDescendant(of: document) ? document : content
+            let rect = button.convert(button.bounds, to: container)
             XCTAssertGreaterThan(rect.width, 0, button.title)
             XCTAssertGreaterThanOrEqual(rect.minX, -1, button.title)
-            XCTAssertLessThanOrEqual(rect.maxX, content.bounds.maxX + 1, button.title)
+            XCTAssertLessThanOrEqual(rect.maxX, container.bounds.maxX + 1, button.title)
             XCTAssertGreaterThanOrEqual(rect.minY, -1, button.title)
-            XCTAssertLessThanOrEqual(rect.maxY, content.bounds.maxY + 1, button.title)
+            XCTAssertLessThanOrEqual(rect.maxY, container.bounds.maxY + 1, button.title)
+            if container === document {
+                button.scrollToVisible(button.bounds)
+                let visible = scroll.contentView.convert(scroll.contentView.bounds, to: content)
+                XCTAssertTrue(visible.insetBy(dx: -1, dy: -1).contains(button.convert(button.bounds, to: content)), button.title)
+            }
         }
     }
     @MainActor func testSmallWindowKeepsActionsAndErrorsVisibleWhileBodyScrolls() throws {

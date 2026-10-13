@@ -68,7 +68,9 @@ private struct StorageSpacePendingState: Codable {
     var preserved: Set<String>
 }
 
-enum StorageSpaceCheckpoint: String, Sendable { case claimCreated, indexStagingCreated, replacementPublished }
+enum StorageSpaceCheckpoint: String, Sendable {
+    case registryLockStaged, registryLockPublished, claimCreated, indexStagingCreated, replacementPublished
+}
 
 /// Coordinates participating processes' pending write budgets. It does not allocate or physically
 /// reserve disk blocks, and it does not impose a total library quota. All participants must use the
@@ -491,16 +493,7 @@ public final class StorageSpaceCoordinator: @unchecked Sendable {
         let parentIdentity = StorageSpaceNode(try StorageSpaceFiles.info(parent))
         if let knownParent, knownParent.0 != parentURL || knownParent.1 != parentIdentity { throw StorageWriteFailure.coordinationUnavailable }
         let name = directory.lastPathComponent, lockName = name + ".lock"
-        var created = false
-        // The creator must own the registry lock before another participant can
-        // observe the newly created, not-yet-initialized header.
-        var descriptor = openat(parent, lockName, O_RDWR | O_CREAT | O_EXCL | O_EXLOCK | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        if descriptor >= 0 { created = true }
-        else {
-            guard errno == EEXIST else { throw StorageSpaceFiles.posixFailure() }
-            descriptor = openat(parent, lockName, O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
-        }
-        guard descriptor >= 0 else { throw StorageWriteFailure.coordinationUnavailable }
+        let (descriptor, created) = try openRegistryLock(in: parent, name: lockName)
         defer { Darwin.close(descriptor) }
         let lockIdentity = try StorageSpaceFiles.privateNode(descriptor, directory: false)
         try StorageSpaceFiles.lock(descriptor)
@@ -602,6 +595,41 @@ public final class StorageSpaceCoordinator: @unchecked Sendable {
             throw StorageWriteFailure.coordinationUnavailable
         }
         return result
+    }
+
+    /// O_EXLOCK is acquired after the new pathname becomes visible on macOS.
+    /// Publish an already locked inode with an exclusive rename instead, so a
+    /// second participant can never win the lock and read an unfinished header.
+    private func openRegistryLock(in parent: Int32, name: String) throws -> (Int32, Bool) {
+        let flags = O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
+        let existing = openat(parent, name, flags)
+        if existing >= 0 { return (existing, false) }
+        guard errno == ENOENT else { throw StorageWriteFailure.coordinationUnavailable }
+
+        let staging = name + ".staged-" + UUID().uuidString
+        let descriptor = openat(parent, staging, O_RDWR | O_CREAT | O_EXCL | O_EXLOCK | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw StorageSpaceFiles.posixFailure() }
+        var transferred = false
+        defer { if !transferred { Darwin.close(descriptor) } }
+        let identity = try StorageSpaceFiles.privateNode(descriptor, directory: false)
+        defer {
+            if StorageSpaceFiles.matches(identity, name: staging, directory: parent) {
+                _ = unlinkat(parent, staging, 0)
+            }
+        }
+        checkpoint?(.registryLockStaged)
+        guard StorageSpaceFiles.matches(identity, name: staging, directory: parent) else {
+            throw StorageWriteFailure.coordinationUnavailable
+        }
+        if renameatx_np(parent, staging, parent, name, UInt32(RENAME_EXCL)) == 0 {
+            transferred = true
+            checkpoint?(.registryLockPublished)
+            return (descriptor, true)
+        }
+        guard errno == EEXIST else { throw StorageSpaceFiles.posixFailure() }
+        let winner = openat(parent, name, flags)
+        guard winner >= 0 else { throw StorageWriteFailure.coordinationUnavailable }
+        return (winner, false)
     }
 
     /// Upgrade only an empty, quiescent legacy registry whose complete object

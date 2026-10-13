@@ -20,14 +20,16 @@ session diagnostics. Physical-hotkey and mouse acceptance remains pending;
 local storage-coordination failures also reproduce on the unchanged baseline.
 The [2026-10-13 follow-up](docs/IMPROVEMENT_FOLLOWUP.zh-CN.md) fixes those storage
 issues, image-promise completion ordering and the remaining compatible-mode
-AX-window requirement. Native tests now pass (1,411, one unavailable-model skip),
-with no added/deleted ClipShelf preference files; physical acceptance remains pending.
+AX-window requirement. Its 1,411-test result is a historical checkpoint;
+the subsequent full CI run exposed a remaining cold-initialization race and an
+incorrect scroll-layout assertion.
 The [latest receiver acceptance record](docs/PASTE_ACCEPTANCE_2026-10-13.zh-CN.md)
 documents real TextEdit/Cursor observations, final-build Safari insertion and
 selection checks, and the remaining gates after the Mac locked again. It also
 fixes explicit-destination handoff and avoids rewriting an already-correct AX
-caret. The latest patch passed 112 focused tests; earlier full-suite counts do
-not represent a full-suite run of this patch.
+caret. After repairing the CI findings, the current source passed the local full
+suite (1,418 tests, zero failures, one unavailable-model skip), with no added or
+deleted ClipShelf preference files. Full receiver acceptance remains pending.
 An additional local diagnostic run is recorded in the
 [core-flow rerun](docs/CORE_FLOW_RERUN.zh-CN.md). A later user trace showed app
 launches capturing Finder as the paste destination. The focused local fixes and

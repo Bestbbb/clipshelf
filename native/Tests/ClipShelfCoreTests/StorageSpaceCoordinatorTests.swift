@@ -473,6 +473,85 @@ final class StorageSpaceCoordinatorTests: XCTestCase {
         }
     }
 
+    func testDelayedLockPublisherUsesWinningRegistryWithoutReplacingIt() throws {
+        let staged = DispatchSemaphore(value: 0), publish = DispatchSemaphore(value: 0)
+        let finished = DispatchGroup(), results = StorageBudgetRaceResults()
+        let provider = capacity!, request = requirement(70)
+        let delayed = try StorageSpaceCoordinator(directory: registry, capacityProvider: { try provider.read($0) },
+            checkpoint: { stage in
+                if stage == .registryLockStaged {
+                    staged.signal()
+                    _ = publish.wait(timeout: .now() + 10)
+                }
+            })
+        finished.enter()
+        DispatchQueue.global().async {
+            results.accept(Result { try delayed.reserve([request]) })
+            finished.leave()
+        }
+        defer { publish.signal() }
+        XCTAssertEqual(staged.wait(timeout: .now() + 5), .success)
+        // A private staged inode is not yet the registry lock. This participant
+        // may create the registry; the delayed publisher must adopt that winner.
+        let winner = try coordinator().reserve([request])
+        defer { try? winner.release() }
+        let lockURL = root.appendingPathComponent("budgets.lock")
+        let descriptor = Darwin.open(lockURL.path, O_RDONLY | O_NOFOLLOW)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        guard descriptor >= 0 else { return }
+        defer { Darwin.close(descriptor) }
+        let identity = try StorageSpaceFiles.privateNode(descriptor, directory: false)
+        publish.signal()
+        XCTAssertEqual(finished.wait(timeout: .now() + 5), .success)
+        let (leases, failures) = results.snapshot
+        XCTAssertTrue(leases.isEmpty)
+        XCTAssertEqual(failures, [.insufficientSpace(requiredBytes: 140, availableBytes: 100)])
+        let parent = try StorageSpaceFiles.openDirectory(StorageSpaceFiles.canonicalDirectory(root))
+        defer { Darwin.close(parent) }
+        XCTAssertTrue(StorageSpaceFiles.matches(identity, name: "budgets.lock", directory: parent))
+        XCTAssertFalse(try StorageSpaceFiles.names(parent).contains { $0.hasPrefix("budgets.lock.staged-") })
+    }
+
+    func testPublishedLockBlocksReadersUntilHeaderInitializationCompletes() throws {
+        let published = DispatchSemaphore(value: 0), initialize = DispatchSemaphore(value: 0)
+        let finished = DispatchGroup(), results = StorageBudgetRaceResults()
+        let provider = capacity!, request = requirement(70)
+        let creator = try StorageSpaceCoordinator(directory: registry, capacityProvider: { try provider.read($0) },
+            checkpoint: { stage in
+                if stage == .registryLockPublished {
+                    published.signal()
+                    _ = initialize.wait(timeout: .now() + 10)
+                }
+            })
+        finished.enter()
+        DispatchQueue.global().async {
+            results.accept(Result { try creator.reserve([request]) })
+            finished.leave()
+        }
+        defer { initialize.signal() }
+        XCTAssertEqual(published.wait(timeout: .now() + 5), .success)
+        let descriptor = Darwin.open(root.appendingPathComponent("budgets.lock").path, O_RDWR | O_NOFOLLOW)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        guard descriptor >= 0 else { return }
+        defer { Darwin.close(descriptor) }
+        XCTAssertNotEqual(flock(descriptor, LOCK_EX | LOCK_NB), 0)
+        XCTAssertEqual(errno, EWOULDBLOCK)
+        XCTAssertEqual(try StorageSpaceFiles.info(descriptor).st_size, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: registry.path))
+        let follower = try coordinator()
+        finished.enter()
+        DispatchQueue.global().async {
+            results.accept(Result { try follower.reserve([request]) })
+            finished.leave()
+        }
+        initialize.signal()
+        XCTAssertEqual(finished.wait(timeout: .now() + 5), .success)
+        let (leases, failures) = results.snapshot
+        XCTAssertEqual(leases.count, 1)
+        XCTAssertEqual(failures, [.insufficientSpace(requiredBytes: 140, availableBytes: 100)])
+        for lease in leases { try lease.release() }
+    }
+
     func testIndependentProcessClaimBlocksReservationUntilKernelReleasesLockAfterCrash() throws {
         let child = try startHelper(stage: "reserved", registry: registry)
         defer { stopHelper(child) }
