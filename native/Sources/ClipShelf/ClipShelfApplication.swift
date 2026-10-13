@@ -488,6 +488,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                                            available: self.paste.canPaste(to: selected))
             ValidationTrace.emit(.destinationSelected, pid: pid, bundleID: selected.application.bundleIdentifier, state: .captured)
             self.setStatus(L10n.text("单击粘贴；⌘/Shift 单击多选；回车粘贴，Shift 回车以纯文本粘贴。"))
+            // An explicit receiver can differ from the launcher/frontmost app.
+            // Make the chooser's app own this interaction before a paste starts;
+            // the coordinator still rejects unrelated foreground changes.
+            // The receiver snapshot above must precede activation of ClipShelf.
+            NSApp.activate(ignoringOtherApps: true)
         }
         panel.onDismiss = { [weak self] in
             ValidationTrace.emit(.panelDismissed, state: .hidden)
@@ -1034,7 +1039,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         }
         target = paste.captureTarget(forApplicationLaunch: forApplicationLaunch)
         requiresPasteDestinationChoice = forApplicationLaunch && target == nil && paste.hasPermission
-        pasteDestinationChoices = requiresPasteDestinationChoice ? paste.destinationChoices() : []
+        pasteDestinationChoices = (requiresPasteDestinationChoice || profile.showsValidationDestinationPicker) ? paste.destinationChoices() : []
         if pasteDestinationChoices.isEmpty { requiresPasteDestinationChoice = false }
         panel.setPasteDestinations(pasteDestinationChoices.map { ($0.application.processIdentifier, $0.application.localizedName ?? "ClipShelf") },
                                    selectedPID: target?.application.processIdentifier)

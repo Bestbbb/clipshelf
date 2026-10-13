@@ -195,8 +195,14 @@ final class PasteSystemEnvironment: PasteEnvironment {
         let app = PasteAXSession.application(pid)
         let window = query.element(app, kAXFocusedWindowAttribute)
         let input = Self.focusedElement(app: app, pid: pid, query: query)
+        // A background AX range is not an authoritative native caret snapshot.
+        // In particular, rewriting a WebKit range after activating its app can
+        // move the caret. Keep the input's native selection when choosing an
+        // inactive receiver; only freeze a range observed while it is active.
+        var range = application.isActive ? input.flatMap { Self.selectedRange($0, query: query) } : nil
+        if !application.isActive { range = nil }
         return PasteCoordinator.Target(application: application, window: window,
-                                       focusedElement: input, selectedRange: input.flatMap { Self.selectedRange($0, query: query) })
+                                       focusedElement: input, selectedRange: range)
     }
     func processIdentifier(of target: PasteCoordinator.Target) -> pid_t { target.application.processIdentifier }
     func isRunning(_ target: PasteCoordinator.Target) -> Bool { !target.application.isTerminated }
@@ -207,9 +213,11 @@ final class PasteSystemEnvironment: PasteEnvironment {
         return pid == ownProcessIdentifier ? .clipShelf : .other
     }
     func activate(_ target: PasteCoordinator.Target) -> Bool {
-        // Re-activating an already active custom editor can reset its internal
-        // input state even though its AX window identity remains unchanged.
-        foreground(for: target) == .target || target.application.activate(options: [])
+        // A nonactivating panel can own keyboard focus while NSWorkspace still
+        // reports the receiver as frontmost. Restore application activation even
+        // in that case; frontmost identity alone does not restore native input
+        // routing. The captured field and selection are restored afterwards.
+        target.application.activate(options: [])
     }
     func raiseWindow(_ target: PasteCoordinator.Target) -> Bool {
         guard let window = target.window else { return false }
@@ -221,8 +229,16 @@ final class PasteSystemEnvironment: PasteEnvironment {
     func restoreFocusedElement(_ target: PasteCoordinator.Target) {
         let query = PasteAXSession(pid: target.application.processIdentifier)
         if let element = target.focusedElement {
-            _ = query.perform(on: element) { AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue) }
-            if var range = target.selectedRange, let value = AXValueCreate(.cfRange, &range) {
+            let app = PasteAXSession.application(target.application.processIdentifier)
+            let current = Self.focusedElement(app: app, pid: target.application.processIdentifier, query: query)
+            let focusMatches = current.map { CFEqual($0, element) } == true
+            let currentRange = focusMatches ? Self.selectedRange(element, query: query) : nil
+            let plan = PasteFocusRestoration.plan(focusMatches: focusMatches,
+                                                 capturedRange: target.selectedRange, currentRange: currentRange)
+            if plan.restoreFocus {
+                _ = query.perform(on: element) { AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue) }
+            }
+            if plan.restoreSelection, var range = target.selectedRange, let value = AXValueCreate(.cfRange, &range) {
                 _ = query.perform(on: element) { AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value) }
             }
         }

@@ -3,8 +3,8 @@
 A free, open-source clipboard manager for macOS. The goal is the full Paste for
 Mac feature set and its smooth cross-app workflow.
 
-**Status (2026-10-13): first-stage candidate fixes are installed locally;
-physical-hotkey and mouse acceptance remains pending.** Earlier user feedback
+**Status (2026-10-13): candidate focus fixes are installed locally;
+final three-receiver and physical-hotkey acceptance remains pending.** Earlier user feedback
 reported usable basic functionality, while the workflow still fell short of Paste.
 Cards support one-click paste. Earlier automated observations of insertion and
 continued typing in Cursor's chat input and code editor are recorded in the
@@ -22,6 +22,12 @@ The [2026-10-13 follow-up](docs/IMPROVEMENT_FOLLOWUP.zh-CN.md) fixes those stora
 issues, image-promise completion ordering and the remaining compatible-mode
 AX-window requirement. Native tests now pass (1,411, one unavailable-model skip),
 with no added/deleted ClipShelf preference files; physical acceptance remains pending.
+The [latest receiver acceptance record](docs/PASTE_ACCEPTANCE_2026-10-13.zh-CN.md)
+documents real TextEdit/Cursor observations, final-build Safari insertion and
+selection checks, and the remaining gates after the Mac locked again. It also
+fixes explicit-destination handoff and avoids rewriting an already-correct AX
+caret. The latest patch passed 112 focused tests; earlier full-suite counts do
+not represent a full-suite run of this patch.
 An additional local diagnostic run is recorded in the
 [core-flow rerun](docs/CORE_FLOW_RERUN.zh-CN.md). A later user trace showed app
 launches capturing Finder as the paste destination. The focused local fixes and

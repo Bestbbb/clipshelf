@@ -9,6 +9,10 @@ struct RuntimeProfile {
     let validationDirectory: URL?
     let validationPreferenceDomain: String?
     let includesSearchFixtures: Bool
+    /// Native automation can operate a background window without making its app
+    /// frontmost. This opt-in exposes the existing destination picker to set up
+    /// a receiver. Subsequent invocations still capture the real foreground.
+    let showsValidationDestinationPicker: Bool
     let isReleaseDistribution: Bool
 
     static let current = RuntimeProfile(arguments: CommandLine.arguments)
@@ -21,6 +25,7 @@ struct RuntimeProfile {
             !$0.lowercased().split(separator: ".").contains(where: { ["dev", "demo", "validation"].contains(String($0)) })
         } == true
         includesSearchFixtures = arguments.contains("--validation") && arguments.contains("--validation-search")
+        showsValidationDestinationPicker = arguments.contains("--validation") && arguments.contains("--validation-destination-picker")
         if arguments.contains("--validation") {
             mode = .validation
             let identifier = UUID().uuidString

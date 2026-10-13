@@ -4,6 +4,8 @@
 续改基线：`ec8054b8445c9622cbf07b4e69d42e5e6fa9dc8b`。
 前一轮记录：[IMPROVEMENT_IMPLEMENTATION.zh-CN.md](IMPROVEMENT_IMPLEMENTATION.zh-CN.md)。
 
+以下保留本日存储和测试卫生续改的历史结果。Mac 解锁后的原光标测试、额外焦点修复和最终构建的验收边界见[本机接收端验收记录](PASTE_ACCEPTANCE_2026-10-13.zh-CN.md)。
+
 ## 当前结论
 
 本轮补齐 P1 兼容模式的一处遗漏，修复空间预算的设备编号问题、冷启动并发问题与图片拖出完成回调的竞态，并落实 W3.1 的内存偏好、测试隔离和 CI 检查。新版已安装到本机并恢复正常运行模式。

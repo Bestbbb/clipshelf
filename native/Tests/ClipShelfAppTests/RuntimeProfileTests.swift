@@ -37,6 +37,19 @@ final class RuntimeProfileTests: XCTestCase {
         XCTAssertFalse(profile.allowsBackgroundIntegrations)
     }
 
+    func testExplicitReceiverPickerCannotChangeNormalOrDemoInvocations() {
+        for arguments in [["ClipShelf"], ["ClipShelf", "--validation"],
+                          ["ClipShelf", "--validation-destination-picker"],
+                          ["ClipShelf", "--demo", "--validation-destination-picker"]] {
+            XCTAssertFalse(RuntimeProfile(arguments: arguments).showsValidationDestinationPicker)
+        }
+        let profile = RuntimeProfile(arguments: ["ClipShelf", "--validation", "--validation-destination-picker"])
+        XCTAssertTrue(profile.showsValidationDestinationPicker)
+        XCTAssertEqual(profile.mode, .validation)
+        XCTAssertFalse(profile.allowsBackgroundIntegrations)
+        XCTAssertFalse(profile.preferences.bool(forKey: "recordingEnabled"))
+    }
+
     func testProductionAndDevelopmentUseSeparateDataDirectories() {
         let release = RuntimeProfile(arguments: ["ClipShelf"], bundleIdentifier: "io.github.bestbbb.clipshelf", distribution: "release")
         XCTAssertTrue(release.isReleaseDistribution)
