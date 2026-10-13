@@ -1048,6 +1048,13 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         clearFiltersButton.imagePosition = .imageOnly
         clearFiltersButton.setAccessibilityLabel(L10n.text("清除条件"))
         clearFiltersButton.isHidden = true
+        let toolbarSymbol = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+        for button in [addBoard, allFiltersButton, clearFiltersButton, close] {
+            button.image = button.image?.withSymbolConfiguration(toolbarSymbol)
+            button.contentTintColor = .secondaryLabelColor
+        }
+        boardActions.item(at: 0)?.image = boardActions.item(at: 0)?.image?.withSymbolConfiguration(toolbarSymbol)
+        boardActions.contentTintColor = .secondaryLabelColor
         let header = NSStackView(views: [searchField, boardTabs, addBoard])
         header.orientation = .horizontal
         header.alignment = .centerY
@@ -1067,6 +1074,10 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             button.widthAnchor.constraint(equalToConstant: 26).isActive = true
         }
         boardActions.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        // A pull-down cell reserves title metrics above its image; pin it to the
+        // same box as the neighbouring icon buttons so the glyphs share a centre line.
+        boardActions.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        close.heightAnchor.constraint(equalToConstant: 26).isActive = true
 
         scrollView.drawsBackground = false
         // NSScroller chooses its orientation from its initial frame. Give the
@@ -1115,11 +1126,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         emptyStack.alignment = .centerX
         emptyStack.spacing = 10
 
-        statusLabel.font = .systemFont(ofSize: 10, weight: .medium)
+        statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
-        countLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
-        countLabel.textColor = .secondaryLabelColor
+        countLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        countLabel.textColor = .tertiaryLabelColor
         countLabel.setAccessibilityLabel(L10n.text("结果数量与选中项"))
         let hints = shortcutHints
         updateShortcutPresentation()
@@ -1131,8 +1142,14 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         pasteButton.target = self
         pasteButton.action = #selector(performPrimaryPaste)
         pasteButton.bezelStyle = .inline
+        pasteButton.isBordered = false
         pasteButton.controlSize = .regular
-        pasteButton.font = .systemFont(ofSize: 11, weight: .medium)
+        pasteButton.font = .systemFont(ofSize: 12, weight: .semibold)
+        pasteButton.image = NSImage(systemSymbolName: "return", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .semibold))
+        pasteButton.imagePosition = .imageLeading
+        pasteButton.imageHugsTitle = true
+        pasteButton.contentTintColor = .controlAccentColor
         pasteButton.setAccessibilityIdentifier("shelf.paste")
         pasteButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         destinationPopup.target = self

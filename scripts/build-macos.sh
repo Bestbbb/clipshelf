@@ -48,6 +48,8 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$BIN_DIR/ClipShelf" "$APP_DIR/Contents/MacOS/ClipShelf"
 cp "$PROJECT_ROOT/native/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$PROJECT_ROOT/native/Sources/ClipShelf/Sparkle-LICENSE.txt" "$APP_DIR/Contents/Resources/Sparkle-LICENSE.txt"
+# Regenerate with: swift scripts/make-app-icon.swift native/Resources/AppIcon.icns
+cp "$PROJECT_ROOT/native/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 LOCALIZATION_BUNDLE="ClipShelf_ClipShelfLocalization.bundle"
 test -d "$BIN_DIR/$LOCALIZATION_BUNDLE"
 # The CLI SwiftPM build leaves package resources next to its executable. The
