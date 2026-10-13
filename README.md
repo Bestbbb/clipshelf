@@ -3,8 +3,8 @@
 A free, open-source clipboard manager for macOS. The goal is the full Paste for
 Mac feature set and its smooth cross-app workflow.
 
-**Status (2026-10-13): candidate focus fixes are installed locally;
-final three-receiver and physical-hotkey acceptance remains pending.** Earlier user feedback
+**Status (2026-10-13): the installed candidate has verified receiver results in
+TextEdit, Safari, Chrome, and Cursor; physical-hotkey acceptance remains pending.** Earlier user feedback
 reported usable basic functionality, while the workflow still fell short of Paste.
 Cards support one-click paste. Earlier automated observations of insertion and
 continued typing in Cursor's chat input and code editor are recorded in the
@@ -16,20 +16,25 @@ Earlier failed acceptance and its retrospective are preserved as history.
 The [2026-10-12 implementation record](docs/IMPROVEMENT_IMPLEMENTATION.zh-CN.md)
 tracks the first stage of the colleague's [improvement specification](docs/IMPROVEMENT_SPEC.zh-CN.md).
 It adds compatible/strict/copy-only modes, bounded AX queries, click handoff and
-session diagnostics. Physical-hotkey and mouse acceptance remains pending;
-local storage-coordination failures also reproduce on the unchanged baseline.
+session diagnostics. Its original acceptance and storage failures are historical
+checkpoints; the current candidate results are recorded below.
 The [2026-10-13 follow-up](docs/IMPROVEMENT_FOLLOWUP.zh-CN.md) fixes those storage
 issues, image-promise completion ordering and the remaining compatible-mode
 AX-window requirement. Its 1,411-test result is a historical checkpoint;
 the subsequent full CI run exposed a remaining cold-initialization race and an
 incorrect scroll-layout assertion.
 The [latest receiver acceptance record](docs/PASTE_ACCEPTANCE_2026-10-13.zh-CN.md)
-documents real TextEdit/Cursor observations, final-build Safari insertion and
-selection checks, and the remaining gates after the Mac locked again. It also
-fixes explicit-destination handoff and avoids rewriting an already-correct AX
-caret. After repairing the CI findings, the current source passed the local full
-suite (1,418 tests, zero failures, one unavailable-model skip), with no added or
-deleted ClipShelf preference files. Full receiver acceptance remains pending.
+records the installed candidate's ten valid rounds each in TextEdit, Safari,
+Cursor chat, and Cursor's editor, plus four Chrome rounds. It also records real
+clipboard capture followed by one-click insertion and continued typing in
+standard mode in TextEdit, Chrome, and both Cursor inputs. These use application
+reopen, not a verified physical hotkey; interrupted rounds and explicit target
+setup are identified, so they do not satisfy the full P1 gate.
+The candidate fixes explicit-destination handoff and avoids rewriting an
+already-correct AX caret. Source commit `8d1240f` passed the local and
+[remote full suite](https://github.com/Bestbbb/clipshelf/actions/runs/38367552283)
+(1,418 tests, zero failures, one unavailable-model skip), with no added or
+deleted ClipShelf preference files.
 An additional local diagnostic run is recorded in the
 [core-flow rerun](docs/CORE_FLOW_RERUN.zh-CN.md). A later user trace showed app
 launches capturing Finder as the paste destination. The focused local fixes and
