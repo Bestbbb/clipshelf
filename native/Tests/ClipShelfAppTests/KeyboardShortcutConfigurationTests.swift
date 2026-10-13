@@ -4,10 +4,9 @@ import XCTest
 @testable import ClipShelf
 
 final class KeyboardShortcutConfigurationTests: XCTestCase {
-    private func withPreferences(_ body: (UserDefaults) throws -> Void) throws {
-        let name = "clipshelf-shortcuts-\(UUID().uuidString)"
-        let preferences = try XCTUnwrap(UserDefaults(suiteName: name))
-        defer { preferences.removePersistentDomain(forName: name) }
+    private func withPreferences(_ body: (InMemoryPreferences) throws -> Void) throws {
+        let preferences = InMemoryPreferences()
+        defer { preferences.removeAll() }
         try body(preferences)
     }
 

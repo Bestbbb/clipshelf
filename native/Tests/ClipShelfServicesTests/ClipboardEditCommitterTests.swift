@@ -7,15 +7,17 @@ import XCTest
 @MainActor
 final class ClipboardEditCommitterTests: XCTestCase {
     private var directory: URL!
+    private var spaceCoordinator: StorageSpaceCoordinator!
     override func setUpWithError() throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("clipshelf-edit-commit-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        spaceCoordinator = try StorageSpaceCoordinator(directory: directory.appendingPathComponent("reservations"))
     }
     override func tearDownWithError() throws { try? FileManager.default.removeItem(at: directory) }
     private func store() throws -> HistoryStore {
-        try HistoryStore(databaseURL: directory.appendingPathComponent("history.sqlite"))
+        try HistoryStore(databaseURL: directory.appendingPathComponent("history.sqlite"), spaceCoordinator: spaceCoordinator)
     }
-    private func cache() -> OCRDerivedCache { OCRDerivedCache(directory: directory.appendingPathComponent("ocr")) }
+    private func cache() -> OCRDerivedCache { OCRDerivedCache(directory: directory.appendingPathComponent("ocr"), spaceCoordinator: spaceCoordinator) }
     private func reference(_ record: ClipboardRecord) -> ClipboardSelectionReference {
         .init(id: record.id, revision: record.revision)
     }
@@ -151,7 +153,7 @@ final class ClipboardEditCommitterTests: XCTestCase {
         let store = try store(), original = try store.create(image())
         let badDirectory = directory.appendingPathComponent("not-a-directory")
         try Data([1]).write(to: badDirectory)
-        let cache = OCRDerivedCache(directory: badDirectory)
+        let cache = OCRDerivedCache(directory: badDirectory, spaceCoordinator: spaceCoordinator)
         let undo = try await ClipboardEditCommitter.commit(changed(original), snapshot: store.prepareEdit(reference(original)),
                                                           store: store, cache: cache) { self.result($0) }
         XCTAssertEqual(try store.item(id: original.id)?.revision, undo.committedReference.revision)

@@ -7,17 +7,17 @@ import ClipShelfLocalization
 final class LanguagePreferences {
     static let selectionKey = "interfaceLanguage"
     static let appleLanguagesKey = "AppleLanguages"
-    private let preferences: UserDefaults
-    private let sharedPreferences: UserDefaults?
+    private let preferences: PreferencesStore
+    private let sharedPreferences: PreferencesStore?
     let allowsChanges: Bool
 
-    init(preferences: UserDefaults, allowsChanges: Bool, sharedPreferences: UserDefaults? = nil) {
+    init(preferences: PreferencesStore, allowsChanges: Bool, sharedPreferences: PreferencesStore? = nil) {
         self.preferences = preferences
         self.allowsChanges = allowsChanges
         self.sharedPreferences = allowsChanges ? sharedPreferences : nil
     }
 
-    static func selectedLanguage(in preferences: UserDefaults) -> InterfaceLanguage {
+    static func selectedLanguage(in preferences: PreferencesStore) -> InterfaceLanguage {
         preferences.string(forKey: selectionKey).flatMap(InterfaceLanguage.init(rawValue:)) ?? .system
     }
     var selectedLanguage: InterfaceLanguage { Self.selectedLanguage(in: preferences) }
@@ -43,7 +43,7 @@ final class LanguagePreferences {
 
     /// Match the signed App Group boundary used by the sharing extension. Merely
     /// declaring a group in an unsigned development plist does not authorize it.
-    static func configuredSharedPreferences(bundle: Bundle = .main, allowsChanges: Bool) -> UserDefaults? {
+    static func configuredSharedPreferences(bundle: Bundle = .main, allowsChanges: Bool) -> PreferencesStore? {
         guard allowsChanges,
               let identifier = bundle.object(forInfoDictionaryKey: "ClipShelfAppGroupIdentifier") as? String,
               !identifier.isEmpty, !identifier.contains("$("), !identifier.contains("YOUR_"),

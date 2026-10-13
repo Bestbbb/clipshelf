@@ -28,7 +28,7 @@ final class StorageSettingsControllerTests: XCTestCase {
     @MainActor private final class Fixture {
         let directory: URL
         let store: HistoryStore
-        let preferences: UserDefaults
+        let preferences: InMemoryPreferences
         let suite = "clipshelf-storage-settings-tests-" + UUID().uuidString
         let projection: URL
         let bytes = Data(repeating: 0x5A, count: 4_096)
@@ -36,7 +36,7 @@ final class StorageSettingsControllerTests: XCTestCase {
         init() throws {
             directory = FileManager.default.temporaryDirectory.appendingPathComponent("clipshelf-storage-settings-\(UUID())", isDirectory: true)
             store = try HistoryStore(databaseURL: directory.appendingPathComponent("history.sqlite3"))
-            preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+            preferences = InMemoryPreferences()
             let record = try store.create(ClipboardRecord(text: "collectible.bin", parts: [ClipboardPart(representations: [
                 ClipboardRepresentation(typeIdentifier: "public.file-url", data: Data())
             ])]), ownedFiles: [.init(partIndex: 0, representationIndex: 0, filename: "collectible.bin", data: bytes)],
@@ -53,7 +53,7 @@ final class StorageSettingsControllerTests: XCTestCase {
         func close(_ controller: StorageSettingsController) {
             XCTAssertFalse(controller.window?.isVisible ?? true)
             _ = controller.cancelPending()
-            preferences.removePersistentDomain(forName: suite)
+            preferences.removeAll()
             try? FileManager.default.removeItem(at: directory)
         }
     }

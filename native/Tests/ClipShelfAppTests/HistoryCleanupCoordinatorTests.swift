@@ -7,7 +7,7 @@ import ClipShelfCore
     let coordinator = HistoryCleanupCoordinator()
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("clipshelf-cleanup-flow-\(UUID().uuidString)")
     let preferencesName = "ClipShelf.cleanup-tests.\(UUID().uuidString)"
-    let preferences: UserDefaults
+    let preferences: InMemoryPreferences
     let store: HistoryStore
     let now = Date(timeIntervalSinceReferenceDate: 2_000_000)
     let expired: ClipboardRecord
@@ -25,7 +25,7 @@ import ClipShelfCore
     var refreshes = 0
 
     init() throws {
-        preferences = UserDefaults(suiteName: preferencesName)!
+        preferences = InMemoryPreferences()
         preferences.set(30, forKey: "retentionDays")
         store = try HistoryStore(databaseURL: directory.appendingPathComponent("history.sqlite3"))
         let board = try store.createPinboard(name: "Retained fixture")
@@ -67,7 +67,7 @@ import ClipShelfCore
     }
     func close() {
         _ = coordinator.terminate()
-        preferences.removePersistentDomain(forName: preferencesName)
+        preferences.removeAll()
         try? FileManager.default.removeItem(at: directory)
     }
 }

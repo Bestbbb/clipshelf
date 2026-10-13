@@ -6,10 +6,10 @@ import ClipShelfLocalization
 
 private final class LanguagePreferenceFixture {
     let name = "clipshelf-language-tests.\(UUID().uuidString)"
-    let preferences: UserDefaults
-    init() { preferences = UserDefaults(suiteName: name)!; preferences.removePersistentDomain(forName: name) }
-    deinit { preferences.removePersistentDomain(forName: name) }
-    var domain: NSDictionary { (preferences.persistentDomain(forName: name) ?? [:]) as NSDictionary }
+    let preferences: InMemoryPreferences
+    init() { preferences = InMemoryPreferences(); preferences.removeAll() }
+    deinit { preferences.removeAll() }
+    var domain: NSDictionary { (preferences.snapshot) as NSDictionary }
 }
 
 @MainActor final class LanguageSettingsTests: XCTestCase {
@@ -47,8 +47,8 @@ private final class LanguagePreferenceFixture {
     func testSystemChoiceRemovesOnlyAppAndSharedOverridesAndRevealsInheritedLanguage() throws {
         let app = LanguagePreferenceFixture(), group = LanguagePreferenceFixture(), inherited = LanguagePreferenceFixture()
         inherited.preferences.set(["fr", "en"], forKey: LanguagePreferences.appleLanguagesKey)
-        app.preferences.addSuite(named: inherited.name)
-        defer { app.preferences.removeSuite(named: inherited.name) }
+        app.preferences.addFallback(inherited.preferences)
+        defer { app.preferences.removeFallback(inherited.preferences) }
         let inheritedBefore = inherited.domain
         let preferences = LanguagePreferences(preferences: app.preferences, allowsChanges: true, sharedPreferences: group.preferences)
         try preferences.save(.zhHant)

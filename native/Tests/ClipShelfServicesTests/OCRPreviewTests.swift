@@ -9,11 +9,19 @@ import XCTest
 @MainActor
 final class OCRPreviewTests: XCTestCase {
     private var directory: URL!
+    private var budgetDirectory: URL!
+    private var spaceCoordinator: StorageSpaceCoordinator!
     override func setUpWithError() throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("clipshelf-ocr-test-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        budgetDirectory = directory.appendingPathExtension("budget")
+        try FileManager.default.createDirectory(at: budgetDirectory, withIntermediateDirectories: true)
+        spaceCoordinator = try StorageSpaceCoordinator(directory: budgetDirectory.appendingPathComponent("reservations"))
     }
-    override func tearDownWithError() throws { try FileManager.default.removeItem(at: directory) }
+    override func tearDownWithError() throws {
+        if FileManager.default.fileExists(atPath: directory.path) { try FileManager.default.removeItem(at: directory) }
+        try FileManager.default.removeItem(at: budgetDirectory)
+    }
 
     func testVisionRecognizesSyntheticChineseAndEnglishAndActualBounds() async throws {
         let data = try Self.image()
@@ -37,7 +45,7 @@ final class OCRPreviewTests: XCTestCase {
                 XCTAssertLessThanOrEqual(span.utf16Location + span.utf16Length, region.text.utf16.count)
             }
         }
-        let cache = OCRDerivedCache(directory: directory)
+        let cache = OCRDerivedCache(directory: directory, spaceCoordinator: spaceCoordinator)
         let record = Self.record(data)
         try await cache.store(result, for: record, imageData: data)
         let restored = try await cache.result(for: record, imageData: data)
@@ -78,7 +86,7 @@ final class OCRPreviewTests: XCTestCase {
 
     func testCacheRejectsNewRevisionChangedPixelsLanguagesAndExpiry() async throws {
         let data = try Self.image(), record = Self.record(try Self.image())
-        let cache = OCRDerivedCache(directory: directory)
+        let cache = OCRDerivedCache(directory: directory, spaceCoordinator: spaceCoordinator)
         let result = Self.result(data)
         try await cache.store(result, for: record, imageData: data)
         var newer = record; newer.revision += 1
@@ -90,13 +98,13 @@ final class OCRPreviewTests: XCTestCase {
         XCTAssertNil(changedMiss)
         let languageMiss = try await cache.result(for: record, imageData: data, recognitionLanguages: ["en-US"])
         XCTAssertNil(languageMiss)
-        let expired = try await OCRDerivedCache(directory: directory, maximumAge: -1).result(for: record, imageData: data)
+        let expired = try await OCRDerivedCache(directory: directory, maximumAge: -1, spaceCoordinator: spaceCoordinator).result(for: record, imageData: data)
         XCTAssertNil(expired)
         XCTAssertEqual(record.parts.first?.representations.first?.data, data)
     }
 
     func testCorruptOrDifferentEngineCacheIsRecomputedRatherThanTrusted() async throws {
-        let data = try Self.image(), record = Self.record(try Self.image()), cache = OCRDerivedCache(directory: directory)
+        let data = try Self.image(), record = Self.record(try Self.image()), cache = OCRDerivedCache(directory: directory, spaceCoordinator: spaceCoordinator)
         try await cache.store(Self.result(data), for: record, imageData: data)
         let url = directory.appendingPathComponent(record.id.uuidString + ".json")
         var entry = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
@@ -114,7 +122,7 @@ final class OCRPreviewTests: XCTestCase {
     }
 
     func testMismatchedResultCannotBeSavedAndOlderResultCannotReplaceNewer() async throws {
-        let data = try Self.image(), record = Self.record(try Self.image()), cache = OCRDerivedCache(directory: directory)
+        let data = try Self.image(), record = Self.record(try Self.image()), cache = OCRDerivedCache(directory: directory, spaceCoordinator: spaceCoordinator)
         do { try await cache.store(Self.result(Data("wrong pixels".utf8)), for: record, imageData: data); XCTFail("Expected digest rejection") }
         catch OCRDerivedCache.CacheError.invalidResult {} catch { XCTFail("Unexpected \(error)") }
         var newer = record; newer.revision += 1
@@ -145,7 +153,7 @@ final class OCRPreviewTests: XCTestCase {
     func testPurgeDeletesMissingAndOlderRevisionEntriesButKeepsCurrent() async throws {
         let store = try HistoryStore(databaseURL: directory.appendingPathComponent("history.sqlite3"))
         let cacheDirectory = directory.appendingPathComponent("derived")
-        let cache = OCRDerivedCache(directory: cacheDirectory)
+        let cache = OCRDerivedCache(directory: cacheDirectory, spaceCoordinator: spaceCoordinator)
         let data = try Self.image()
         let deleted = try store.create(Self.record(data)), changed = try store.create(Self.record(data)), current = try store.create(Self.record(data))
         for record in [deleted, changed, current] { try await cache.store(Self.result(data), for: record, imageData: data) }
@@ -163,7 +171,7 @@ final class OCRPreviewTests: XCTestCase {
     func testPurgeDeletesExpiredAndCorruptEntriesWithoutTouchingOtherFiles() async throws {
         let store = try HistoryStore(databaseURL: directory.appendingPathComponent("history.sqlite3"))
         let cacheDirectory = directory.appendingPathComponent("derived")
-        let cache = OCRDerivedCache(directory: cacheDirectory)
+        let cache = OCRDerivedCache(directory: cacheDirectory, spaceCoordinator: spaceCoordinator)
         let data = try Self.image()
         let expired = try store.create(Self.record(data)), corrupt = try store.create(Self.record(data))
         for record in [expired, corrupt] { try await cache.store(Self.result(data), for: record, imageData: data) }
@@ -192,7 +200,7 @@ final class OCRPreviewTests: XCTestCase {
         let nested = cacheDirectory.appendingPathComponent(UUID().uuidString + ".json", isDirectory: true)
         try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
         try bytes.write(to: nested.appendingPathComponent("keep.txt"))
-        try await OCRDerivedCache(directory: cacheDirectory).purgeStaleEntries(using: store)
+        try await OCRDerivedCache(directory: cacheDirectory, spaceCoordinator: spaceCoordinator).purgeStaleEntries(using: store)
         XCTAssertFalse(FileManager.default.fileExists(atPath: link.path))
         XCTAssertEqual(try Data(contentsOf: original), bytes)
         XCTAssertEqual(try Data(contentsOf: nested.appendingPathComponent("keep.txt")), bytes)
@@ -201,7 +209,7 @@ final class OCRPreviewTests: XCTestCase {
     func testLateOCRCannotRecreateDeletedCacheAfterPurge() async throws {
         let store = try HistoryStore(databaseURL: directory.appendingPathComponent("history.sqlite3"))
         let cacheDirectory = directory.appendingPathComponent("derived")
-        let cache = OCRDerivedCache(directory: cacheDirectory), data = try Self.image()
+        let cache = OCRDerivedCache(directory: cacheDirectory, spaceCoordinator: spaceCoordinator), data = try Self.image()
         let record = try store.create(Self.record(data))
         let completedRecognition = Self.result(data)
         try await cache.store(completedRecognition, for: record, imageData: data, sourceStore: store)
@@ -217,7 +225,7 @@ final class OCRPreviewTests: XCTestCase {
 
     func testLateOldRevisionCannotReplaceOrDisplayCurrentSource() async throws {
         let store = try HistoryStore(databaseURL: directory.appendingPathComponent("history.sqlite3"))
-        let cache = OCRDerivedCache(directory: directory.appendingPathComponent("derived")), data = try Self.image()
+        let cache = OCRDerivedCache(directory: directory.appendingPathComponent("derived"), spaceCoordinator: spaceCoordinator), data = try Self.image()
         let old = try store.create(Self.record(data))
         var edited = old; edited.renamedTitle = "new revision fixture"
         let current = try store.update(record: edited)

@@ -64,6 +64,14 @@ final class PasteCoordinator {
     var hasPermission: Bool { environment.hasPermission }
     var hasPendingAttempt: Bool { attempt != nil }
     var isWaitingForClickRelease: Bool { attempt?.waitingForClickRelease == true }
+    func canPaste(to target: Target?) -> Bool {
+        guard hasPermission, let target, environment.isRunning(target) else { return false }
+        switch preferences.mode(for: target.application.bundleIdentifier) {
+        case .compatible: return true
+        case .strict: return environment.hasWindow(target)
+        case .copyOnly: return false
+        }
+    }
     func requestPermission() { environment.requestPermission() }
     func returnToTargetIfIdle(_ target: Target?) {
         guard attempt == nil, let target, environment.isRunning(target),
@@ -152,7 +160,8 @@ final class PasteCoordinator {
             finish(request, .copiedOnly, message: L10n.text("内容已复制，可在目标应用按 ⌘V。"), failure: .copyOnlyMode)
             return
         }
-        guard hasPermission, let target, environment.isRunning(target), environment.hasWindow(target) else {
+        guard hasPermission, let target, environment.isRunning(target),
+              request.mode != .strict || environment.hasWindow(target) else {
             finish(request, .copiedOnly, message: L10n.text("内容已复制，请切回目标应用按 ⌘V。"), failure: .restoreUnavailable); return
         }
         if let clickHandoff, clickHandoff.mouseUpTimestamp.isFinite, clickHandoff.doubleClickInterval.isFinite,
@@ -224,7 +233,7 @@ final class PasteCoordinator {
                 if request.mode == .strict || lastFocus == nil { focus = environment.focusState(for: target) }
                 // Activation can complete after the initial restoration. Retry
                 // the original input once after its process is actually active.
-                if !restoredAfterActivation && (focus == .differentElement || focus == .differentSelection) {
+                if request.mode == .strict, !restoredAfterActivation && (focus == .differentElement || focus == .differentSelection) {
                     restoredAfterActivation = true
                     environment.restoreFocusedElement(target)
                     guard contextIsCurrent(request), clipboardIsCurrent(writtenCount, request: request),

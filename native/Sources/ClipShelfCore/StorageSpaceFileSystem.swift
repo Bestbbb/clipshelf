@@ -8,11 +8,48 @@ struct StorageSpaceNode: Codable, Equatable {
     let generation: UInt32
     let birthSeconds: Int64
     let birthNanoseconds: Int64
+    let volumeUUID: String?
 
-    init(_ value: stat) {
+    init(_ value: stat, volumeUUID: String? = nil) {
         device = Int64(value.st_dev); inode = UInt64(value.st_ino); generation = value.st_gen
         birthSeconds = Int64(value.st_birthtimespec.tv_sec); birthNanoseconds = Int64(value.st_birthtimespec.tv_nsec)
+        self.volumeUUID = volumeUUID
     }
+
+    private enum CodingKeys: String, CodingKey { case device, inode, generation, birthSeconds, birthNanoseconds, volumeUUID }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        device = try values.decode(Int64.self, forKey: .device)
+        inode = try values.decode(UInt64.self, forKey: .inode)
+        generation = try values.decode(UInt32.self, forKey: .generation)
+        birthSeconds = try values.decode(Int64.self, forKey: .birthSeconds)
+        birthNanoseconds = try values.decode(Int64.self, forKey: .birthNanoseconds)
+        let stored = try values.decodeIfPresent(String.self, forKey: .volumeUUID)
+        let binding = decoder.userInfo[StorageSpaceVolumeBinding.key] as? StorageSpaceVolumeBinding
+        volumeUUID = stored ?? (binding?.legacyDevice == device ? binding?.volumeUUID : nil)
+    }
+
+    /// st_dev is a mount-time identifier. Persisted nodes on a UUID-backed volume
+    /// keep their identity when macOS assigns that volume another device number.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        let sameVolume: Bool
+        if let a = lhs.volumeUUID, let b = rhs.volumeUUID { sameVolume = a == b }
+        else { sameVolume = lhs.volumeUUID == nil && rhs.volumeUUID == nil && lhs.device == rhs.device }
+        return sameVolume && lhs.sameObject(as: rhs)
+    }
+
+    func sameObject(as other: Self) -> Bool {
+        inode == other.inode && generation == other.generation &&
+            birthSeconds == other.birthSeconds && birthNanoseconds == other.birthNanoseconds
+    }
+}
+
+/// Only supplied after a validated empty legacy registry has been bound to the
+/// current volume. It is never used to accept an unknown or live legacy claim.
+struct StorageSpaceVolumeBinding {
+    static let key = CodingUserInfoKey(rawValue: "ClipShelf.storageVolumeBinding")!
+    let legacyDevice: Int64
+    let volumeUUID: String
 }
 
 enum StorageSpaceFiles {
@@ -57,12 +94,19 @@ enum StorageSpaceFiles {
               value.st_mode & 0o077 == 0, directory || value.st_nlink == 1 else {
             throw StorageWriteFailure.coordinationUnavailable
         }
-        return StorageSpaceNode(value)
+        return StorageSpaceNode(value, volumeUUID: StorageVolumeIdentity.uuid(for: descriptor))
     }
 
     static func matches(_ identity: StorageSpaceNode, name: String, directory: Int32) -> Bool {
         var value = stat()
-        return fstatat(directory, name, &value, AT_SYMLINK_NOFOLLOW) == 0 && StorageSpaceNode(value) == identity
+        guard fstatat(directory, name, &value, AT_SYMLINK_NOFOLLOW) == 0 else { return false }
+        if identity.volumeUUID == nil { return StorageSpaceNode(value) == identity }
+        let flags = O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | (value.st_mode & S_IFMT == S_IFDIR ? O_DIRECTORY : 0)
+        let descriptor = openat(directory, name, flags)
+        guard descriptor >= 0 else { return false }
+        defer { Darwin.close(descriptor) }
+        guard let opened = try? info(descriptor), StorageSpaceNode(opened) == StorageSpaceNode(value) else { return false }
+        return StorageSpaceNode(opened, volumeUUID: StorageVolumeIdentity.uuid(for: descriptor)) == identity
     }
 
     static func exists(_ name: String, directory: Int32) throws -> Bool {
@@ -101,7 +145,7 @@ enum StorageSpaceFiles {
         }
     }
 
-    static func read<T: Decodable>(_ type: T.Type, descriptor: Int32) throws -> T {
+    static func read<T: Decodable>(_ type: T.Type, descriptor: Int32, volumeBinding: StorageSpaceVolumeBinding? = nil) throws -> T {
         let size = try info(descriptor).st_size
         guard size > 0, size <= 1_048_576 else { throw StorageWriteFailure.coordinationUnavailable }
         var data = Data(count: Int(size))
@@ -114,7 +158,7 @@ enum StorageSpaceFiles {
                 offset += count
             }
         }
-        do { return try JSONDecoder().decode(type, from: data) }
+        do { return try decoder(volumeBinding).decode(type, from: data) }
         catch { throw StorageWriteFailure.coordinationUnavailable }
     }
 
@@ -140,7 +184,8 @@ enum StorageSpaceFiles {
 
     /// A checksum-invalid or incomplete slot is ignored only when the other slot supplies a
     /// complete preceding state. The caller never treats two invalid slots as an empty journal.
-    static func readFrame<T: Decodable>(_ type: T.Type, descriptor: Int32, offset: Int64, maximumBytes: Int) throws -> T? {
+    static func readFrame<T: Decodable>(_ type: T.Type, descriptor: Int32, offset: Int64, maximumBytes: Int,
+                                       volumeBinding: StorageSpaceVolumeBinding? = nil) throws -> T? {
         func bytes(_ count: Int, at offset: Int64) throws -> Data? {
             var data = Data(count: count)
             let complete = try data.withUnsafeMutableBytes { buffer -> Bool in
@@ -161,7 +206,13 @@ enum StorageSpaceFiles {
         for index in 0..<8 { length |= UInt64(header[index]) << (index * 8) }
         guard length > 0, length <= UInt64(maximumBytes), let payload = try bytes(Int(length), at: offset + 40),
               Data(SHA256.hash(data: payload)) == header.subdata(in: 8..<40) else { return nil }
-        return try? JSONDecoder().decode(type, from: payload)
+        return try? decoder(volumeBinding).decode(type, from: payload)
+    }
+
+    private static func decoder(_ binding: StorageSpaceVolumeBinding?) -> JSONDecoder {
+        let decoder = JSONDecoder()
+        if let binding { decoder.userInfo[StorageSpaceVolumeBinding.key] = binding }
+        return decoder
     }
 
     static func writeFrame<T: Encodable>(_ value: T, descriptor: Int32, offset: Int64, maximumBytes: Int) throws {

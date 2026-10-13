@@ -9,7 +9,7 @@ final class SharingSettingsController: NSWindowController {
     private let transport: CloudSharedBoardTransport
     private let coordinator: CloudSharingCoordinator
     private let sharingPresenter: CloudSharedBoardSharingPresenter
-    private let preferences: UserDefaults
+    private let preferences: PreferencesStore
     private let readStates: @MainActor () async throws -> [SharedBoardState]
     private let status = NSTextField(wrappingLabelWithString: L10n.text("共享板默认关闭。私人历史不会随共享板公开。"))
     private let toggle = NSButton(title: L10n.text("开启共享板…"), target: nil, action: nil)
@@ -29,7 +29,7 @@ final class SharingSettingsController: NSWindowController {
     var onDataChanged: (() -> Void)?
     var onCopyLink: ((URL) -> Void)?
 
-    init(store: HistoryStore, preferences: UserDefaults = .standard,
+    init(store: HistoryStore, preferences: PreferencesStore = UserDefaults.standard,
          readStates: (@MainActor () async throws -> [SharedBoardState])? = nil,
          availability: (@MainActor () async -> CloudSyncAvailability)? = nil) {
         self.store = store; self.preferences = preferences

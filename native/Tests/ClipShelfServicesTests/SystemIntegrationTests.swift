@@ -105,15 +105,17 @@ final class SystemIntegrationTests: XCTestCase {
     @MainActor func testExportedImageIsUsableAfterRecordAndHelperAreReleased() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let budget = try StorageSpaceCoordinator(directory: directory.appendingPathComponent("reservations"))
         let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
             colorSpaceName: .deviceRGB, bytesPerRow: 32, bitsPerPixel: 32))
         let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
         let record = ClipboardRecord(text: "test image", parts: [ClipboardPart(representations: [ClipboardRepresentation(typeIdentifier: "public.png", data: png)])])
-        let url = try SystemIntegrationController.exportImage(record, directory: directory)
+        let url = try SystemIntegrationController.exportImage(record, directory: directory, spaceCoordinator: budget)
         XCTAssertEqual(NSImage(contentsOf: url)?.size, NSSize(width: 8, height: 8))
         XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
-        XCTAssertNotEqual(try SystemIntegrationController.exportImage(record, directory: directory), url)
+        XCTAssertNotEqual(try SystemIntegrationController.exportImage(record, directory: directory, spaceCoordinator: budget), url)
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
     }
 }

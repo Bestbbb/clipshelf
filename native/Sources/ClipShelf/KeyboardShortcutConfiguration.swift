@@ -295,15 +295,15 @@ struct KeyboardShortcutConfiguration: Codable, Equatable, Sendable {
         return try encoder.encode(self)
     }
 
-    func save(to defaults: UserDefaults) throws {
+    func save(to defaults: PreferencesStore) throws {
         defaults.set(try encodedData(), forKey: Self.storageKey)
     }
 
-    static func load(from defaults: UserDefaults) -> Self { loadResult(from: defaults).configuration }
+    static func load(from defaults: PreferencesStore) -> Self { loadResult(from: defaults).configuration }
 
     /// Loading is read-only. A valid legacy preset is migrated in memory; only an
     /// explicit successful save replaces preferences, including malformed data.
-    static func loadResult(from defaults: UserDefaults) -> (configuration: Self, warning: String?) {
+    static func loadResult(from defaults: PreferencesStore) -> (configuration: Self, warning: String?) {
         if let stored = defaults.object(forKey: storageKey) {
             guard let data = stored as? Data, data.count <= 16_384 else {
                 return (.defaults, L10n.text("保存的快捷键设置无法读取，暂时使用默认值；原设置尚未覆盖。"))

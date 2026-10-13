@@ -19,7 +19,7 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate, NST
     }
     enum Phase { case idle, scanning, preparing, confirming, committing, recovering, savingLimit }
     private let actions: Actions
-    private let preferences: UserDefaults
+    private let preferences: PreferencesStore
     private let status = NSTextField(wrappingLabelWithString: L10n.text("刷新后查看当前资料库托管文件的占用。"))
     private let detail = NSTextField(wrappingLabelWithString: L10n.text("尚未读取，不能据此判断为零。"))
     private let libraryDetail = NSTextField(wrappingLabelWithString: "")
@@ -57,7 +57,7 @@ final class StorageSettingsController: NSWindowController, NSWindowDelegate, NST
     var onMessage: ((String) -> Void)?
     var confirmation: ((OwnedStorageCleanupPlan, @escaping (Bool) -> Void) -> (() -> Void))?
 
-    init(actions: Actions, preferences: UserDefaults = .standard) {
+    init(actions: Actions, preferences: PreferencesStore = UserDefaults.standard) {
         self.actions = actions; self.preferences = preferences
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 500),
                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)

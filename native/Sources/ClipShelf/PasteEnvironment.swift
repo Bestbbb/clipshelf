@@ -31,14 +31,14 @@ struct PastePreferences: Equatable {
     init(strictness: PasteStrictness = .compatible, overrides: [String: PasteStrictness] = [:]) {
         self.strictness = strictness; self.overrides = overrides
     }
-    init(preferences: UserDefaults) {
+    init(preferences: PreferencesStore) {
         strictness = preferences.string(forKey: "pasteStrictness").flatMap(PasteStrictness.init(rawValue:)) ?? .compatible
         overrides = (preferences.dictionary(forKey: "pasteStrictnessOverrides") ?? [:]).compactMapValues {
             ($0 as? String).flatMap(PasteStrictness.init(rawValue:))
         }
     }
     func mode(for bundleID: String?) -> PasteStrictness { bundleID.flatMap { overrides[$0] } ?? strictness }
-    func save(to preferences: UserDefaults) {
+    func save(to preferences: PreferencesStore) {
         preferences.set(strictness.rawValue, forKey: "pasteStrictness")
         preferences.set(overrides.mapValues(\.rawValue), forKey: "pasteStrictnessOverrides")
     }

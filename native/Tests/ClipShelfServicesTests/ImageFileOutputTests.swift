@@ -5,6 +5,17 @@ import XCTest
 @testable import ClipShelf
 
 final class ImageFileOutputTests: XCTestCase {
+    private var budgetDirectory: URL!
+    private var spaceCoordinator: StorageSpaceCoordinator!
+    override func setUpWithError() throws {
+        budgetDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("ClipShelf-ImageBudget-\(UUID())")
+        try FileManager.default.createDirectory(at: budgetDirectory, withIntermediateDirectories: true)
+        spaceCoordinator = try StorageSpaceCoordinator(directory: budgetDirectory.appendingPathComponent("reservations"))
+    }
+    override func tearDownWithError() throws { try FileManager.default.removeItem(at: budgetDirectory) }
+    private func prepare(_ records: [ClipboardRecord]) throws -> PreparedImageFileOutput {
+        try ImageFileOutput.prepare(records, spaceCoordinator: spaceCoordinator)
+    }
     /// AppKit's protocol passes its provider to this callback on the chosen queue.
     /// The test transfers it only as that callback argument, never accessing AppKit state there.
     private final class PromiseWriteRequest: @unchecked Sendable {
@@ -44,7 +55,7 @@ final class ImageFileOutputTests: XCTestCase {
         let original = [ClipboardRecord(text: "first", sourceApp: "Fixture", rtf: Data([1, 2]),
             parts: [try image(4), text, try image(5, type: .tiff)], renamedTitle: "Keep title", revision: 7),
             ClipboardRecord(text: "second", parts: [previewFile, try image(6)])]
-        let prepared = try await Task.detached { try ImageFileOutput.prepare(original) }.value
+        let prepared = try await Task.detached { try self.prepare(original) }.value
         XCTAssertEqual(prepared.imageCount, 3)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["existing.txt"])
         let receipt = try await Task.detached { try prepared.exportReceipt(directory: root.appendingPathComponent("exports")) }.value
@@ -68,19 +79,19 @@ final class ImageFileOutputTests: XCTestCase {
 
     @MainActor func testCorruptLaterImageRejectsWholePreparationAndValidAlternativeRepresentationWorks() throws {
         let invalid = ClipboardPart(representations: [.init(typeIdentifier: "public.png", data: Data("not an image".utf8))])
-        XCTAssertThrowsError(try ImageFileOutput.prepare([ClipboardRecord(text: "two", parts: [try image(4), invalid])]))
+        XCTAssertThrowsError(try self.prepare([ClipboardRecord(text: "two", parts: [try image(4), invalid])]))
         var alternate = invalid; alternate.representations += try image(7).representations
-        XCTAssertEqual(try ImageFileOutput.prepare([ClipboardRecord(text: "alternate", parts: [alternate])]).imageCount, 1)
+        XCTAssertEqual(try self.prepare([ClipboardRecord(text: "alternate", parts: [alternate])]).imageCount, 1)
         XCTAssertFalse(ImageFileOutput.hasImages(in: [ClipboardRecord(text: "plain")]))
-        XCTAssertThrowsError(try ImageFileOutput.prepare([ClipboardRecord(text: "plain")]))
+        XCTAssertThrowsError(try self.prepare([ClipboardRecord(text: "plain")]))
     }
 
     @MainActor func testUnavailableMixedFileRejectsPrepareAndIsRecheckedBeforeExportOrDrag() throws {
         let root = try directory(), external = root.appendingPathComponent("existing.txt")
         let record = ClipboardRecord(text: "mixed", parts: [try image(4), file(external)])
-        XCTAssertThrowsError(try ImageFileOutput.prepare([record]))
+        XCTAssertThrowsError(try self.prepare([record]))
         try Data([1]).write(to: external)
-        let prepared = try ImageFileOutput.prepare([record])
+        let prepared = try self.prepare([record])
         try FileManager.default.removeItem(at: external)
         XCTAssertThrowsError(try prepared.draggingWriters())
         let destination = root.appendingPathComponent("exports")
@@ -90,7 +101,7 @@ final class ImageFileOutputTests: XCTestCase {
 
     @MainActor func testLaterFileConflictRollsBackEarlierExportWithoutTouchingExistingFile() throws {
         let root = try directory()
-        let prepared = try ImageFileOutput.prepare([ClipboardRecord(text: "two", parts: [try image(4), try image(5)])])
+        let prepared = try self.prepare([ClipboardRecord(text: "two", parts: [try image(4), try image(5)])])
         let providers = try prepared.draggingWriters().compactMap { $0 as? NSFilePromiseProvider }
         let names = providers.map { $0.delegate!.filePromiseProvider($0, fileNameForType: $0.fileType) }
         XCTAssertEqual(Set(names).count, 2)
@@ -103,7 +114,7 @@ final class ImageFileOutputTests: XCTestCase {
 
     @MainActor func testDiscardUnpublishedPreservesReplacedRegularFileAndSymlink() throws {
         let root = try directory()
-        let prepared = try ImageFileOutput.prepare([ClipboardRecord(text: "three", parts: [try image(4), try image(5), try image(6)])])
+        let prepared = try self.prepare([ClipboardRecord(text: "three", parts: [try image(4), try image(5), try image(6)])])
         let receipt = try prepared.exportReceipt(directory: root)
         let replacement = root.appendingPathComponent("replacement")
         try Data("external replacement".utf8).write(to: replacement)
@@ -120,7 +131,7 @@ final class ImageFileOutputTests: XCTestCase {
     @MainActor func testDragWritersKeepAllPartsAndRetainDelegateAfterPreparedValueIsReleased() async throws {
         let root = try directory()
         let text = ClipboardPart(representations: [.init(typeIdentifier: "public.utf8-plain-text", data: Data("middle".utf8))])
-        var prepared: PreparedImageFileOutput? = try ImageFileOutput.prepare([ClipboardRecord(text: "three", parts: [try image(4), text, try image(5)])])
+        var prepared: PreparedImageFileOutput? = try self.prepare([ClipboardRecord(text: "three", parts: [try image(4), text, try image(5)])])
         let writers = try prepared!.draggingWriters()
         prepared = nil
         XCTAssertEqual(writers.count, 3)
@@ -148,7 +159,7 @@ final class ImageFileOutputTests: XCTestCase {
     @MainActor func testPromiseConflictAndMissingDestinationReportOnceAndNeverOverwrite() async throws {
         let root = try directory(), occupied = root.appendingPathComponent("occupied.png")
         try Data("keep".utf8).write(to: occupied)
-        let prepared = try ImageFileOutput.prepare([ClipboardRecord(text: "one", parts: [try image(4)])])
+        let prepared = try self.prepare([ClipboardRecord(text: "one", parts: [try image(4)])])
         let provider = try XCTUnwrap(prepared.draggingWriters().first as? NSFilePromiseProvider)
         let queue = try XCTUnwrap(provider.delegate?.operationQueue?(for: provider))
         let request = PromiseWriteRequest(provider)
@@ -166,15 +177,39 @@ final class ImageFileOutputTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["occupied.png"])
     }
 
+    @MainActor func testPromiseCompletionReleasesBudgetBeforeReceiverStartsAnotherWrite() async throws {
+        let root = try directory()
+        let budget = try StorageSpaceCoordinator(directory: budgetDirectory.appendingPathComponent("callback-reservations"),
+            capacityProvider: { _ in .init(volumeID: "fixture", availableBytes: 10_000) })
+        let prepared = try ImageFileOutput.prepare([ClipboardRecord(text: "image", parts: [try image(4)])], spaceCoordinator: budget)
+        let provider = try XCTUnwrap(prepared.draggingWriters().first as? NSFilePromiseProvider)
+        let queue = try XCTUnwrap(provider.delegate?.operationQueue?(for: provider))
+        let request = PromiseWriteRequest(provider)
+        let completion = expectation(description: "receiver can use the full budget at completion")
+        completion.assertForOverFulfill = true
+        queue.addOperation {
+            request.write(to: root.appendingPathComponent("promised.png")) { error in
+                XCTAssertNil(error)
+                do {
+                    let next = try budget.reserve([.init(destination: root.appendingPathComponent("next-output"), bytes: 10_000)])
+                    try next.release()
+                } catch { XCTFail("Completion ran before the original budget was released: \(error)") }
+                completion.fulfill()
+            }
+        }
+        await fulfillment(of: [completion], timeout: 5)
+        XCTAssertNotNil(NSImage(contentsOf: root.appendingPathComponent("promised.png")))
+    }
+
     @MainActor func testCacheExpiryOnlyRemovesOldRecognizedFilesAndKeepsCurrentBatch() throws {
         let root = try directory()
         let record = ClipboardRecord(text: "one", parts: [try image(4)])
-        let old = try ImageFileOutput.prepare([record]).exportReceipt(directory: root)
+        let old = try self.prepare([record]).exportReceipt(directory: root)
         let unrelated = root.appendingPathComponent("ClipShelf-personal.png")
         try Data("leave alone".utf8).write(to: unrelated)
         let symlink = root.appendingPathComponent("ClipShelf-\(UUID().uuidString).png")
         try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: unrelated)
-        let current = try ImageFileOutput.prepare([record]).exportReceipt(directory: root, now: Date().addingTimeInterval(90_000))
+        let current = try self.prepare([record]).exportReceipt(directory: root, now: Date().addingTimeInterval(90_000))
         XCTAssertFalse(FileManager.default.fileExists(atPath: old.fileURLs[0].path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: current.fileURLs[0].path))
         XCTAssertEqual(try Data(contentsOf: unrelated), Data("leave alone".utf8))
@@ -186,8 +221,8 @@ final class ImageFileOutputTests: XCTestCase {
         try FileManager.default.createDirectory(at: actual, withIntermediateDirectories: false)
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: actual)
         let record = ClipboardRecord(text: "two", parts: [try image(4), try image(5)])
-        XCTAssertThrowsError(try SystemIntegrationController.exportImage(record, directory: root))
-        XCTAssertThrowsError(try ImageFileOutput.prepare([record]).exportReceipt(directory: link))
+        XCTAssertThrowsError(try SystemIntegrationController.exportImage(record, directory: root, spaceCoordinator: spaceCoordinator))
+        XCTAssertThrowsError(try self.prepare([record]).exportReceipt(directory: link))
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: actual.path), [])
     }
 }

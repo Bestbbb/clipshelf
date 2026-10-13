@@ -1,4 +1,5 @@
 import CSQLite
+import CryptoKit
 import Darwin
 import Foundation
 import XCTest
@@ -71,6 +72,119 @@ final class StorageSpaceCoordinatorTests: XCTestCase {
     private func records() throws -> [URL] {
         try FileManager.default.contentsOfDirectory(at: registry, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "json" && $0.lastPathComponent != "index.json" }
+    }
+
+    /// Simulate saved mount numbers changing without altering the actual files.
+    /// This exercises the real JSON/frame readers, locks and capacity accounting.
+    private func changeStoredDevices(legacy: Bool) throws {
+        func changed(_ value: Any) -> Any {
+            if var object = value as? [String: Any] {
+                if let device = object["device"] as? NSNumber, object["inode"] != nil {
+                    object["device"] = device.int64Value + 10_000
+                    if legacy { object.removeValue(forKey: "volumeUUID") }
+                }
+                return object.mapValues(changed)
+            }
+            if let array = value as? [Any] { return array.map(changed) }
+            return value
+        }
+        let lockURL = root.appendingPathComponent("budgets.lock")
+        let descriptor = Darwin.open(lockURL.path, O_RDWR | O_NOFOLLOW)
+        guard descriptor >= 0 else { throw StorageWriteFailure.coordinationUnavailable }
+        defer { Darwin.close(descriptor) }
+        try StorageSpaceFiles.lock(descriptor)
+        for offset in [Int64(0), Int64(4_096), Int64(4_096 + 1_048_576)] {
+            guard var object = try frame(descriptor, offset: offset) else { continue }
+            object = changed(object) as! [String: Any]
+            if offset == 0, legacy {
+                object["version"] = 2
+                object.removeValue(forKey: "volumeUUID"); object.removeValue(forKey: "legacyDevice")
+            }
+            let body = try JSONSerialization.data(withJSONObject: object)
+            let count = UInt64(body.count)
+            var data = Data((0..<8).map { UInt8(truncatingIfNeeded: count >> ($0 * 8)) })
+            data.append(Data(SHA256.hash(data: body))); data.append(body)
+            try data.withUnsafeBytes {
+                XCTAssertEqual(pwrite(descriptor, $0.baseAddress!, $0.count, off_t(offset)), $0.count)
+            }
+        }
+        XCTAssertEqual(fsync(descriptor), 0)
+        for file in try FileManager.default.contentsOfDirectory(at: registry, includingPropertiesForKeys: nil) {
+            let value = try JSONSerialization.jsonObject(with: Data(contentsOf: file))
+            try JSONSerialization.data(withJSONObject: changed(value)).write(to: file)
+        }
+    }
+
+    private func frame(_ descriptor: Int32, offset: Int64) throws -> [String: Any]? {
+        var header = Data(count: 40)
+        let read = header.withUnsafeMutableBytes { pread(descriptor, $0.baseAddress!, $0.count, off_t(offset)) }
+        guard read == 40 else { return nil }
+        let count = (0..<8).reduce(UInt64(0)) { $0 | UInt64(header[$1]) << ($1 * 8) }
+        guard count > 0, count < 1_048_576 else { return nil }
+        var body = Data(count: Int(count))
+        guard body.withUnsafeMutableBytes({ pread(descriptor, $0.baseAddress!, $0.count, off_t(offset + 40)) }) == Int(count),
+              Data(SHA256.hash(data: body)) == header.subdata(in: 8..<40) else { return nil }
+        return try JSONSerialization.jsonObject(with: body) as? [String: Any]
+    }
+
+    func testVolumeUUIDKeepsLiveBudgetAccountingAcrossChangedSavedDeviceNumbers() throws {
+        let first = try coordinator().reserve([requirement(60)])
+        try changeStoredDevices(legacy: false)
+        let restarted = try coordinator()
+        XCTAssertThrowsError(try restarted.reserve([requirement(50)])) {
+            XCTAssertEqual($0 as? StorageWriteFailure, .insufficientSpace(requiredBytes: 110, availableBytes: 100))
+        }
+        let second = try restarted.reserve([requirement(40)])
+        try first.revalidate(); try second.revalidate()
+        try first.release(); try second.release()
+        XCTAssertTrue(try records().isEmpty)
+    }
+
+    func testEmptyLegacyRegistryUpgradesAfterDeviceNumberChangeWithoutRemovingFiles() throws {
+        let initial = try coordinator().reserve([requirement(10)])
+        try initial.release()
+        try changeStoredDevices(legacy: true)
+        // A torn write in the upgrade slot must leave the original header usable.
+        let descriptor = Darwin.open(root.appendingPathComponent("budgets.lock").path, O_RDWR | O_NOFOLLOW)
+        guard descriptor >= 0 else { throw StorageWriteFailure.coordinationUnavailable }
+        let torn = Data([48, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3])
+        torn.withUnsafeBytes { XCTAssertEqual(pwrite(descriptor, $0.baseAddress!, $0.count, 2_048), $0.count) }
+        Darwin.close(descriptor)
+        let originalHeader = try Data(contentsOf: root.appendingPathComponent("budgets.lock")).prefix(1_024)
+        let restarted = try coordinator()
+        let lease = try restarted.reserve([requirement(80)])
+        try lease.revalidate(); try lease.release()
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("budgets.lock")).prefix(1_024), originalHeader,
+                       "The original checksummed header must survive an upgrade")
+        let another = try coordinator().reserve([requirement(100)])
+        try another.release()
+        XCTAssertTrue(try records().isEmpty)
+    }
+
+    func testNonemptyLegacyRegistryIsNotReboundAfterDeviceNumberChange() throws {
+        let lease = try coordinator().reserve([requirement(60)])
+        defer { _ = lease }
+        try changeStoredDevices(legacy: true)
+        let before = try Data(contentsOf: root.appendingPathComponent("budgets.lock"))
+        let claims = try records()
+        XCTAssertThrowsError(try coordinator().reserve([requirement(20)])) {
+            XCTAssertEqual($0 as? StorageWriteFailure, .coordinationUnavailable)
+        }
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("budgets.lock")), before)
+        XCTAssertEqual(try records(), claims)
+    }
+
+    func testUnknownFileBlocksLegacyUpgradeAndIsPreserved() throws {
+        let lease = try coordinator().reserve([requirement(10)]); try lease.release()
+        try changeStoredDevices(legacy: true)
+        let unknown = registry.appendingPathComponent("unknown.bin")
+        try Data("must survive".utf8).write(to: unknown)
+        let before = try Data(contentsOf: root.appendingPathComponent("budgets.lock"))
+        XCTAssertThrowsError(try coordinator().reserve([requirement(10)])) {
+            XCTAssertEqual($0 as? StorageWriteFailure, .coordinationUnavailable)
+        }
+        XCTAssertEqual(try Data(contentsOf: unknown), Data("must survive".utf8))
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("budgets.lock")), before)
     }
 
     private func startHelper(stage: String, registry: URL) throws -> Process {
@@ -334,23 +448,29 @@ final class StorageSpaceCoordinatorTests: XCTestCase {
     }
 
     func testTwoConcurrentCoordinatorInstancesCannotBothSpendTheSameCapacity() throws {
-        let coordinators = try [coordinator(), coordinator()]
-        let results = StorageBudgetRaceResults(), group = DispatchGroup(), start = DispatchSemaphore(value: 0)
-        let request = requirement(70)
-        for coordinator in coordinators {
-            group.enter()
-            DispatchQueue.global().async {
-                start.wait()
-                results.accept(Result { try coordinator.reserve([request]) })
-                group.leave()
+        for trial in 0..<50 {
+            let provider = capacity!
+            let path = root.appendingPathComponent("cold-race-\(trial)")
+            let coordinators = try (0..<2).map { _ in
+                try StorageSpaceCoordinator(directory: path, capacityProvider: { try provider.read($0) })
             }
+            let results = StorageBudgetRaceResults(), group = DispatchGroup(), start = DispatchSemaphore(value: 0)
+            let request = requirement(70)
+            for coordinator in coordinators {
+                group.enter()
+                DispatchQueue.global().async {
+                    start.wait()
+                    results.accept(Result { try coordinator.reserve([request]) })
+                    group.leave()
+                }
+            }
+            start.signal(); start.signal()
+            XCTAssertEqual(group.wait(timeout: .now() + 10), .success)
+            let (leases, failures) = results.snapshot
+            XCTAssertEqual(leases.count, 1, "Cold registry race \(trial)")
+            XCTAssertEqual(failures, [.insufficientSpace(requiredBytes: 140, availableBytes: 100)], "Cold registry race \(trial)")
+            for lease in leases { try lease.release() }
         }
-        start.signal(); start.signal()
-        XCTAssertEqual(group.wait(timeout: .now() + 10), .success)
-        let (leases, failures) = results.snapshot
-        XCTAssertEqual(leases.count, 1)
-        XCTAssertEqual(failures, [.insufficientSpace(requiredBytes: 140, availableBytes: 100)])
-        for lease in leases { try lease.release() }
     }
 
     func testIndependentProcessClaimBlocksReservationUntilKernelReleasesLockAfterCrash() throws {

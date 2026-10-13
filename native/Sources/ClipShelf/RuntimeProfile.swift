@@ -1,11 +1,11 @@
 import Foundation
 
 /// Interactive acceptance uses the real query/paste path with a separate data
-/// directory and preference domain. It never resumes a user's background services.
+/// directory and in-memory preferences. It never resumes a user's background services.
 struct RuntimeProfile {
     enum Mode: Equatable { case standard, demo, validation }
     let mode: Mode
-    let preferences: UserDefaults
+    let preferences: PreferencesStore
     let validationDirectory: URL?
     let validationPreferenceDomain: String?
     let includesSearchFixtures: Bool
@@ -25,15 +25,14 @@ struct RuntimeProfile {
             mode = .validation
             let identifier = UUID().uuidString
             validationDirectory = temporaryDirectory.appendingPathComponent("ClipShelf-Validation-\(identifier)", isDirectory: true)
-            let domain = "io.github.bestbbb.clipshelf.validation.\(identifier)"
-            validationPreferenceDomain = domain
-            preferences = UserDefaults(suiteName: domain)!
+            validationPreferenceDomain = nil
+            preferences = InMemoryPreferences()
             preferences.register(defaults: ["hasSeenWelcome": true, "recordingEnabled": false])
         } else {
             mode = arguments.contains("--demo") ? .demo : .standard
             validationDirectory = nil
             validationPreferenceDomain = nil
-            preferences = .standard
+            preferences = UserDefaults.standard
         }
     }
 
@@ -48,6 +47,6 @@ struct RuntimeProfile {
     }
 
     func discardValidationPreferences() {
-        if let validationPreferenceDomain { preferences.removePersistentDomain(forName: validationPreferenceDomain) }
+        if mode == .validation { (preferences as? InMemoryPreferences)?.removeAll() }
     }
 }

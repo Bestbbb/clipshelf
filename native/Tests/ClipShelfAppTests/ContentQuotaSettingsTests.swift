@@ -7,16 +7,16 @@ import XCTest
 @MainActor final class ContentQuotaSettingsTests: XCTestCase {
     private var directory: URL!
     private var store: HistoryStore!
-    private var preferences: UserDefaults!
+    private var preferences: InMemoryPreferences!
     private var suite: String!
     override func setUp() async throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("clipshelf-quota-ui-\(UUID())")
         store = try HistoryStore(databaseURL: directory.appendingPathComponent("history.sqlite3"))
         suite = "clipshelf.quota-ui.\(UUID())"
-        preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        preferences = InMemoryPreferences()
     }
     override func tearDown() async throws {
-        preferences.removePersistentDomain(forName: suite)
+        preferences.removeAll()
         store = nil
         try? FileManager.default.removeItem(at: directory)
     }

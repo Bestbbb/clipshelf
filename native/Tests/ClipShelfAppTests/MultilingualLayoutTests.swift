@@ -87,9 +87,8 @@ import XCTest
     }
 
     func testLanguageSettingActionsFitWithoutSavingPreferences() throws {
-        let suite = "clipshelf-layout-tests.\(UUID().uuidString)"
-        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { preferences.removePersistentDomain(forName: suite) }
+        let preferences = InMemoryPreferences()
+        defer { preferences.removeAll() }
         try eachLanguage { runtime, direction, language in
             let controller = LanguageSettingsController(preferences: .init(preferences: preferences, allowsChanges: false))
             let window = try XCTUnwrap(controller.window), content = try XCTUnwrap(window.contentView)
@@ -99,7 +98,7 @@ import XCTest
             for action in [save, close] { assertFits(action, in: content, context: language) }
             XCTAssertFalse(save.isEnabled); XCTAssertFalse(window.isVisible)
         }
-        XCTAssertTrue((preferences.persistentDomain(forName: suite) ?? [:]).isEmpty)
+        XCTAssertTrue((preferences.snapshot).isEmpty)
     }
 
     private func button(_ action: String, in root: NSView) throws -> NSButton {

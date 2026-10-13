@@ -33,7 +33,9 @@ private final class RotationConversionProbe: @unchecked Sendable {
         let first = try Self.png(width: 2, height: 3)
         let rotated = try Self.png(width: 3, height: 2)
         self.original = original ?? ClipboardRecord(text: "图片 2 × 3", parts: [.init(representations: [.init(typeIdentifier: "public.png", data: first)])], revision: 4)
-        cache = OCRDerivedCache(directory: directory.appendingPathComponent("cache"))
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let budget = try StorageSpaceCoordinator(directory: directory.appendingPathComponent("reservations"))
+        cache = OCRDerivedCache(directory: directory.appendingPathComponent("cache"), spaceCoordinator: budget)
         controller = ImagePreviewController(record: self.original, cache: cache, sourceStore: sourceStore)
         controller.presentWindow = { [weak self] _, _ in self?.presentations += 1 }
         controller.isContextCurrent = { [weak self] in self?.validContext == true }

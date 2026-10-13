@@ -37,7 +37,7 @@ private final class PasteFakeEnvironment: PasteEnvironment {
     var dispatchAccepted = true
     var dispatchMethods: [PasteDispatch.Method] = []
     var launcherSurface = false
-    var activates = 0, raises = 0, focusRestores = 0, prepares = 0, dispatches = 0
+    var activates = 0, raises = 0, focusRestores = 0, prepares = 0, dispatches = 0, focusReads = 0
     var onActivate: (() -> Void)?
     var onRaise: (() -> Void)?
     var onRestore: (() -> Void)?
@@ -58,7 +58,7 @@ private final class PasteFakeEnvironment: PasteEnvironment {
     func activate(_ target: PasteCoordinator.Target) -> Bool { activates += 1; onActivate?(); return activationSucceeds }
     func raiseWindow(_ target: PasteCoordinator.Target) -> Bool { raises += 1; onRaise?(); return raiseSucceeds }
     func restoreFocusedElement(_ target: PasteCoordinator.Target) { focusRestores += 1; onRestore?() }
-    func focusState(for target: PasteCoordinator.Target) -> PasteFocusState { focus }
+    func focusState(for target: PasteCoordinator.Target) -> PasteFocusState { focusReads += 1; return focus }
     func preparePaste(for target: PasteCoordinator.Target) -> PasteDispatch? {
         guard let send = prepareCommandV() else { return nil }
         return PasteDispatch(method: .keyboard, send: { self.dispatchMethods.append(.keyboard); send(); return self.dispatchAccepted })
@@ -108,6 +108,43 @@ private final class PasteHarness {
 }
 
 final class PasteCoordinatorTests: XCTestCase {
+    @MainActor func testCompatibleAllowsAnActiveDestinationWithoutAnAXWindowSnapshot() async {
+        let h = PasteHarness(); h.coordinator.preferences.strictness = .compatible
+        h.environment.windowAvailable = false
+        h.environment.raiseSucceeds = false
+        h.environment.focus = .differentWindow
+        XCTAssertTrue(h.coordinator.canPaste(to: h.environment.target))
+        h.paste(); await h.settle()
+        XCTAssertEqual(h.outcomes, [.dispatched])
+        XCTAssertEqual(h.environment.dispatches, 1)
+        XCTAssertEqual(h.environment.focusReads, 1)
+        h.coordinator.preferences.strictness = .strict
+        XCTAssertFalse(h.coordinator.canPaste(to: h.environment.target))
+        h.paste(); await h.settle()
+        XCTAssertEqual(h.outcomes, [.dispatched, .copiedOnly])
+        XCTAssertEqual(h.environment.dispatches, 1)
+    }
+
+    @MainActor func testCompatibleDoesNotRetryDiagnosticAXMismatchOnTheDispatchDeadline() async {
+        let h = PasteHarness(); h.coordinator.preferences.strictness = .compatible
+        h.environment.focus = .differentSelection
+        h.paste(); await h.settle()
+        XCTAssertEqual(h.outcomes, [.dispatched])
+        XCTAssertEqual(h.environment.focusRestores, 1)
+        XCTAssertEqual(h.environment.focusReads, 1)
+    }
+
+    @MainActor func testDestinationAvailabilityRespectsCopyModePermissionAndProcess() {
+        let h = PasteHarness(); h.coordinator.preferences.strictness = .copyOnly
+        XCTAssertFalse(h.coordinator.canPaste(to: h.environment.target))
+        h.coordinator.preferences.strictness = .compatible
+        XCTAssertFalse(h.coordinator.canPaste(to: nil))
+        h.environment.hasPermission = false
+        XCTAssertFalse(h.coordinator.canPaste(to: h.environment.target))
+        h.environment.hasPermission = true; h.environment.running = false
+        XCTAssertFalse(h.coordinator.canPaste(to: h.environment.target))
+    }
+
     @MainActor func testCompatibleAcceptsChangedAXIdentityButStrictStillWaits() async {
         for focus in [PasteFocusState.differentWindow, .differentElement, .differentSelection] {
             let compatible = PasteHarness(); compatible.coordinator.preferences.strictness = .compatible

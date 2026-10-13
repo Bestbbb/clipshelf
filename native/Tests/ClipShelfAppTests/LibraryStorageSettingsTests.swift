@@ -8,7 +8,7 @@ import ClipShelfLocalization
 @MainActor final class LibraryStorageSettingsTests: XCTestCase {
     private var directory: URL!
     private var store: HistoryStore!
-    private var preferences: UserDefaults!
+    private var preferences: InMemoryPreferences!
     private var domain: String!
     override func setUp() async throws {
         let proposed = FileManager.default.temporaryDirectory.appendingPathComponent("library-usage-ui-\(UUID())")
@@ -19,10 +19,10 @@ import ClipShelfLocalization
         store = try HistoryStore(databaseURL: directory.appendingPathComponent("profile/history.sqlite"))
         _ = try store.create(.init(text: "synthetic storage report"))
         domain = "clipshelf.library-usage-test.\(UUID())"
-        preferences = try XCTUnwrap(UserDefaults(suiteName: domain))
+        preferences = InMemoryPreferences()
     }
     override func tearDown() async throws {
-        if let preferences, let domain { preferences.removePersistentDomain(forName: domain) }
+        if let preferences { preferences.removeAll() }
         store = nil
         if let directory { try? FileManager.default.removeItem(at: directory) }
     }

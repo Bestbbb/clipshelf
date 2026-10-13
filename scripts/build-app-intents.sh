@@ -16,6 +16,7 @@ XCODE_BUILD="$(xcodebuild -version | awk '/Build version/{print $3}')"
 TARGET_TRIPLE="$(uname -m)-apple-macosx14.0"
 SOURCE="$PROJECT_ROOT/native/Sources/ClipShelf/ClipboardIntents.swift"
 PROFILE_SOURCE="$PROJECT_ROOT/native/Sources/ClipShelf/RuntimeProfile.swift"
+PREFERENCES_SOURCE="$PROJECT_ROOT/native/Sources/ClipShelf/PreferencesStore.swift"
 mkdir -p "$STAGING" "$OUTPUT_DIR"
 
 # The SDK catalog wraps the protocol list; Swift's frontend accepts the array.
@@ -24,10 +25,11 @@ plutil -extract constValueProtocols json -o "$STAGING/protocols.json" \
 xcrun swiftc -c -whole-module-optimization -parse-as-library -swift-version 5 -module-name ClipShelf \
     -target "$TARGET_TRIPLE" -sdk "$SDK_ROOT" \
     -I "$BIN_DIR/Modules" -I "$PROJECT_ROOT/native/Sources/CSQLite" \
-    "$SOURCE" "$PROFILE_SOURCE" -o "$STAGING/ClipboardIntents.o" \
-    -Xfrontend -emit-const-values-path -Xfrontend "$STAGING/intents.swiftconstvalues" \
+    "$SOURCE" "$PROFILE_SOURCE" "$PREFERENCES_SOURCE" -o "$STAGING/ClipboardIntents.o" \
+    -emit-const-values -emit-const-values-path "$STAGING/intents.swiftconstvalues" \
     -Xfrontend -const-gather-protocols-file -Xfrontend "$STAGING/protocols.json"
-printf '%s\n' "$SOURCE" "$PROFILE_SOURCE" > "$STAGING/sources.list"
+test -s "$STAGING/intents.swiftconstvalues"
+printf '%s\n' "$SOURCE" "$PROFILE_SOURCE" "$PREFERENCES_SOURCE" > "$STAGING/sources.list"
 printf '%s\n' "$STAGING/intents.swiftconstvalues" > "$STAGING/values.list"
 xcrun appintentsmetadataprocessor --output "$OUTPUT_DIR" \
     --toolchain-dir "$TOOLCHAIN_DIR" --module-name ClipShelf --sdk-root "$SDK_ROOT" \

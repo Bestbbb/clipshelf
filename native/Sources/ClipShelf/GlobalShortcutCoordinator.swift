@@ -144,7 +144,7 @@ struct GlobalShortcutRegistrationError: LocalizedError {
 
     /// Encoding and validation precede registration, and system conflicts leave all preferences unchanged.
     func applyAndSave(_ configuration: KeyboardShortcutConfiguration, alwaysPlainText: Bool,
-                      preferences: UserDefaults) throws {
+                      preferences: PreferencesStore) throws {
         let data = try configuration.encodedData()
         try apply(configuration)
         preferences.set(data, forKey: KeyboardShortcutConfiguration.storageKey)

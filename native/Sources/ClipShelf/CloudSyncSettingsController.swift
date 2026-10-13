@@ -5,7 +5,7 @@ import ClipShelfCore
 @MainActor
 final class CloudSyncSettingsController: NSWindowController {
     private let service: CloudSyncService
-    private let preferences: UserDefaults
+    private let preferences: PreferencesStore
     private let status = NSTextField(wrappingLabelWithString: L10n.text("正在检查此构建的同步配置…"))
     private let toggle = NSButton(title: L10n.text("开启 iCloud 同步…"), target: nil, action: nil)
     private let sync = NSButton(title: L10n.text("立即同步"), target: nil, action: nil)
@@ -19,7 +19,7 @@ final class CloudSyncSettingsController: NSWindowController {
     private var generation: UInt64 = 0
     var onDataChanged: (() -> Void)?
 
-    init(store: HistoryStore, preferences: UserDefaults = .standard) {
+    init(store: HistoryStore, preferences: PreferencesStore = UserDefaults.standard) {
         service = CloudSyncService(store: store)
         self.preferences = preferences
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 520),

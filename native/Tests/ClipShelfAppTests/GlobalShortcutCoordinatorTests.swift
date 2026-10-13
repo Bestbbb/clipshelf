@@ -117,9 +117,8 @@ import XCTest
     func testFailedSecondRegistrationRollsBackStagedOnlyAndLeavesPreferencesUnchanged() throws {
         let rig = RegistrationRig(), defaults = KeyboardShortcutConfiguration.defaults, changed = replacement()
         _ = try rig.coordinator.start(defaults)
-        let domain = "clipshelf-shortcut-commit-test-\(UUID().uuidString)"
-        let preferences = try XCTUnwrap(UserDefaults(suiteName: domain))
-        defer { preferences.removePersistentDomain(forName: domain); rig.coordinator.stop() }
+        let preferences = InMemoryPreferences()
+        defer { preferences.removeAll(); rig.coordinator.stop() }
         try defaults.save(to: preferences)
         preferences.set(false, forKey: "alwaysPlainText")
         let before = preferences.data(forKey: KeyboardShortcutConfiguration.storageKey)
@@ -138,9 +137,8 @@ import XCTest
     func testSuccessfulReplacementSavesTogetherAndRetiredCallbacksCannotFire() throws {
         let rig = RegistrationRig(), changed = replacement()
         _ = try rig.coordinator.start(.defaults)
-        let domain = "clipshelf-shortcut-commit-test-\(UUID().uuidString)"
-        let preferences = try XCTUnwrap(UserDefaults(suiteName: domain))
-        defer { preferences.removePersistentDomain(forName: domain) }
+        let preferences = InMemoryPreferences()
+        defer { preferences.removeAll() }
         try rig.coordinator.applyAndSave(changed, alwaysPlainText: true, preferences: preferences)
         XCTAssertEqual(KeyboardShortcutConfiguration.load(from: preferences), changed)
         XCTAssertTrue(preferences.bool(forKey: "alwaysPlainText"))

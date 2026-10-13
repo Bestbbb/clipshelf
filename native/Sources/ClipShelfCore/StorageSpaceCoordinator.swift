@@ -33,6 +33,14 @@ private struct StorageSpaceRegistry: Codable, Equatable {
     let version: Int
     let lockIdentity: StorageSpaceNode
     let directoryIdentity: StorageSpaceNode
+    let volumeUUID: String?
+    let legacyDevice: Int64?
+
+    init(version: Int, lockIdentity: StorageSpaceNode, directoryIdentity: StorageSpaceNode,
+         volumeUUID: String? = nil, legacyDevice: Int64? = nil) {
+        self.version = version; self.lockIdentity = lockIdentity; self.directoryIdentity = directoryIdentity
+        self.volumeUUID = volumeUUID; self.legacyDevice = legacyDevice
+    }
 }
 
 private struct StorageSpaceIndexEntry: Codable {
@@ -72,9 +80,13 @@ public final class StorageSpaceCoordinator: @unchecked Sendable {
     private var knownParent: (URL, StorageSpaceNode)?
     private var knownRegistry: StorageSpaceRegistry?
     private var journal: (descriptor: Int32, state: StorageSpacePendingState)?
+    private var volumeBinding: StorageSpaceVolumeBinding?
     private let checkpoint: (@Sendable (StorageSpaceCheckpoint) -> Void)?
     static let maximumIndexEntries = 4_000
     private static let journalOffset: Int64 = 4_096
+    /// An upgrade is committed into an unused header slot, leaving the original
+    /// checksummed header and all index/journal files intact on interruption.
+    private static let upgradedHeaderOffset: Int64 = 2_048
     private static let journalSlotBytes = 1_048_576
 
     /// Initialization is read/write-free so an existing full-disk library can still open for
@@ -175,7 +187,7 @@ public final class StorageSpaceCoordinator: @unchecked Sendable {
             }
             guard try StorageSpaceFiles.privateNode(descriptor, directory: false) == record.identity,
                   StorageSpaceFiles.matches(record.identity, name: record.filename, directory: registry),
-                  try StorageSpaceFiles.read(StorageSpaceRecord.self, descriptor: descriptor) == record else {
+                  try StorageSpaceFiles.read(StorageSpaceRecord.self, descriptor: descriptor, volumeBinding: volumeBinding) == record else {
                 throw StorageWriteFailure.coordinationUnavailable
             }
             var available: [String: Int64] = [:]
@@ -208,7 +220,7 @@ public final class StorageSpaceCoordinator: @unchecked Sendable {
             guard let old = index.entries.first(where: { $0.record.id == record.id }), !old.retired, old.record == record,
                   try StorageSpaceFiles.privateNode(originalDescriptor, directory: false) == record.identity,
                   StorageSpaceFiles.matches(record.identity, name: record.filename, directory: registry),
-                  try StorageSpaceFiles.read(StorageSpaceRecord.self, descriptor: originalDescriptor) == record else {
+                  try StorageSpaceFiles.read(StorageSpaceRecord.self, descriptor: originalDescriptor, volumeBinding: volumeBinding) == record else {
                 throw StorageWriteFailure.coordinationUnavailable
             }
             var targets = originalTargets
@@ -323,7 +335,7 @@ public final class StorageSpaceCoordinator: @unchecked Sendable {
             guard descriptor >= 0 else { throw StorageWriteFailure.coordinationUnavailable }
             defer { Darwin.close(descriptor) }
             let identity = try StorageSpaceFiles.privateNode(descriptor, directory: false)
-            let stored = try StorageSpaceFiles.read(StorageSpaceRecord.self, descriptor: descriptor)
+            let stored = try StorageSpaceFiles.read(StorageSpaceRecord.self, descriptor: descriptor, volumeBinding: volumeBinding)
             guard stored == record, record.identity == identity,
                   StorageSpaceFiles.matches(identity, name: name, directory: registry) else { throw StorageWriteFailure.coordinationUnavailable }
             if flock(descriptor, LOCK_EX | LOCK_NB) == 0 {
@@ -346,7 +358,7 @@ public final class StorageSpaceCoordinator: @unchecked Sendable {
                 guard descriptor >= 0 else { throw StorageWriteFailure.coordinationUnavailable }
                 defer { Darwin.close(descriptor) }
                 guard try StorageSpaceFiles.privateNode(descriptor, directory: false) == record.identity,
-                      try StorageSpaceFiles.read(StorageSpaceRecord.self, descriptor: descriptor) == record,
+                      try StorageSpaceFiles.read(StorageSpaceRecord.self, descriptor: descriptor, volumeBinding: volumeBinding) == record,
                       flock(descriptor, LOCK_EX | LOCK_NB) == 0,
                       StorageSpaceFiles.matches(record.identity, name: record.filename, directory: registry),
                       unlinkat(registry, record.filename, 0) == 0 else { throw StorageWriteFailure.coordinationUnavailable }
@@ -363,8 +375,8 @@ public final class StorageSpaceCoordinator: @unchecked Sendable {
         guard descriptor >= 0 else { throw StorageWriteFailure.coordinationUnavailable }
         defer { Darwin.close(descriptor) }
         let identity = try StorageSpaceFiles.privateNode(descriptor, directory: false)
-        let index = try StorageSpaceFiles.read(StorageSpaceIndex.self, descriptor: descriptor)
-        guard index.version == 1, index.registryIdentity == StorageSpaceNode(try StorageSpaceFiles.info(registry)),
+        let index = try StorageSpaceFiles.read(StorageSpaceIndex.self, descriptor: descriptor, volumeBinding: volumeBinding)
+        guard index.version == 1, index.registryIdentity == (try StorageSpaceFiles.privateNode(registry, directory: true)),
               index.entries.count <= Self.maximumIndexEntries, Set(index.entries.map { $0.record.id }).count == index.entries.count,
               StorageSpaceFiles.matches(identity, name: "index.json", directory: registry) else { throw StorageWriteFailure.coordinationUnavailable }
         for entry in index.entries {
@@ -415,7 +427,8 @@ public final class StorageSpaceCoordinator: @unchecked Sendable {
     private func loadJournal(descriptor: Int32, identity: StorageSpaceNode) throws -> StorageSpacePendingState {
         let states = try [0, 1].compactMap { slot in
             try StorageSpaceFiles.readFrame(StorageSpacePendingState.self, descriptor: descriptor,
-                offset: Self.journalOffset + Int64(slot * Self.journalSlotBytes), maximumBytes: Self.journalSlotBytes - 40)
+                offset: Self.journalOffset + Int64(slot * Self.journalSlotBytes), maximumBytes: Self.journalSlotBytes - 40,
+                volumeBinding: volumeBinding)
         }.filter {
             $0.version == 1 && $0.registryIdentity == identity && $0.sequence >= 0 && $0.pending.count <= 2 &&
                 $0.preserved.count <= Self.maximumIndexEntries && $0.pending.isDisjoint(with: $0.preserved) &&
@@ -479,7 +492,9 @@ public final class StorageSpaceCoordinator: @unchecked Sendable {
         if let knownParent, knownParent.0 != parentURL || knownParent.1 != parentIdentity { throw StorageWriteFailure.coordinationUnavailable }
         let name = directory.lastPathComponent, lockName = name + ".lock"
         var created = false
-        var descriptor = openat(parent, lockName, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        // The creator must own the registry lock before another participant can
+        // observe the newly created, not-yet-initialized header.
+        var descriptor = openat(parent, lockName, O_RDWR | O_CREAT | O_EXCL | O_EXLOCK | O_NOFOLLOW | O_CLOEXEC, 0o600)
         if descriptor >= 0 { created = true }
         else {
             guard errno == EEXIST else { throw StorageSpaceFiles.posixFailure() }
@@ -506,7 +521,7 @@ public final class StorageSpaceCoordinator: @unchecked Sendable {
                 if StorageSpaceFiles.matches(lockIdentity, name: lockName, directory: parent) { _ = unlinkat(parent, lockName, 0) }
             }
         }
-        let header: StorageSpaceRegistry
+        var header: StorageSpaceRegistry
         if created {
             guard knownRegistry == nil, !(try StorageSpaceFiles.exists(name, directory: parent)) else {
                 throw StorageWriteFailure.coordinationUnavailable
@@ -522,7 +537,8 @@ public final class StorageSpaceCoordinator: @unchecked Sendable {
             createdIndex = try StorageSpaceFiles.privateNode(initial, directory: false)
             try StorageSpaceFiles.write(StorageSpaceIndex(version: 1, registryIdentity: identity, entries: []), descriptor: initial)
             guard fsync(root) == 0 else { throw StorageSpaceFiles.posixFailure() }
-            header = StorageSpaceRegistry(version: 2, lockIdentity: lockIdentity, directoryIdentity: identity)
+            header = StorageSpaceRegistry(version: 3, lockIdentity: lockIdentity, directoryIdentity: identity,
+                                          volumeUUID: identity.volumeUUID)
             try StorageSpaceFiles.writeFrame(header, descriptor: descriptor, offset: 0, maximumBytes: Int(Self.journalOffset) - 40)
             try StorageSpaceFiles.writeFrame(StorageSpacePendingState(version: 1, registryIdentity: identity, sequence: 0, pending: [], preserved: []),
                 descriptor: descriptor, offset: Self.journalOffset, maximumBytes: Self.journalSlotBytes - 40)
@@ -531,8 +547,43 @@ public final class StorageSpaceCoordinator: @unchecked Sendable {
             guard let stored = try StorageSpaceFiles.readFrame(StorageSpaceRegistry.self, descriptor: descriptor, offset: 0,
                 maximumBytes: Int(Self.journalOffset) - 40) else { throw StorageWriteFailure.coordinationUnavailable }
             header = stored
+            if stored.version == 2,
+               let upgraded = try StorageSpaceFiles.readFrame(StorageSpaceRegistry.self, descriptor: descriptor,
+                    offset: Self.upgradedHeaderOffset, maximumBytes: Int(Self.journalOffset - Self.upgradedHeaderOffset) - 40) {
+                guard upgraded.version == 3 else { throw StorageWriteFailure.coordinationUnavailable }
+                header = upgraded
+            } else if stored.version == 2, knownRegistry == nil,
+                      let upgraded = try upgradeEmptyLegacyRegistry(stored, lockIdentity: lockIdentity,
+                        descriptor: descriptor, parent: parent, name: name) {
+                header = upgraded
+            }
         }
-        guard header.version == 2, header.lockIdentity == lockIdentity,
+        if header.version == 2, let uuid = lockIdentity.volumeUUID {
+            // An existing live legacy registry may continue on the same mount.
+            // Bind its decoded identities only after validating both original
+            // device numbers and complete object stamps under the registry lock.
+            let root = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard root >= 0 else { throw StorageWriteFailure.coordinationUnavailable }
+            defer { Darwin.close(root) }
+            let current = try StorageSpaceFiles.privateNode(root, directory: true)
+            guard header.lockIdentity.device == lockIdentity.device,
+                  header.directoryIdentity.device == current.device,
+                  header.lockIdentity.sameObject(as: lockIdentity),
+                  header.directoryIdentity.sameObject(as: current), current.volumeUUID == uuid else {
+                throw StorageWriteFailure.coordinationUnavailable
+            }
+            volumeBinding = StorageSpaceVolumeBinding(legacyDevice: header.lockIdentity.device, volumeUUID: uuid)
+            header = StorageSpaceRegistry(version: 2, lockIdentity: lockIdentity, directoryIdentity: current,
+                                          legacyDevice: header.lockIdentity.device)
+        }
+        if header.version == 3, let expected = header.volumeUUID {
+            guard lockIdentity.volumeUUID == expected else { throw StorageWriteFailure.coordinationUnavailable }
+            if let legacyDevice = header.legacyDevice {
+                volumeBinding = StorageSpaceVolumeBinding(legacyDevice: legacyDevice, volumeUUID: expected)
+            }
+        }
+        defer { volumeBinding = nil }
+        guard [2, 3].contains(header.version), header.lockIdentity == lockIdentity,
               knownRegistry == nil || knownRegistry == header,
               StorageSpaceFiles.matches(header.directoryIdentity, name: name, directory: parent) else {
             throw StorageWriteFailure.coordinationUnavailable
@@ -551,6 +602,39 @@ public final class StorageSpaceCoordinator: @unchecked Sendable {
             throw StorageWriteFailure.coordinationUnavailable
         }
         return result
+    }
+
+    /// Upgrade only an empty, quiescent legacy registry whose complete object
+    /// stamps still match. Unknown files, pending writes and live claims block
+    /// migration; merely ignoring an old device number is never sufficient.
+    private func upgradeEmptyLegacyRegistry(_ legacy: StorageSpaceRegistry, lockIdentity: StorageSpaceNode,
+                                           descriptor: Int32, parent: Int32, name: String) throws -> StorageSpaceRegistry? {
+        guard legacy.volumeUUID == nil, legacy.lockIdentity.volumeUUID == nil,
+              legacy.directoryIdentity.volumeUUID == nil,
+              legacy.lockIdentity.device == legacy.directoryIdentity.device,
+              legacy.lockIdentity.sameObject(as: lockIdentity), let uuid = lockIdentity.volumeUUID else { return nil }
+        let root = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard root >= 0 else { throw StorageWriteFailure.coordinationUnavailable }
+        defer { Darwin.close(root) }
+        let current = try StorageSpaceFiles.privateNode(root, directory: true)
+        guard current.volumeUUID == uuid, legacy.directoryIdentity.sameObject(as: current) else { return nil }
+        let indexFD = openat(root, "index.json", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard indexFD >= 0 else { throw StorageWriteFailure.coordinationUnavailable }
+        defer { Darwin.close(indexFD) }
+        _ = try StorageSpaceFiles.privateNode(indexFD, directory: false)
+        let index = try StorageSpaceFiles.read(StorageSpaceIndex.self, descriptor: indexFD)
+        guard index.version == 1, index.registryIdentity == legacy.directoryIdentity else {
+            throw StorageWriteFailure.coordinationUnavailable
+        }
+        guard index.entries.isEmpty else { return nil }
+        let pending = try loadJournal(descriptor: descriptor, identity: legacy.directoryIdentity)
+        guard pending.pending.isEmpty, pending.preserved.isEmpty,
+              Set(try StorageSpaceFiles.names(root)) == ["index.json"] else { return nil }
+        let upgraded = StorageSpaceRegistry(version: 3, lockIdentity: lockIdentity, directoryIdentity: current,
+                                            volumeUUID: uuid, legacyDevice: legacy.lockIdentity.device)
+        try StorageSpaceFiles.writeFrame(upgraded, descriptor: descriptor, offset: Self.upgradedHeaderOffset,
+            maximumBytes: Int(Self.journalOffset - Self.upgradedHeaderOffset) - 40)
+        return upgraded
     }
 }
 

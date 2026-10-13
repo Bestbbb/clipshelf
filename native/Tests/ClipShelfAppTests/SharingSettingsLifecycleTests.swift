@@ -24,12 +24,12 @@ final class SharingSettingsLifecycleTests: XCTestCase {
     @MainActor private final class Harness {
         let directory: URL
         let suite = "clipshelf-sharing-lifecycle-" + UUID().uuidString
-        let preferences: UserDefaults
+        let preferences: InMemoryPreferences
         let controller: SharingSettingsController
         init(readStates: @escaping @MainActor () async throws -> [SharedBoardState] = { [] },
              availability: @escaping @MainActor () async -> CloudSyncAvailability = { .disabled }) throws {
             directory = FileManager.default.temporaryDirectory.appendingPathComponent("sharing-lifecycle-" + UUID().uuidString)
-            preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+            preferences = InMemoryPreferences()
             let store = try HistoryStore(databaseURL: directory.appendingPathComponent("history.sqlite3"))
             controller = SharingSettingsController(store: store, preferences: preferences,
                                                     readStates: readStates, availability: availability)
@@ -37,7 +37,7 @@ final class SharingSettingsLifecycleTests: XCTestCase {
         }
         func close() {
             controller.stop()
-            preferences.removePersistentDomain(forName: suite)
+            preferences.removeAll()
             try? FileManager.default.removeItem(at: directory)
         }
     }

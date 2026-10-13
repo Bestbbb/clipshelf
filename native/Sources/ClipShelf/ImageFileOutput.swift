@@ -287,15 +287,22 @@ private final class ImageFilePromiseDelegate: NSObject, NSFilePromiseProviderDel
     @MainActor func operationQueue(for filePromiseProvider: NSFilePromiseProvider) -> OperationQueue { queue }
     func filePromiseProvider(_ filePromiseProvider: NSFilePromiseProvider, writePromiseTo url: URL,
                              completionHandler: @escaping (Error?) -> Void) {
+        let result: Error?
         do {
-            let coordinator = try spaceCoordinator ?? ApplicationStorageBudget.fallbackCoordinator()
-            let lease = try coordinator.reserve([.init(destination: url, bytes: Int64(data.count))])
-            defer { try? lease.release() }
-            try lease.revalidate()
-            let identity = try ImageFileWriter.write(data, to: url, checkpoint: writeCheckpoint)
-            do { try lease.validateDestinations(); try Task.checkCancellation() }
-            catch { identity.discard(); throw error }
-            completionHandler(nil)
-        } catch { completionHandler(StorageWriteFailure.classify(error) ?? error) }
+            try write(to: url)
+            result = nil
+        } catch { result = StorageWriteFailure.classify(error) ?? error }
+        // A receiver may immediately start another write, move the promised
+        // file or discard its context. All leases and rollback must be finished.
+        completionHandler(result)
+    }
+    private func write(to url: URL) throws {
+        let coordinator = try spaceCoordinator ?? ApplicationStorageBudget.fallbackCoordinator()
+        let lease = try coordinator.reserve([.init(destination: url, bytes: Int64(data.count))])
+        defer { try? lease.release() }
+        try lease.revalidate()
+        let identity = try ImageFileWriter.write(data, to: url, checkpoint: writeCheckpoint)
+        do { try lease.validateDestinations(); try Task.checkCancellation() }
+        catch { identity.discard(); throw error }
     }
 }

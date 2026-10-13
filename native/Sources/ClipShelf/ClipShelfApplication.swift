@@ -479,13 +479,13 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
                   self.pasteDestinationChoices.contains(where: { $0.application.processIdentifier == pid }),
                   let selected = self.paste.captureDestination(processIdentifier: pid),
                   !selected.application.isTerminated else { return }
-            guard selected.window != nil else {
+            guard self.paste.preferences.mode(for: selected.application.bundleIdentifier) != .strict || selected.window != nil else {
                 self.setStatus(L10n.text("无法读取目标窗口，请重新选择或稍后重试。")); return
             }
             self.target = selected
             self.requiresPasteDestinationChoice = false
             self.panel.setPasteDestination(name: selected.application.localizedName,
-                                           available: self.paste.hasPermission && selected.window != nil)
+                                           available: self.paste.canPaste(to: selected))
             ValidationTrace.emit(.destinationSelected, pid: pid, bundleID: selected.application.bundleIdentifier, state: .captured)
             self.setStatus(L10n.text("单击粘贴；⌘/Shift 单击多选；回车粘贴，Shift 回车以纯文本粘贴。"))
         }
@@ -1039,7 +1039,7 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
         panel.setPasteDestinations(pasteDestinationChoices.map { ($0.application.processIdentifier, $0.application.localizedName ?? "ClipShelf") },
                                    selectedPID: target?.application.processIdentifier)
         panel.setPasteDestination(name: target?.application.localizedName,
-                                  available: paste.hasPermission && target?.window != nil,
+                                  available: paste.canPaste(to: target),
                                   requiresChoice: requiresPasteDestinationChoice)
         if !demo, !preferences.bool(forKey: "hasSeenWelcome"), !showWelcome() { return }
         statusMessage = demo ? L10n.text("演示模式 · 合成内容 · 不读取或写入系统剪贴板")
