@@ -217,7 +217,12 @@ final class PasteSystemEnvironment: PasteEnvironment {
         // reports the receiver as frontmost. Restore application activation even
         // in that case; frontmost identity alone does not restore native input
         // routing. The captured field and selection are restored afterwards.
-        target.application.activate(options: [])
+        // macOS 14 activation is cooperative: a request from an app that is not
+        // active may be ignored. Yield first and name ClipShelf as the source;
+        // fall back to the plain request if the system declines.
+        NSApp.yieldActivation(to: target.application)
+        if target.application.activate(from: .current, options: []) { return true }
+        return target.application.activate(options: [])
     }
     func raiseWindow(_ target: PasteCoordinator.Target) -> Bool {
         guard let window = target.window else { return false }

@@ -330,7 +330,7 @@
   "原图预览，青色为识别区域，黄色为搜索命中": "Voorvertoning van de oorspronkelijke afbeelding. Cyaan markeert herkende gebieden; geel markeert zoekovereenkomsten.",
   "原始格式与大小": "Oorspronkelijke formaten en groottes",
   "原富文本无法完整读取，不能覆盖保存；可继续查看原条目。": "De oorspronkelijke opgemaakte tekst kon niet volledig worden gelezen en kan niet worden overschreven. Je kunt het oorspronkelijke onderdeel nog bekijken.",
-  "原快捷键被占用，打开剪贴板已改为 {0}。可在设置中修改。": "De oorspronkelijke sneltoets is bezet. Het klembord wordt nu geopend met {0}. Je kunt dit wijzigen in Instellingen.",
+  "原快捷键被占用，本次临时改用 {0}；下次启动会重新尝试原快捷键。": "De oorspronkelijke sneltoets is bezet, dus voorlopig wordt {0} gebruikt. ClipShelf probeert de oorspronkelijke sneltoets bij de volgende start opnieuw.",
   "原有历史未改变，请检查本机磁盘空间。": "De bestaande geschiedenis is ongewijzigd. Controleer de beschikbare schijfruimte op deze Mac.",
   "原有文件会保留。请检查本机磁盘和数据目录权限后重新启动。": "Bestaande bestanden blijven behouden. Controleer de lokale schijf en de rechten van de gegevensmap en start opnieuw.",
   "原条目已被删除，未保存修改。草稿仍保留。": "Het oorspronkelijke onderdeel is verwijderd. Je wijzigingen zijn niet opgeslagen en het concept is nog beschikbaar.",

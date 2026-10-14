@@ -330,7 +330,7 @@
   "原图预览，青色为识别区域，黄色为搜索命中": "Originalbildvorschau. Türkis markiert erkannte Bereiche, Gelb Suchtreffer.",
   "原始格式与大小": "Originalformate und Größen",
   "原富文本无法完整读取，不能覆盖保存；可继续查看原条目。": "Der ursprüngliche formatierte Text konnte nicht vollständig gelesen werden und darf nicht überschrieben werden. Der ursprüngliche Eintrag bleibt einsehbar.",
-  "原快捷键被占用，打开剪贴板已改为 {0}。可在设置中修改。": "Die ursprüngliche Tastenkombination ist belegt. Die Zwischenablage öffnet sich jetzt mit {0}. Dies lässt sich in den Einstellungen ändern.",
+  "原快捷键被占用，本次临时改用 {0}；下次启动会重新尝试原快捷键。": "Die ursprüngliche Tastenkombination ist belegt, daher wird vorerst {0} verwendet. Beim nächsten Start versucht ClipShelf die ursprüngliche erneut.",
   "原有历史未改变，请检查本机磁盘空间。": "Der bestehende Verlauf ist unverändert. Prüfen Sie den freien Speicher auf diesem Mac.",
   "原有文件会保留。请检查本机磁盘和数据目录权限后重新启动。": "Vorhandene Dateien bleiben erhalten. Prüfen Sie den lokalen Datenträger und die Rechte des Datenordners und starten Sie neu.",
   "原条目已被删除，未保存修改。草稿仍保留。": "Der ursprüngliche Eintrag wurde gelöscht. Ihre Änderungen wurden nicht gespeichert; der Entwurf bleibt verfügbar.",

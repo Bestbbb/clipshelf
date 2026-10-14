@@ -330,7 +330,7 @@
   "原图预览，青色为识别区域，黄色为搜索命中": "Náhled původního obrázku. Azurová označuje rozpoznané oblasti, žlutá shody hledání.",
   "原始格式与大小": "Původní formáty a velikosti",
   "原富文本无法完整读取，不能覆盖保存；可继续查看原条目。": "Původní formátovaný text nelze přečíst celý, a proto jej nelze přepsat. Původní položku lze nadále zobrazit.",
-  "原快捷键被占用，打开剪贴板已改为 {0}。可在设置中修改。": "Původní zkratka je obsazena. Schránku nyní otevře {0}. Změnu lze provést v nastavení.",
+  "原快捷键被占用，本次临时改用 {0}；下次启动会重新尝试原快捷键。": "Původní zkratka je obsazená, proto se zatím používá {0}. Při příštím spuštění se ClipShelf pokusí o původní zkratku znovu.",
   "原有历史未改变，请检查本机磁盘空间。": "Stávající historie zůstává beze změny. Zkontrolujte volné místo na tomto Macu.",
   "原有文件会保留。请检查本机磁盘和数据目录权限后重新启动。": "Stávající soubory budou zachovány. Zkontrolujte místní disk a oprávnění datové složky a restartujte aplikaci.",
   "原条目已被删除，未保存修改。草稿仍保留。": "Původní položka byla smazána. Změny nebyly uloženy a koncept je stále dostupný.",

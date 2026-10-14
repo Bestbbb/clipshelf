@@ -236,10 +236,12 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             let result = try globalShortcuts.startWithActivationFallback(shortcutConfiguration)
             shortcutRegistrationFailures = result.failures.map(\.localizedDescription)
             if result.usedFallback {
-                try result.configuration.save(to: preferences)
+                // Use the fallback for this run only. The preferred chord may be
+                // held only briefly by another app; persisting the fallback would
+                // never retry it. Saving in Settings still makes a choice permanent.
                 shortcutConfiguration = result.configuration
                 panel.applyShortcuts(shortcutConfiguration, alwaysPlainText: preferences.bool(forKey: "alwaysPlainText"))
-                shortcutFallbackNotice = L10n.text("原快捷键被占用，打开剪贴板已改为 \(shortcutConfiguration.activation.displayName)。可在设置中修改。")
+                shortcutFallbackNotice = L10n.text("原快捷键被占用，本次临时改用 \(shortcutConfiguration.activation.displayName)；下次启动会重新尝试原快捷键。")
             }
         }
         catch { shortcutLayoutWarning = error.localizedDescription }
