@@ -330,7 +330,7 @@
   "原图预览，青色为识别区域，黄色为搜索命中": "Visning af originalbilledet. Cyan markerer genkendte områder; gul markerer søgeresultater.",
   "原始格式与大小": "Oprindelige formater og størrelser",
   "原富文本无法完整读取，不能覆盖保存；可继续查看原条目。": "Den oprindelige formaterede tekst kunne ikke læses fuldstændigt og kan ikke overskrives. Du kan stadig se det oprindelige emne.",
-  "原快捷键被占用，打开剪贴板已改为 {0}。可在设置中修改。": "Den oprindelige genvej er optaget. Åbn udklipsholder bruger nu {0}. Du kan ændre den i Indstillinger.",
+  "原快捷键被占用，本次临时改用 {0}；下次启动会重新尝试原快捷键。": "Den oprindelige genvej er optaget, så {0} bruges indtil videre. ClipShelf prøver den oprindelige genvej igen ved næste start.",
   "原有历史未改变，请检查本机磁盘空间。": "Eksisterende historik er uændret. Kontrollér ledig diskplads på denne Mac.",
   "原有文件会保留。请检查本机磁盘和数据目录权限后重新启动。": "Eksisterende filer bevares. Kontrollér den lokale disk og datamappens tilladelser, og genstart derefter.",
   "原条目已被删除，未保存修改。草稿仍保留。": "Det oprindelige emne er slettet. Ændringerne blev ikke gemt, og kladden er stadig tilgængelig.",

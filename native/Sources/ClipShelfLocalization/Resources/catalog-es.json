@@ -330,7 +330,7 @@
   "原图预览，青色为识别区域，黄色为搜索命中": "Vista previa de la imagen original. El cian marca las regiones reconocidas y el amarillo las coincidencias de búsqueda.",
   "原始格式与大小": "Formatos y tamaños originales",
   "原富文本无法完整读取，不能覆盖保存；可继续查看原条目。": "No se pudo leer por completo el texto con formato original y no puede sobrescribirse. Aún puedes ver el elemento original.",
-  "原快捷键被占用，打开剪贴板已改为 {0}。可在设置中修改。": "El atajo original está ocupado. El portapapeles ahora se abre con {0}. Puedes cambiarlo en Ajustes.",
+  "原快捷键被占用，本次临时改用 {0}；下次启动会重新尝试原快捷键。": "El atajo original está en uso, así que por ahora se usa {0}. ClipShelf volverá a intentar el atajo original en el próximo inicio.",
   "原有历史未改变，请检查本机磁盘空间。": "El historial existente no ha cambiado. Comprueba el espacio disponible en este Mac.",
   "原有文件会保留。请检查本机磁盘和数据目录权限后重新启动。": "Se conservarán los archivos existentes. Comprueba el disco local y los permisos de la carpeta de datos, y reinicia.",
   "原条目已被删除，未保存修改。草稿仍保留。": "El elemento original se eliminó. Los cambios no se guardaron y el borrador sigue disponible.",

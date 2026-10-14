@@ -89,7 +89,11 @@ final class DiagnosticsController: NSWindowController {
     }
     @objc private func copyReport() {
         refreshReport()
-        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(report, forType: .string)
+        // Mark the write as ClipShelf's own so capture does not add the report to history.
+        let item = NSPasteboardItem()
+        item.setString(report, forType: .string)
+        item.setString(UUID().uuidString, forType: CaptureService.internalType)
+        NSPasteboard.general.clearContents(); NSPasteboard.general.writeObjects([item])
     }
     @objc private func openAccessibility() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") { NSWorkspace.shared.open(url) }

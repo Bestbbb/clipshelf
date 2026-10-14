@@ -330,7 +330,7 @@
   "原图预览，青色为识别区域，黄色为搜索命中": "Podgląd oryginalnego obrazu. Turkus oznacza rozpoznane obszary; żółty — dopasowania wyszukiwania.",
   "原始格式与大小": "Oryginalne formaty i rozmiary",
   "原富文本无法完整读取，不能覆盖保存；可继续查看原条目。": "Nie udało się odczytać całego oryginalnego tekstu sformatowanego i nie można go nadpisać. Nadal możesz obejrzeć oryginalny element.",
-  "原快捷键被占用，打开剪贴板已改为 {0}。可在设置中修改。": "Pierwotny skrót jest zajęty. Schowek otwiera teraz {0}. Możesz to zmienić w ustawieniach.",
+  "原快捷键被占用，本次临时改用 {0}；下次启动会重新尝试原快捷键。": "Pierwotny skrót jest zajęty, więc tymczasowo używany jest {0}. Przy następnym uruchomieniu ClipShelf ponownie spróbuje pierwotnego skrótu.",
   "原有历史未改变，请检查本机磁盘空间。": "Istniejąca historia pozostaje bez zmian. Sprawdź wolne miejsce na dysku tego Maca.",
   "原有文件会保留。请检查本机磁盘和数据目录权限后重新启动。": "Istniejące pliki zostaną zachowane. Sprawdź dysk lokalny i uprawnienia katalogu danych, a następnie uruchom aplikację ponownie.",
   "原条目已被删除，未保存修改。草稿仍保留。": "Oryginalny element został usunięty. Zmiany nie zostały zapisane, a wersja robocza jest nadal dostępna.",

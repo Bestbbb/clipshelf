@@ -330,7 +330,7 @@
   "原图预览，青色为识别区域，黄色为搜索命中": "Original image preview. Cyan marks recognized regions; yellow marks search matches.",
   "原始格式与大小": "Original Formats and Sizes",
   "原富文本无法完整读取，不能覆盖保存；可继续查看原条目。": "The original rich text could not be read completely and cannot be overwritten. You can still view the original item.",
-  "原快捷键被占用，打开剪贴板已改为 {0}。可在设置中修改。": "The original shortcut is in use. Open clipboard now uses {0}. You can change it in Settings.",
+  "原快捷键被占用，本次临时改用 {0}；下次启动会重新尝试原快捷键。": "The original shortcut is in use, so {0} is used for now. ClipShelf will try the original shortcut again next launch.",
   "原有历史未改变，请检查本机磁盘空间。": "Existing history is unchanged. Check available disk space on this Mac.",
   "原有文件会保留。请检查本机磁盘和数据目录权限后重新启动。": "Existing files will be kept. Check the local disk and data folder permissions, then restart.",
   "原条目已被删除，未保存修改。草稿仍保留。": "The original item was deleted. Your changes were not saved, and the draft is still available.",
