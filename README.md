@@ -3,48 +3,33 @@
 A free, open-source clipboard manager for macOS. The goal is the full Paste for
 Mac feature set and its smooth cross-app workflow.
 
-**Status (2026-10-13): the installed candidate has verified receiver results in
-TextEdit, Safari, Chrome, and Cursor; physical-hotkey acceptance remains pending.** Earlier user feedback
-reported usable basic functionality, while the workflow still fell short of Paste.
-Cards support one-click paste. Earlier automated observations of insertion and
-continued typing in Cursor's chat input and code editor are recorded in the
-[single-click workflow record](docs/SINGLE_CLICK_WORKFLOW.zh-CN.md).
-The latest input-selection restoration changes and their verified scope are
-recorded in the [generic paste workflow record](docs/GENERIC_PASTE_WORKFLOW.zh-CN.md).
-Full Paste for Mac parity and broad daily-use acceptance remain incomplete.
-Earlier failed acceptance and its retrospective are preserved as history.
-The [2026-10-12 implementation record](docs/IMPROVEMENT_IMPLEMENTATION.zh-CN.md)
-tracks the first stage of the colleague's [improvement specification](docs/IMPROVEMENT_SPEC.zh-CN.md).
-It adds compatible/strict/copy-only modes, bounded AX queries, click handoff and
-session diagnostics. Its original acceptance and storage failures are historical
-checkpoints; the current candidate results are recorded below.
-The [2026-10-13 follow-up](docs/IMPROVEMENT_FOLLOWUP.zh-CN.md) fixes those storage
-issues, image-promise completion ordering and the remaining compatible-mode
-AX-window requirement. Its 1,411-test result is a historical checkpoint;
-the subsequent full CI run exposed a remaining cold-initialization race and an
-incorrect scroll-layout assertion.
-The [latest receiver acceptance record](docs/PASTE_ACCEPTANCE_2026-10-13.zh-CN.md)
-records the installed candidate's ten valid rounds each in TextEdit, Safari,
-Cursor chat, and Cursor's editor, plus four Chrome rounds. It also records real
-clipboard capture followed by one-click insertion and continued typing in
-standard mode in TextEdit, Chrome, and both Cursor inputs. These use application
-reopen, not a verified physical hotkey; interrupted rounds and explicit target
-setup are identified, so they do not satisfy the full P1 gate.
-The candidate fixes explicit-destination handoff and avoids rewriting an
-already-correct AX caret. Source commit `8d1240f` passed the local and
-[remote full suite](https://github.com/Bestbbb/clipshelf/actions/runs/38367552283)
-(1,418 tests, zero failures, one unavailable-model skip), with no added or
-deleted ClipShelf preference files.
-An additional local diagnostic run is recorded in the
-[core-flow rerun](docs/CORE_FLOW_RERUN.zh-CN.md). A later user trace showed app
-launches capturing Finder as the paste destination. The focused local fixes and
-their limited verification are recorded in the
-[launcher diagnosis](docs/LAUNCHER_FLOW_DIAGNOSIS.zh-CN.md).
+> **Early preview.** Copying, searching and pasting back into the original app
+> work in TextEdit, Safari, Chrome and Cursor. ClipShelf is not yet a complete
+> replacement for Paste: expect rough edges, and please
+> [open an issue](https://github.com/Bestbbb/clipshelf/issues) when something breaks.
 
-Some automated text and Pinboard workflows produced passing observations, but
-those results did not establish usability through the user's normal entry points.
-See the [failure retrospective](docs/REPLICATION_FAILURE_RETROSPECTIVE.zh-CN.md)
-and the [historical test record](docs/LOCAL_USABILITY_QA.zh-CN.md).
+## Download
+
+Get the latest build from the [Releases page](https://github.com/Bestbbb/clipshelf/releases).
+
+- Requires macOS 14 or later on an Apple silicon Mac (M1 or later).
+- Preview builds are **not signed with an Apple Developer ID or notarized**. On first
+  launch, right-click `ClipShelf.app` and choose **Open**, or allow it in
+  **System Settings → Privacy & Security**. If macOS reports the app as damaged:
+
+  ```sh
+  xattr -dr com.apple.quarantine /Applications/ClipShelf.app
+  ```
+
+- Grant **Accessibility** permission when asked so ClipShelf can paste back into
+  the app you were using. Without it, items are copied and you press ⌘V yourself.
+
+## Use
+
+- Press **⇧⌘V** anywhere to open the shelf at the bottom of the screen.
+- Type to search, then click a card or press Return to paste it at your cursor.
+  Shift-Return pastes plain text, ⌘1–9 pastes the matching card, Esc closes.
+- Start or pause recording, and find settings, from the menu bar icon.
 
 ## Build and run
 
@@ -121,6 +106,51 @@ Quit an existing ClipShelf instance before switching to or from demo mode. The
 build script uses an ad-hoc signature unless `CODESIGN_IDENTITY` is provided;
 the development bundle is **not notarized**. Native data is kept separately in
 `~/Library/Application Support/ClipShelf Development`.
+
+## Development status
+
+**Status (2026-10-13): the installed candidate has verified receiver results in
+TextEdit, Safari, Chrome, and Cursor; physical-hotkey acceptance remains pending.** Earlier user feedback
+reported usable basic functionality, while the workflow still fell short of Paste.
+Cards support one-click paste. Earlier automated observations of insertion and
+continued typing in Cursor's chat input and code editor are recorded in the
+[single-click workflow record](docs/SINGLE_CLICK_WORKFLOW.zh-CN.md).
+The latest input-selection restoration changes and their verified scope are
+recorded in the [generic paste workflow record](docs/GENERIC_PASTE_WORKFLOW.zh-CN.md).
+Full Paste for Mac parity and broad daily-use acceptance remain incomplete.
+Earlier failed acceptance and its retrospective are preserved as history.
+The [2026-10-12 implementation record](docs/IMPROVEMENT_IMPLEMENTATION.zh-CN.md)
+tracks the first stage of the colleague's [improvement specification](docs/IMPROVEMENT_SPEC.zh-CN.md).
+It adds compatible/strict/copy-only modes, bounded AX queries, click handoff and
+session diagnostics. Its original acceptance and storage failures are historical
+checkpoints; the current candidate results are recorded below.
+The [2026-10-13 follow-up](docs/IMPROVEMENT_FOLLOWUP.zh-CN.md) fixes those storage
+issues, image-promise completion ordering and the remaining compatible-mode
+AX-window requirement. Its 1,411-test result is a historical checkpoint;
+the subsequent full CI run exposed a remaining cold-initialization race and an
+incorrect scroll-layout assertion.
+The [latest receiver acceptance record](docs/PASTE_ACCEPTANCE_2026-10-13.zh-CN.md)
+records the installed candidate's ten valid rounds each in TextEdit, Safari,
+Cursor chat, and Cursor's editor, plus four Chrome rounds. It also records real
+clipboard capture followed by one-click insertion and continued typing in
+standard mode in TextEdit, Chrome, and both Cursor inputs. These use application
+reopen, not a verified physical hotkey; interrupted rounds and explicit target
+setup are identified, so they do not satisfy the full P1 gate.
+The candidate fixes explicit-destination handoff and avoids rewriting an
+already-correct AX caret. Source commit `8d1240f` passed the local and
+[remote full suite](https://github.com/Bestbbb/clipshelf/actions/runs/38367552283)
+(1,418 tests, zero failures, one unavailable-model skip), with no added or
+deleted ClipShelf preference files.
+An additional local diagnostic run is recorded in the
+[core-flow rerun](docs/CORE_FLOW_RERUN.zh-CN.md). A later user trace showed app
+launches capturing Finder as the paste destination. The focused local fixes and
+their limited verification are recorded in the
+[launcher diagnosis](docs/LAUNCHER_FLOW_DIAGNOSIS.zh-CN.md).
+
+Some automated text and Pinboard workflows produced passing observations, but
+those results did not establish usability through the user's normal entry points.
+See the [failure retrospective](docs/REPLICATION_FAILURE_RETROSPECTIVE.zh-CN.md)
+and the [historical test record](docs/LOCAL_USABILITY_QA.zh-CN.md).
 
 ## Implementation
 
