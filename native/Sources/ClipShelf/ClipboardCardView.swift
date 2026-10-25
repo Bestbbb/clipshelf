@@ -95,6 +95,9 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
 
     private let accent = NSView()
     private let sourceIcon = NSImageView()
+    // Only the five content-kind symbols enter this cache. A cold page should
+    // not rebuild the same configured SF Symbol once for every pending icon.
+    private static var sourcePlaceholders: [String: NSImage] = [:]
     static let headerHeight: CGFloat = 50
     private var sourceTint: NSColor?
     private let sourceLabel = NSTextField(labelWithString: "")
@@ -199,8 +202,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
             }
         }
         if sourceIcon.image == nil {
-            sourceIcon.image = NSImage(systemSymbolName: Self.symbolName(for: record), accessibilityDescription: nil)?
-                .withSymbolConfiguration(.init(pointSize: 18, weight: .medium))
+            sourceIcon.image = Self.sourcePlaceholder(for: record)
             sourceIcon.imageScaling = .scaleNone
             sourceIcon.contentTintColor = .white.withAlphaComponent(0.85)
         }
@@ -649,6 +651,15 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         case .file: return "doc"
         case .color: return "paintpalette"
         }
+    }
+
+    private static func sourcePlaceholder(for record: ClipboardCardContent) -> NSImage? {
+        let name = symbolName(for: record)
+        if let cached = sourcePlaceholders[name] { return cached }
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 18, weight: .medium))
+        sourcePlaceholders[name] = image
+        return image
     }
 
     /// Coalesces with visible-card requests; a cold card always has a placeholder.

@@ -11,6 +11,30 @@ private final class IconLoadCounter: @unchecked Sendable {
 }
 
 @MainActor final class CardIconCacheTests: XCTestCase {
+    func testColdTextCardsSharePlaceholderWithoutSharingLoadedSourceIcon() async throws {
+        let gate = DispatchSemaphore(value: 0)
+        let loaded = CardIconCache.Icon(image: NSImage(size: NSSize(width: 68, height: 68)))
+        let cache = CardIconCache { _ in
+            _ = gate.wait(timeout: .now() + 3)
+            return loaded
+        }
+        let first = ClipboardCardView(record: ClipboardCardContent(ClipboardRecord(text: "First", sourceBundleID: "fixture.source")), position: 0, iconCache: cache)
+        let second = ClipboardCardView(record: ClipboardCardContent(ClipboardRecord(text: "Second")), position: 1, iconCache: cache)
+        @MainActor func sourceIcon(_ card: ClipboardCardView) throws -> NSImageView {
+            try XCTUnwrap(card.subviews.compactMap { $0 as? NSImageView }
+                .first { $0.accessibilityIdentifier() == "clipboard.source-icon" })
+        }
+        let firstView = try sourceIcon(first), secondView = try sourceIcon(second)
+        let placeholder = try XCTUnwrap(firstView.image)
+        XCTAssertTrue(placeholder === secondView.image)
+        let done = expectation(description: "source icon replaces only its own placeholder")
+        cache.request(.application("fixture.source")) { _ in done.fulfill() }
+        gate.signal()
+        await fulfillment(of: [done], timeout: 4)
+        XCTAssertTrue(firstView.image === loaded.image)
+        XCTAssertTrue(secondView.image === placeholder)
+    }
+
     func testSlowLookupIsOffMainAndCoalescesPrewarmWithVisibleRequests() async {
         let counter = IconLoadCounter()
         let gate = DispatchSemaphore(value: 0)

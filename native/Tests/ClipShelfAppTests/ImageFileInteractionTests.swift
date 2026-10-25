@@ -29,7 +29,10 @@ import XCTest
     }
     func card(_ index: Int = 0) throws -> ClipboardCardView {
         let collection = try view(NSCollectionView.self)
-        let item = panel.collectionView(collection, itemForRepresentedObjectAt: IndexPath(item: index, section: 0))
+        panel.window?.contentView?.layoutSubtreeIfNeeded()
+        // Exercise a card owned by the visible collection. Calling the data source
+        // directly creates an unowned item that correctly retires its drag on deinit.
+        let item = try XCTUnwrap(collection.item(at: IndexPath(item: index, section: 0)))
         return try XCTUnwrap(item.view.subviews.compactMap { $0 as? ClipboardCardView }.first)
     }
     func menu(_ title: String) throws -> NSMenuItem { try XCTUnwrap(card().menu?.items.first { $0.title == title }) }

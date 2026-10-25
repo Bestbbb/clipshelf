@@ -1,0 +1,329 @@
+{
+  "measured_at_utc": "2026-10-25T09:12:41.945479+00:00",
+  "baseline_commit": "afeb0b3f8a285d416f6fc136aa44e3685a3985f7",
+  "comparison": "Placeholder reuse versus the preceding icon/lifetime optimization; both use the identical revised probe.",
+  "build": "release with -enable-testing",
+  "fixture": "300 synthetic text records across 10 source bundle IDs; separate 300-file-record fixture with 80 update/scroll iterations.",
+  "environment": {
+    "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.4.1\nBuildVersion:\t\t25E253",
+    "cpu": "Apple M5 Pro",
+    "swift": "Apple Swift version 6.3.2 (swiftlang-6.3.2.1.108 clang-2100.1.1.101)\nTarget: arm64-apple-macosx26.0"
+  },
+  "measurement_order": [
+    "before-1",
+    "after-1",
+    "after-2",
+    "before-2",
+    "before-3",
+    "after-3"
+  ],
+  "limitations": [
+    "Synthetic allocation microbenchmark; 300 is not the number of cards created when opening the real shelf.",
+    "Burst runs before icon callbacks drain; cached300 waits for completion, including confirmed missing apps.",
+    "Hidden test windows do not measure end-to-end input, screen drawing, animation or cross-app insertion.",
+    "No compilation or other task tests overlapped timing. System background load was not isolated.",
+    "Three processes per version on one Mac; small differences do not establish universal gains."
+  ],
+  "versions": {
+    "before": {
+      "samples": [
+        {
+          "run": 1,
+          "text_ms": {
+            "cold10Cards": 43.2,
+            "burst300Cards": 97.2,
+            "cached300Cards": 69.1,
+            "headerTint": 0.34,
+            "show300Records_ms": [
+              30.5,
+              19.7,
+              20.9,
+              22.6,
+              20.0
+            ]
+          },
+          "file_pages": {
+            "p50": 12.47,
+            "p95": 16.16,
+            "start": 43.49,
+            "end": 54.8,
+            "delta": 11.31
+          },
+          "raw_perf_lines": [
+            "PERF cold10Cards=43.2ms burst300Cards=97.2ms cached300Cards=69.1ms headerTint=0.34ms show300Records=[30.5, 19.7, 20.9, 22.6, 20.0]ms",
+            "PERF paste-write median ms: retain=0.06 encode=0.00 publish=0.06 pasteboard=0.09 reconcile=0.01",
+            "PERF file-pages rounds=80 p50=12.47ms p95=16.16ms start=43.49MiB end=54.80MiB delta=11.31MiB sampledLiveCards=0"
+          ],
+          "log_sha256": {
+            "before-cards-1.log": "ab6522b56c96825fdf8c234a3f546c9b2cf1a3eaa701e5cb05d29eefd3aacb91",
+            "before-file-pages-1.log": "fc6f87c9cbeb7d75c8b753d81fdfb683655830a348087912bf02dd14f1019798"
+          }
+        },
+        {
+          "run": 2,
+          "text_ms": {
+            "cold10Cards": 53.0,
+            "burst300Cards": 97.2,
+            "cached300Cards": 69.9,
+            "headerTint": 0.33,
+            "show300Records_ms": [
+              35.1,
+              24.9,
+              23.5,
+              24.3,
+              23.9
+            ]
+          },
+          "file_pages": {
+            "p50": 11.66,
+            "p95": 15.08,
+            "start": 43.45,
+            "end": 54.52,
+            "delta": 11.06
+          },
+          "raw_perf_lines": [
+            "PERF cold10Cards=53.0ms burst300Cards=97.2ms cached300Cards=69.9ms headerTint=0.33ms show300Records=[35.1, 24.9, 23.5, 24.3, 23.9]ms",
+            "PERF paste-write median ms: retain=0.06 encode=0.00 publish=0.05 pasteboard=0.10 reconcile=0.01",
+            "PERF file-pages rounds=80 p50=11.66ms p95=15.08ms start=43.45MiB end=54.52MiB delta=11.06MiB sampledLiveCards=0"
+          ],
+          "log_sha256": {
+            "before-cards-2.log": "2b5e9ac4970aca6b3d00181734b664750530d073cbaf0f737841dc0c2c63a522",
+            "before-file-pages-2.log": "115ebb535cc41650121330ea5326fcdb8cb8dd831761673962c880572ccab3f4"
+          }
+        },
+        {
+          "run": 3,
+          "text_ms": {
+            "cold10Cards": 47.3,
+            "burst300Cards": 96.9,
+            "cached300Cards": 71.4,
+            "headerTint": 0.33,
+            "show300Records_ms": [
+              35.9,
+              22.1,
+              21.6,
+              22.5,
+              23.5
+            ]
+          },
+          "file_pages": {
+            "p50": 13.07,
+            "p95": 15.47,
+            "start": 43.49,
+            "end": 54.52,
+            "delta": 11.03
+          },
+          "raw_perf_lines": [
+            "PERF cold10Cards=47.3ms burst300Cards=96.9ms cached300Cards=71.4ms headerTint=0.33ms show300Records=[35.9, 22.1, 21.6, 22.5, 23.5]ms",
+            "PERF paste-write median ms: retain=0.06 encode=0.00 publish=0.06 pasteboard=0.09 reconcile=0.01",
+            "PERF file-pages rounds=80 p50=13.07ms p95=15.47ms start=43.49MiB end=54.52MiB delta=11.03MiB sampledLiveCards=0"
+          ],
+          "log_sha256": {
+            "before-cards-3.log": "f1a2cbf7a795f35b38d9d2e9c34738c33668010eb91be5cd93f14d689e6fcb5b",
+            "before-file-pages-3.log": "3d485265352f67732f5303e27231fb692a518975504fe9c90d9c08b5bf043ba6"
+          }
+        }
+      ],
+      "median_text_ms": {
+        "cold10Cards": 47.3,
+        "burst300Cards": 97.2,
+        "cached300Cards": 69.9,
+        "headerTint": 0.33
+      },
+      "median_file_pages": {
+        "p50": 12.47,
+        "p95": 15.47,
+        "start": 43.49,
+        "end": 54.52,
+        "delta": 11.06
+      },
+      "source_sha256": {
+        "Sources/ClipShelf/ClipboardCardView.swift": "cd1a64c56fb06bbb213b3dcaa007d73a29b79047ce6bc1b6c9bc29749432d5f9",
+        "Sources/ClipShelf/ClipboardPanelController.swift": "6cdb93e4694f049f826cd1cd765e3baa198fe89ec4f35890146f657c6040cd36",
+        "Sources/ClipShelf/CardIconCache.swift": "bcd964fabea9774eacb17fd5e27ec06ac8ec622e764752352b3eac310de7ad9b",
+        "Tests/ClipShelfAppTests/PanelPerformanceProbeTests.swift": "c18b0e175007f4a2e1cb9c3d9fb07e7078d309ab0b88ec9e78e66bc3722d2402",
+        "Tests/ClipShelfAppTests/PanelFileCardPerformanceProbeTests.swift": "e094c3b544438a08cdedf06e809def4598408900a8401e32a6075469cf43e248"
+      }
+    },
+    "after": {
+      "samples": [
+        {
+          "run": 1,
+          "text_ms": {
+            "cold10Cards": 41.0,
+            "burst300Cards": 71.3,
+            "cached300Cards": 65.6,
+            "headerTint": 0.31,
+            "show300Records_ms": [
+              33.2,
+              19.7,
+              18.9,
+              19.1,
+              18.6
+            ]
+          },
+          "file_pages": {
+            "p50": 13.36,
+            "p95": 16.06,
+            "start": 43.17,
+            "end": 54.22,
+            "delta": 11.05
+          },
+          "raw_perf_lines": [
+            "PERF cold10Cards=41.0ms burst300Cards=71.3ms cached300Cards=65.6ms headerTint=0.31ms show300Records=[33.2, 19.7, 18.9, 19.1, 18.6]ms",
+            "PERF paste-write median ms: retain=0.06 encode=0.00 publish=0.05 pasteboard=0.10 reconcile=0.01",
+            "PERF file-pages rounds=80 p50=13.36ms p95=16.06ms start=43.17MiB end=54.22MiB delta=11.05MiB sampledLiveCards=0"
+          ],
+          "log_sha256": {
+            "after-cards-1.log": "70a611cf2b673fda1f78b3a00364bb65ddc7638745f2d37ad073cebfd56db237",
+            "after-file-pages-1.log": "c32f74ab10c384ffe91537bc070788d8d8cb5bef5ecb260d076d855e394139f0"
+          }
+        },
+        {
+          "run": 2,
+          "text_ms": {
+            "cold10Cards": 42.9,
+            "burst300Cards": 73.4,
+            "cached300Cards": 69.2,
+            "headerTint": 0.33,
+            "show300Records_ms": [
+              31.8,
+              21.5,
+              21.0,
+              19.1,
+              19.4
+            ]
+          },
+          "file_pages": {
+            "p50": 12.24,
+            "p95": 17.16,
+            "start": 43.13,
+            "end": 55.17,
+            "delta": 12.05
+          },
+          "raw_perf_lines": [
+            "PERF cold10Cards=42.9ms burst300Cards=73.4ms cached300Cards=69.2ms headerTint=0.33ms show300Records=[31.8, 21.5, 21.0, 19.1, 19.4]ms",
+            "PERF paste-write median ms: retain=0.06 encode=0.00 publish=0.05 pasteboard=0.10 reconcile=0.01",
+            "PERF file-pages rounds=80 p50=12.24ms p95=17.16ms start=43.13MiB end=55.17MiB delta=12.05MiB sampledLiveCards=0"
+          ],
+          "log_sha256": {
+            "after-cards-2.log": "b04c2abc663c58458788f78170448777301abd4611659f9e1378aace5d793b65",
+            "after-file-pages-2.log": "708551b3e9d0f93f833ab377efb2fce004be5e7c44ddbb1257132a8b30faffcc"
+          }
+        },
+        {
+          "run": 3,
+          "text_ms": {
+            "cold10Cards": 51.7,
+            "burst300Cards": 74.9,
+            "cached300Cards": 68.0,
+            "headerTint": 0.33,
+            "show300Records_ms": [
+              35.3,
+              21.2,
+              21.2,
+              24.3,
+              23.8
+            ]
+          },
+          "file_pages": {
+            "p50": 12.71,
+            "p95": 14.72,
+            "start": 43.08,
+            "end": 54.19,
+            "delta": 11.11
+          },
+          "raw_perf_lines": [
+            "PERF cold10Cards=51.7ms burst300Cards=74.9ms cached300Cards=68.0ms headerTint=0.33ms show300Records=[35.3, 21.2, 21.2, 24.3, 23.8]ms",
+            "PERF paste-write median ms: retain=0.06 encode=0.00 publish=0.05 pasteboard=0.09 reconcile=0.01",
+            "PERF file-pages rounds=80 p50=12.71ms p95=14.72ms start=43.08MiB end=54.19MiB delta=11.11MiB sampledLiveCards=0"
+          ],
+          "log_sha256": {
+            "after-cards-3.log": "37340e3d00512221227538bf49b4793e8cdbd7244517018be94a45a7808e58e5",
+            "after-file-pages-3.log": "67ee7a4c067b55350c483f606d8a908bd99b5416d6103a08a8dd8af1a574bd5c"
+          }
+        }
+      ],
+      "median_text_ms": {
+        "cold10Cards": 42.9,
+        "burst300Cards": 73.4,
+        "cached300Cards": 68.0,
+        "headerTint": 0.33
+      },
+      "median_file_pages": {
+        "p50": 12.71,
+        "p95": 16.06,
+        "start": 43.13,
+        "end": 54.22,
+        "delta": 11.11
+      },
+      "source_sha256": {
+        "Sources/ClipShelf/ClipboardCardView.swift": "cf9d91088a5e3b134df25c9b3d7e00db0cd102a9c1b2610c7ef122757fbc08f6",
+        "Sources/ClipShelf/ClipboardPanelController.swift": "6cdb93e4694f049f826cd1cd765e3baa198fe89ec4f35890146f657c6040cd36",
+        "Sources/ClipShelf/CardIconCache.swift": "bcd964fabea9774eacb17fd5e27ec06ac8ec622e764752352b3eac310de7ad9b",
+        "Tests/ClipShelfAppTests/PanelPerformanceProbeTests.swift": "c18b0e175007f4a2e1cb9c3d9fb07e7078d309ab0b88ec9e78e66bc3722d2402",
+        "Tests/ClipShelfAppTests/PanelFileCardPerformanceProbeTests.swift": "e094c3b544438a08cdedf06e809def4598408900a8401e32a6075469cf43e248"
+      }
+    }
+  },
+  "virtualization": {
+    "fixture_records": 300,
+    "fixed_screen_width_points": 1180,
+    "first_viewport_created_cards": 5,
+    "total_created_across_first_and_last_viewports": 10,
+    "test": "PanelVirtualizationTests.testThreeHundredRecordsCreateOnlyViewportCardsAndLoadDistantCardsOnDemand"
+  },
+  "command": "CLIPSHELF_PERF_PROBE=1 swift test --disable-keychain --disable-netrc --package-path <package> -c release -Xswiftc -enable-testing --skip-build --filter <PanelPerformanceProbeTests|PanelFileCardPerformanceProbeTests>",
+  "validation": {
+    "targeted_tests": {
+      "executed": 76,
+      "failures": 0
+    },
+    "app_tests": {
+      "executed": 735,
+      "passed": 730,
+      "skipped_opt_in": 5,
+      "failures": 0
+    },
+    "preference_hygiene": {
+      "before_count": 1882,
+      "after_count": 1882,
+      "added": [],
+      "removed": [],
+      "tests_exit_code": 0
+    },
+    "image_drag_harness": {
+      "pre_followup_reproduced_failure": true,
+      "uses_collection_owned_item_now": true,
+      "original_assertions_preserved": true
+    },
+    "live_installed_app": {
+      "search_changes": 6,
+      "all_searches_empty_then_restored_300": true,
+      "scroll_round_trips": 1,
+      "scroll_positions": [
+        0,
+        0.016424309136203,
+        0
+      ],
+      "source_field_cleared": true,
+      "physical_footprint_as_reported_by_heap": "139.5M",
+      "card_views": 10,
+      "collection_items": 10,
+      "cross_app_insertion_retested": false,
+      "long_duration_stability_claimed": false
+    },
+    "logs_sha256": {
+      "targeted-tests-final.log": "98a619a7afeb701a4a360121808702cc3c8701e0de66116530d7a40874432e77",
+      "app-regression-final.log": "4d4b48a7dbc4ecaf6aa60331b9a4ab569bcbc96a64c2e9d3414e680629b9ccaa",
+      "preference-hygiene-final.json": "0fc11c4750446d7c98fc337436d2ec48d27df2d72ab9bbfee701bbdac1006ab6",
+      "before-drag-regression.log": "2e1b04867ea43c8c2549d80755efab127be49e7de3f9c9c708df963347441a49",
+      "live-heap.txt": "e36cbf8a138045e0550a181f84ce810638bf7ee70dbf690cb38ec126c5a9501d"
+    },
+    "test_source_sha256": {
+      "Tests/ClipShelfAppTests/CardIconCacheTests.swift": "74d9ee51b0be13e71ff48fc764c08159eb4356e116da11fea33d182edbadbab2",
+      "Tests/ClipShelfAppTests/PanelVirtualizationTests.swift": "a29b8ffcb4af8cf0a1e154ea5a8c130004c00102ba136705950c984388e1a1f6",
+      "Tests/ClipShelfAppTests/ImageFileInteractionTests.swift": "9562cfd56573fe047581d0dd2c01de6f76157d82a11d000957d3b2e2920188eb"
+    }
+  }
+}

@@ -3,14 +3,23 @@ import XCTest
 @testable import ClipShelf
 @testable import ClipShelfCore
 
-/// Timing probe for interactive cost. Runs only with CLIPSHELF_PERF_PROBE=1.
+/// Allocation microbenchmarks, not input-to-display latency. Runs only with CLIPSHELF_PERF_PROBE=1.
 @MainActor final class PanelPerformanceProbeTests: XCTestCase {
     private func ms(_ block: () -> Void) -> Double {
         let start = DispatchTime.now().uptimeNanoseconds; block()
         return Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
     }
 
-    func testProbeCardAndShelfCost() throws {
+    private func waitForSourceIcons(_ bundles: [String]) async {
+        let loaded = expectation(description: "all fixture icons loaded or confirmed missing")
+        loaded.expectedFulfillmentCount = bundles.count
+        for bundle in bundles {
+            CardIconCache.shared.request(.application(bundle)) { _ in loaded.fulfill() }
+        }
+        await fulfillment(of: [loaded], timeout: 10)
+    }
+
+    func testProbeCardAndShelfCost() async throws {
         guard ProcessInfo.processInfo.environment["CLIPSHELF_PERF_PROBE"] == "1" else { throw XCTSkip("probe only") }
         let bundles = ["com.apple.Notes", "com.apple.Safari", "com.apple.dt.Xcode", "com.apple.TextEdit", "com.apple.Terminal",
                        "com.apple.finder", "com.google.Chrome", "com.microsoft.VSCode", "com.tencent.xinWeChat", "com.apple.Preview"]
@@ -20,13 +29,15 @@ import XCTest
                             copiedAt: Date().addingTimeInterval(TimeInterval(-index * 60)))
         }
         let contents = records.map(ClipboardCardContent.init)
-        var cold = 0.0, warm = 0.0
         if ProcessInfo.processInfo.environment["CLIPSHELF_PERF_PREWARM"] == "1" {
-            ClipboardCardView.prewarmSourceIcons(bundles)
-            RunLoop.main.run(until: Date().addingTimeInterval(1.5))
+            await waitForSourceIcons(bundles)
         }
-        cold = ms { for (i, c) in contents.prefix(10).enumerated() { _ = ClipboardCardView(record: c, position: i) } }
-        warm = ms { for (i, c) in contents.enumerated() { _ = ClipboardCardView(record: c, position: i) } }
+        let cold = ms { for (i, c) in contents.prefix(10).enumerated() { _ = ClipboardCardView(record: c, position: i) } }
+        // This deliberately constructs every card with icon callbacks still pending.
+        // The real collection view creates only items needed for its viewport.
+        let burst = ms { for (i, c) in contents.enumerated() { _ = ClipboardCardView(record: c, position: i) } }
+        await waitForSourceIcons(bundles)
+        let cached = ms { for (i, c) in contents.enumerated() { _ = ClipboardCardView(record: c, position: i) } }
         let tint = ms { for _ in 0..<10 { _ = ClipboardCardView.headerTint(for: NSWorkspace.shared.icon(for: .pdf)) } } / 10
 
         var showTimes: [Double] = []
@@ -42,8 +53,8 @@ import XCTest
             })
             panel.dismiss()
         }
-        let report = String(format: "PERF cold10Cards=%.1fms warm300Cards=%.1fms (%.2fms/card) headerTint=%.2fms show300=[%@]ms",
-                            cold, warm, warm / 300, tint, showTimes.map { String(format: "%.1f", $0) }.joined(separator: ", "))
+        let report = String(format: "PERF cold10Cards=%.1fms burst300Cards=%.1fms cached300Cards=%.1fms headerTint=%.2fms show300Records=[%@]ms",
+                            cold, burst, cached, tint, showTimes.map { String(format: "%.1f", $0) }.joined(separator: ", "))
         print(report)
     }
 
