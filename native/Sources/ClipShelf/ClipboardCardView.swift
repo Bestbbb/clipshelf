@@ -95,13 +95,14 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
 
     private let accent = NSView()
     private let sourceIcon = NSImageView()
-    private static var appIcons: [String: NSImage] = [:]
-    /// Header tints derived from each source app's icon; `nil` marks an icon
-    /// without a usable hue so it falls back to the content-type palette.
-    private static var iconTints: [String: NSColor?] = [:]
     static let headerHeight: CGFloat = 50
     private var sourceTint: NSColor?
     private let sourceLabel = NSTextField(labelWithString: "")
+    private static let relativeDateFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
     private let timeLabel = NSTextField(labelWithString: "")
     private let bodyLabel = NSTextField(wrappingLabelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
@@ -116,11 +117,12 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     private var tracking: NSTrackingArea?
     private var isHovered = false { didSet { updateAppearance() } }
 
-    init(record: ClipboardCardContent, position: Int, compact: Bool = false) {
+    init(record: ClipboardCardContent, position: Int, compact: Bool = false, iconCache: CardIconCache? = nil) {
         self.record = record
         self.position = position
         maximumPreviewLines = compact ? 4 : 9
         super.init(frame: .zero)
+        let iconCache = iconCache ?? .shared
         translatesAutoresizingMaskIntoConstraints = false
         isBordered = false
         title = ""
@@ -171,12 +173,12 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
             label.isEditable = false
         }
 
-        let formatter = RelativeDateTimeFormatter()
-        formatter.locale = L10n.locale
-        formatter.unitsStyle = .abbreviated
+        let formatter = Self.relativeDateFormatter
+        if formatter.locale.identifier != L10n.locale.identifier { formatter.locale = L10n.locale }
         let kind = Self.contentKind(record)
-        let elapsed = Date().timeIntervalSince(record.copiedAt)
-        let relativeTime = abs(elapsed) < 10 ? L10n.text("刚刚") : formatter.localizedString(for: record.copiedAt, relativeTo: Date())
+        let now = Date()
+        let elapsed = now.timeIntervalSince(record.copiedAt)
+        let relativeTime = abs(elapsed) < 10 ? L10n.text("刚刚") : formatter.localizedString(for: record.copiedAt, relativeTo: now)
         sourceLabel.stringValue = kind
         timeLabel.stringValue = relativeTime
         detailLabel.stringValue = record.kind == .text || record.kind == .link
@@ -187,18 +189,13 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         sourceIcon.imageScaling = .scaleProportionallyUpOrDown
         sourceIcon.wantsLayer = true
         if let bundleID = record.sourceBundleID {
-            if let cached = Self.appIcons[bundleID] { sourceIcon.image = cached }
-            else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
-                let icon = NSWorkspace.shared.icon(forFile: url.path)
-                if Self.appIcons.count < 256 { Self.appIcons[bundleID] = icon }
-                sourceIcon.image = icon
-            }
-            if let icon = sourceIcon.image {
-                if let cached = Self.iconTints[bundleID] { sourceTint = cached }
-                else {
-                    sourceTint = Self.headerTint(for: icon)
-                    if Self.iconTints.count < 256 { Self.iconTints[bundleID] = sourceTint }
-                }
+            iconCache.request(.application(bundleID)) { [weak self] icon in
+                guard let self, let image = icon.image else { return }
+                self.sourceIcon.image = image
+                self.sourceIcon.imageScaling = .scaleProportionallyUpOrDown
+                self.sourceIcon.contentTintColor = nil
+                self.sourceTint = icon.tint
+                self.updateAppearance()
             }
         }
         if sourceIcon.image == nil {
@@ -206,14 +203,6 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
                 .withSymbolConfiguration(.init(pointSize: 18, weight: .medium))
             sourceIcon.imageScaling = .scaleNone
             sourceIcon.contentTintColor = .white.withAlphaComponent(0.85)
-        } else {
-            sourceIcon.shadow = {
-                let shadow = NSShadow()
-                shadow.shadowColor = NSColor.black.withAlphaComponent(0.25)
-                shadow.shadowOffset = NSSize(width: 0, height: -1)
-                shadow.shadowBlurRadius = 2
-                return shadow
-            }()
         }
         detailLabel.font = .systemFont(ofSize: 11)
         detailLabel.textColor = .secondaryLabelColor
@@ -241,7 +230,11 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
             let paths = record.text.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
             let first = URL(fileURLWithPath: paths.first ?? record.text)
             let type = UTType(filenameExtension: first.pathExtension) ?? (first.hasDirectoryPath ? .folder : .data)
-            previewImage.image = NSWorkspace.shared.icon(for: type)
+            iconCache.request(.fileType(type.identifier)) { [weak self] icon in
+                guard let image = icon.image else { return }
+                self?.previewImage.image = image
+            }
+            if previewImage.image == nil { previewImage.image = NSImage(systemSymbolName: "doc", accessibilityDescription: nil) }
             previewImage.imageScaling = .scaleProportionallyUpOrDown
             previewImage.layer?.borderWidth = 0
             previewImage.layer?.cornerRadius = 0
@@ -299,6 +292,20 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Native tooltip/tracking registries can outlive a removed collection item.
+    /// Retire them before detaching the view, instead of waiting for deinit.
+    func retirePresentation() {
+        cancelPendingDrag()
+        func unregister(_ view: NSView) {
+            view.toolTip = nil
+            view.removeAllToolTips()
+            view.subviews.forEach(unregister)
+        }
+        unregister(self)
+        if let tracking { removeTrackingArea(tracking); self.tracking = nil }
+        menu = nil
+    }
 
     override func setFrameSize(_ newSize: NSSize) {
         // Retire the tall-card constraints before AppKit receives a short frame.
@@ -644,31 +651,9 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         }
     }
 
-    /// Loading an app icon costs ~13 ms on first use. Resolve icons and header
-    /// tints off the main thread before a card needs them, so opening the shelf
-    /// never stalls its entrance animation on Launch Services or icon decoding.
+    /// Coalesces with visible-card requests; a cold card always has a placeholder.
     static func prewarmSourceIcons<S: Sequence>(_ bundleIDs: S) where S.Element == String {
-        let missing = Array(Set(bundleIDs).filter { appIcons[$0] == nil }.prefix(64))
-        guard !missing.isEmpty, appIcons.count < 256 else { return }
-        Task.detached(priority: .utility) {
-            var loaded: [(String, NSImage, NSColor?)] = []
-            for bundleID in missing {
-                guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { continue }
-                let icon = NSWorkspace.shared.icon(forFile: url.path)
-                // Decode the representation the card draws (34 pt at 2x) while off the main thread.
-                if let rep = icon.bestRepresentation(for: NSRect(x: 0, y: 0, width: 68, height: 68), context: nil, hints: nil) {
-                    _ = rep.cgImage(forProposedRect: nil, context: nil, hints: nil)
-                }
-                loaded.append((bundleID, icon, headerTint(for: icon)))
-            }
-            let results = loaded
-            await MainActor.run {
-                for (bundleID, icon, tint) in results where appIcons[bundleID] == nil && appIcons.count < 256 {
-                    appIcons[bundleID] = icon
-                    iconTints[bundleID] = tint
-                }
-            }
-        }
+        for bundleID in Set(bundleIDs).prefix(64) { CardIconCache.shared.request(.application(bundleID)) }
     }
 
     /// Indented or brace-structured text reads better in a fixed-width face.

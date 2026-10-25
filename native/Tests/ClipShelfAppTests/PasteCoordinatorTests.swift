@@ -103,7 +103,19 @@ private final class PasteHarness {
             allowHeldCommand: allowHeldCommand, isContextCurrent: context, clickHandoff: handoff,
             onCompleted: { self.outcomes.append($0); completion?($0) })
     }
-    func settle() async { for _ in 0..<20 { await Task.yield() } }
+    func settle(file: StaticString = #filePath, line: UInt = #line) async {
+        // A fixed number of yields can return before a resumed task or a
+        // completion-triggered paste runs. Wait for completion or suspension
+        // on the fake clock; never advance production deadlines to make a test pass.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while coordinator.hasPendingAttempt && environment.waits.isEmpty {
+            guard ContinuousClock.now < deadline else {
+                XCTFail("Paste did not complete or suspend on the fake clock", file: file, line: line)
+                return
+            }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+    }
     func stop() async { coordinator.cancel(); environment.failWait(); await settle() }
 }
 

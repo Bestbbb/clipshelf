@@ -109,11 +109,26 @@ private final class ShelfDropSurface: NSVisualEffectView {
     }
 }
 
-private final class ClipboardCollectionItem: NSCollectionViewItem {
+final class ClipboardCollectionItem: NSCollectionViewItem {
     var card: ClipboardCardView?
     override func loadView() { view = NSView() }
+    deinit {
+        // AppKit also discards items outright (including accessibility-created
+        // offscreen items), without calling prepareForReuse. Retire native
+        // tooltip registrations while the main-thread view graph is still alive.
+        MainActor.assumeIsolated { discardCard() }
+    }
+    override func prepareForReuse() {
+        discardCard()
+        super.prepareForReuse()
+    }
+    private func discardCard() {
+        card?.retirePresentation()
+        card?.removeFromSuperview()
+        card = nil
+    }
     func configure(_ card: ClipboardCardView) {
-        self.card?.removeFromSuperview()
+        discardCard()
         self.card = card
         view.addSubview(card)
         NSLayoutConstraint.activate([card.leadingAnchor.constraint(equalTo: view.leadingAnchor), card.trailingAnchor.constraint(equalTo: view.trailingAnchor), card.topAnchor.constraint(equalTo: view.topAnchor), card.bottomAnchor.constraint(equalTo: view.bottomAnchor)])
@@ -748,7 +763,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     func setPinboards(_ pinboards: [Pinboard]) {
-        if self.pinboards != pinboards { pinboardListGeneration = UUID() }
+        guard self.pinboards != pinboards else { return }
+        pinboardListGeneration = UUID()
         self.pinboards = pinboards
         allFiltersController?.updateOptions(filterOptions)
         boardPopup.removeAllItems()
@@ -768,7 +784,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     func setSources(_ sources: [String: String]) {
-        self.sources.merge(sources) { _, newer in newer }
+        let merged = self.sources.merging(sources) { _, newer in newer }
+        guard merged != self.sources else { return }
+        self.sources = merged
         allFiltersController?.updateOptions(filterOptions)
         sourcePopup.removeAllItems()
         sourcePopup.addItem(withTitle: L10n.text("所有来源 App"))
@@ -784,7 +802,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     func setDevices(_ devices: [ClipboardOriginDevice], localDeviceID: UUID?) {
-        self.devices = devices.reduce(into: [:]) { $0[$1.id] = $1.name }
+        let names = devices.reduce(into: [UUID: String]()) { $0[$1.id] = $1.name }
+        guard names != self.devices || self.localDeviceID != localDeviceID else { return }
+        self.devices = names
         self.localDeviceID = localDeviceID
         rebuildDeviceOptions()
         allFiltersController?.updateOptions(filterOptions)

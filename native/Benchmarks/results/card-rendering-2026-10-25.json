@@ -1,0 +1,225 @@
+{
+  "date": "2026-10-25",
+  "baseline_commit": "2f2496104816a0b1a405b1e6dcb314621f52b9f1",
+  "optimized_source": "working tree; file hashes recorded below",
+  "configuration": "release with -enable-testing; separate processes; alternating version order; 3 runs each",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.4.1\nBuildVersion:\t\t25E253",
+  "scope": "Synthetic unshown AppKit panel; 300 file records, 80 update/scroll rounds per process. Separate ten-source text-card construction probe.",
+  "limitations": [
+    "Does not measure a real window's animation or input-to-render latency.",
+    "Does not establish long-session memory stabilization or cross-app insertion acceptance.",
+    "System background load was not isolated. The task's own builds/tests did not overlap timing.",
+    "The existing warm300Cards probe runs immediately after cold10Cards without draining background icon completions; interpret it as a consecutive construction burst."
+  ],
+  "runs": [
+    {
+      "version": "baseline",
+      "run": 1,
+      "file_pages_p50_ms": 28.27,
+      "file_pages_p95_ms": 30.39,
+      "start_mib": 37.72,
+      "end_mib": 59.77,
+      "growth_mib": 22.05,
+      "cold10_ms": 84.1,
+      "consecutive300_ms": 90.8,
+      "panel_show_ms": [
+        34.2,
+        31.2,
+        27.2,
+        37.0,
+        32.9
+      ],
+      "raw_probe_lines": [
+        "PERF file-pages rounds=80 p50=28.27ms p95=30.39ms start=37.72MiB end=59.77MiB delta=22.05MiB sampledLiveCards=0",
+        "PERF cold10Cards=84.1ms warm300Cards=90.8ms (0.30ms/card) headerTint=0.58ms show300=[34.2, 31.2, 27.2, 37.0, 32.9]ms",
+        "PERF paste-write median ms: retain=0.06 encode=0.00 publish=0.05 pasteboard=0.09 reconcile=0.01"
+      ]
+    },
+    {
+      "version": "baseline",
+      "run": 2,
+      "file_pages_p50_ms": 28.78,
+      "file_pages_p95_ms": 31.61,
+      "start_mib": 37.55,
+      "end_mib": 60.0,
+      "growth_mib": 22.45,
+      "cold10_ms": 72.1,
+      "consecutive300_ms": 87.7,
+      "panel_show_ms": [
+        35.6,
+        27.5,
+        26.0,
+        25.5,
+        25.8
+      ],
+      "raw_probe_lines": [
+        "PERF file-pages rounds=80 p50=28.78ms p95=31.61ms start=37.55MiB end=60.00MiB delta=22.45MiB sampledLiveCards=0",
+        "PERF cold10Cards=72.1ms warm300Cards=87.7ms (0.29ms/card) headerTint=0.31ms show300=[35.6, 27.5, 26.0, 25.5, 25.8]ms",
+        "PERF paste-write median ms: retain=0.06 encode=0.00 publish=0.06 pasteboard=0.10 reconcile=0.01"
+      ]
+    },
+    {
+      "version": "baseline",
+      "run": 3,
+      "file_pages_p50_ms": 28.5,
+      "file_pages_p95_ms": 30.29,
+      "start_mib": 37.83,
+      "end_mib": 59.95,
+      "growth_mib": 22.12,
+      "cold10_ms": 75.7,
+      "consecutive300_ms": 87.4,
+      "panel_show_ms": [
+        33.6,
+        26.4,
+        23.7,
+        25.9,
+        28.5
+      ],
+      "raw_probe_lines": [
+        "PERF file-pages rounds=80 p50=28.50ms p95=30.29ms start=37.83MiB end=59.95MiB delta=22.12MiB sampledLiveCards=0",
+        "PERF cold10Cards=75.7ms warm300Cards=87.4ms (0.29ms/card) headerTint=0.31ms show300=[33.6, 26.4, 23.7, 25.9, 28.5]ms",
+        "PERF paste-write median ms: retain=0.08 encode=0.01 publish=0.06 pasteboard=0.11 reconcile=0.01"
+      ]
+    },
+    {
+      "version": "optimized",
+      "run": 1,
+      "file_pages_p50_ms": 14.61,
+      "file_pages_p95_ms": 16.46,
+      "start_mib": 43.67,
+      "end_mib": 54.67,
+      "growth_mib": 11.0,
+      "cold10_ms": 53.0,
+      "consecutive300_ms": 113.6,
+      "panel_show_ms": [
+        44.7,
+        35.7,
+        32.3,
+        26.2,
+        27.7
+      ],
+      "raw_probe_lines": [
+        "PERF file-pages rounds=80 p50=14.61ms p95=16.46ms start=43.67MiB end=54.67MiB delta=11.00MiB sampledLiveCards=0",
+        "PERF cold10Cards=53.0ms warm300Cards=113.6ms (0.38ms/card) headerTint=0.36ms show300=[44.7, 35.7, 32.3, 26.2, 27.7]ms",
+        "PERF paste-write median ms: retain=0.07 encode=0.00 publish=0.06 pasteboard=0.09 reconcile=0.01"
+      ]
+    },
+    {
+      "version": "optimized",
+      "run": 2,
+      "file_pages_p50_ms": 14.45,
+      "file_pages_p95_ms": 16.04,
+      "start_mib": 43.34,
+      "end_mib": 54.42,
+      "growth_mib": 11.08,
+      "cold10_ms": 48.4,
+      "consecutive300_ms": 98.2,
+      "panel_show_ms": [
+        34.5,
+        25.9,
+        27.1,
+        26.2,
+        28.6
+      ],
+      "raw_probe_lines": [
+        "PERF file-pages rounds=80 p50=14.45ms p95=16.04ms start=43.34MiB end=54.42MiB delta=11.08MiB sampledLiveCards=0",
+        "PERF cold10Cards=48.4ms warm300Cards=98.2ms (0.33ms/card) headerTint=0.33ms show300=[34.5, 25.9, 27.1, 26.2, 28.6]ms",
+        "PERF paste-write median ms: retain=0.07 encode=0.00 publish=0.06 pasteboard=0.10 reconcile=0.01"
+      ]
+    },
+    {
+      "version": "optimized",
+      "run": 3,
+      "file_pages_p50_ms": 14.23,
+      "file_pages_p95_ms": 16.84,
+      "start_mib": 43.49,
+      "end_mib": 54.55,
+      "growth_mib": 11.06,
+      "cold10_ms": 54.7,
+      "consecutive300_ms": 100.7,
+      "panel_show_ms": [
+        41.0,
+        27.6,
+        26.7,
+        25.3,
+        26.1
+      ],
+      "raw_probe_lines": [
+        "PERF file-pages rounds=80 p50=14.23ms p95=16.84ms start=43.49MiB end=54.55MiB delta=11.06MiB sampledLiveCards=0",
+        "PERF cold10Cards=54.7ms warm300Cards=100.7ms (0.34ms/card) headerTint=0.34ms show300=[41.0, 27.6, 26.7, 25.3, 26.1]ms",
+        "PERF paste-write median ms: retain=0.07 encode=0.00 publish=0.06 pasteboard=0.09 reconcile=0.01"
+      ]
+    }
+  ],
+  "source_sha256": {
+    "baseline": {
+      "Sources/ClipShelf/ClipboardCardView.swift": "ad2c28b0fad7449cc1a78fdb0c5ae02a5e094f1c4c60ac66585d4977fb4c183d",
+      "Sources/ClipShelf/ClipboardPanelController.swift": "7a78c29d2f9f0ac5928ae5c737fee5807445c63261cc5f49bad9ab86a818438c",
+      "Tests/ClipShelfAppTests/PanelFileCardPerformanceProbeTests.swift": "e094c3b544438a08cdedf06e809def4598408900a8401e32a6075469cf43e248",
+      "Tests/ClipShelfAppTests/PanelPerformanceProbeTests.swift": "f836dd8d1dbb8e2eebb8d62c0eaf216ac138f033eea57cb8f1a9bcdac32457f7",
+      "Tests/ClipShelfAppTests/PasteCoordinatorTests.swift": "5a7cda95d38ac9ca7d9261949571fe9f1f391ffdc3bc9c0f6974aa27e56e9f72"
+    },
+    "optimized": {
+      "Sources/ClipShelf/ClipboardCardView.swift": "cd1a64c56fb06bbb213b3dcaa007d73a29b79047ce6bc1b6c9bc29749432d5f9",
+      "Sources/ClipShelf/ClipboardPanelController.swift": "6cdb93e4694f049f826cd1cd765e3baa198fe89ec4f35890146f657c6040cd36",
+      "Sources/ClipShelf/CardIconCache.swift": "bcd964fabea9774eacb17fd5e27ec06ac8ec622e764752352b3eac310de7ad9b",
+      "Tests/ClipShelfAppTests/CardIconCacheTests.swift": "4c0f21ed6e11847f5d11d978f29edeebb9581a2366ff81fe18b8a84b224e2deb",
+      "Tests/ClipShelfAppTests/ClipboardCardLifetimeTests.swift": "5d8199bf874a5ccfe79dc2f253399f430131dd760dfa1d3617671d77e3423680",
+      "Tests/ClipShelfAppTests/PanelFileCardPerformanceProbeTests.swift": "e094c3b544438a08cdedf06e809def4598408900a8401e32a6075469cf43e248",
+      "Tests/ClipShelfAppTests/PanelPerformanceProbeTests.swift": "f836dd8d1dbb8e2eebb8d62c0eaf216ac138f033eea57cb8f1a9bcdac32457f7",
+      "Tests/ClipShelfAppTests/PasteCoordinatorTests.swift": "e1dab8fffb9efc1ebb5d49faccbbeed1ba32cb663db486ccddecea183bc60154"
+    }
+  },
+  "medians_of_three_runs": {
+    "baseline": {
+      "file_pages_p50_ms": 28.5,
+      "file_pages_p95_ms": 30.39,
+      "start_mib": 37.72,
+      "end_mib": 59.95,
+      "growth_mib": 22.12,
+      "cold10_ms": 75.7,
+      "consecutive300_ms": 87.7
+    },
+    "optimized": {
+      "file_pages_p50_ms": 14.45,
+      "file_pages_p95_ms": 16.46,
+      "start_mib": 43.49,
+      "end_mib": 54.55,
+      "growth_mib": 11.06,
+      "cold10_ms": 53.0,
+      "consecutive300_ms": 100.7
+    }
+  },
+  "app_tests_summary": [
+    "Executed 732 tests, with 5 tests skipped and 0 failures (0 unexpected) in 189.831 (189.883) seconds",
+    "Executed 732 tests, with 5 tests skipped and 0 failures (0 unexpected) in 189.831 (189.888) seconds"
+  ],
+  "final_targeted_regression": "74 tests passed, zero failures after final container teardown fix",
+  "final_targeted_log": "build/performance-2026-10-25/container-retirement-regression.log",
+  "supplemental_rendering_regression": "8 tests passed before final teardown fix; light and dark-compact synthetic snapshots visually checked",
+  "installed_live_validation": {
+    "search_changes": 24,
+    "scroll_round_trips": 2,
+    "history_restored_after_each_search": true,
+    "search_cleared_at_end": true,
+    "scroll_position_restored_to_zero": true,
+    "readings": [
+      {
+        "cumulative_search_changes": 12,
+        "cumulative_scroll_round_trips": 1,
+        "physical_footprint_as_reported_by_heap": "141.1M",
+        "card_views": 10,
+        "collection_items": 10
+      },
+      {
+        "cumulative_search_changes": 24,
+        "cumulative_scroll_round_trips": 2,
+        "physical_footprint_as_reported_by_heap": "141.1M",
+        "card_views": 10,
+        "collection_items": 10
+      }
+    ],
+    "real_cross_app_insertion_retested": false
+  },
+  "installed_binary_sha256": "115118be2d5ad8436b76242daad592e9c877761b43a95c373601755eaafb27d2"
+}
