@@ -164,8 +164,10 @@ final class PasteCoordinator {
               request.mode != .strict || environment.hasWindow(target) else {
             finish(request, .copiedOnly, message: L10n.text("内容已复制，请切回目标应用按 ⌘V。"), failure: .restoreUnavailable); return
         }
+        // A released single click pastes at once. Only a press that is still
+        // held, or a continuation click the shelf already owns, waits.
         if let clickHandoff, clickHandoff.mouseUpTimestamp.isFinite, clickHandoff.doubleClickInterval.isFinite,
-           environment.uptime < clickHandoff.releaseAfter || environment.hasPressedMouseButtons || !clickHandoff.isReleased() {
+           environment.hasPressedMouseButtons || !clickHandoff.isReleased() {
             request.waitingForClickRelease = true
             ValidationTrace.emit(.pasteClickHandoffWaiting, state: .prepared, attemptID: request.id)
             request.task = Task { @MainActor [weak self] in
@@ -174,6 +176,7 @@ final class PasteCoordinator {
             }
             return
         }
+        if let clickHandoff, environment.uptime < clickHandoff.releaseAfter { clickHandoff.shieldContinuation(clickHandoff.releaseAfter) }
         restoreAndDispatch(request, target: target, writtenCount: writtenCount, allowHeldCommand: allowHeldCommand, dismiss: dismiss)
     }
 
@@ -185,8 +188,9 @@ final class PasteCoordinator {
             guard environment.uptime < deadline else {
                 finish(request, .cancelled, failure: .mouseReleaseDeadline); return
             }
-            if environment.uptime >= handoff.releaseAfter && !environment.hasPressedMouseButtons && handoff.isReleased() {
+            if !environment.hasPressedMouseButtons && handoff.isReleased() {
                 request.waitingForClickRelease = false
+                if environment.uptime < handoff.releaseAfter { handoff.shieldContinuation(handoff.releaseAfter) }
                 restoreAndDispatch(request, target: target, writtenCount: writtenCount, allowHeldCommand: allowHeldCommand, dismiss: dismiss)
                 return
             }

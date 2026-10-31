@@ -53,6 +53,9 @@ struct PasteClickHandoff {
     let mouseUpTimestamp: TimeInterval
     let doubleClickInterval: TimeInterval
     var isReleased: () -> Bool = { true }
+    /// Covers the dismissed shelf until the given uptime so a double-click's
+    /// second press cannot land in the target app while the paste proceeds.
+    var shieldContinuation: (TimeInterval) -> Void = { _ in }
     var releaseAfter: TimeInterval { mouseUpTimestamp + max(0, doubleClickInterval) }
 }
 

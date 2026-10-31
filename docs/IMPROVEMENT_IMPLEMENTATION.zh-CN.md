@@ -27,6 +27,8 @@ W1.3 的文字先要求调用 `dismiss()`，随后等待双击间隔，却又要
 
 这个选择有明确代价：鼠标点击需要等待系统双击间隔的剩余部分，具体时间随用户的 macOS 设置变化。Return 和 Quick Paste 不需要这段等待。尚不能声称操作速度已经达到 Paste。
 
+**2026-10-31 修订：** 用户实际反馈单击粘贴明显卡顿，等待方案改为“立即收起并粘贴，用整块面板区域的非激活透明窗口接住剩余双击间隔”。与旧 `PasteClickShield` 的区别：覆盖整个面板而非 12×12 点，窗口不能成为 key/main，再次打开面板时立即撤下；鼠标仍按住或第二下已被面板接收时，仍按原规则等待释放。实测 TextEdit 点击到插入约 0.46 秒（含测量开销，此前约 1.1 秒）；在多行文档覆盖面板区域的条件下，150/300/450 ms 双击均只插入一次且光标未移动，1.2 s 对照组按预期移动光标。Stage Manager、录屏和辅助工具场景仍未验收。
+
 AX 超时是对象级设置，不能假设给一个应用对象设超时后其他相等对象也继承。实现同时约束每个实际访问的对象，并在一次快照中共享预算。API 语义见 [Apple 的 AXUIElementSetMessagingTimeout 文档](https://developer.apple.com/documentation/applicationservices/1459345-axuielementsetmessagingtimeout)。`cannotComplete` 也可能来自通信失败，因此 `ax_timeout` 是诊断分类，不证明目标一定被挂起。
 
 ## 验证结果

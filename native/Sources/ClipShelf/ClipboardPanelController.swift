@@ -10,6 +10,20 @@ private final class ShelfPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// An invisible, non-activating cover for the dismissed shelf. It absorbs the
+/// rest of a double-click without taking focus from the app being pasted into.
+private final class ContinuationShieldPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+private final class ContinuationShieldView: NSView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) {}
+    override func rightMouseDown(with event: NSEvent) {}
+}
+
 /// Keep one undo stack for the lifetime of a draft. A submitted draft is frozen
 /// until its receipt arrives; hiding its undo manager also prevents native undo
 /// from rewriting text underneath that pending submission.
@@ -141,6 +155,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     var onClickPaste: ((ClipboardRecord, Bool, PasteClickHandoff) -> Void)?
     var onCancelClickPaste: (() -> Void)?
     private var clickPasteReleaseAfter: TimeInterval?
+    private var continuationShield: NSPanel?
+    private var continuationShieldGeneration = 0
     private var ownsContinuationMouseUp = false
     var onPaste: ((ClipboardRecord, Bool) -> Void)?
     var onPasteRecords: (([ClipboardRecord], Bool) -> Void)?
@@ -493,6 +509,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     }
 
     private func present(_ contents: [ClipboardCardContent], on screen: NSScreen?, status: String?) {
+        continuationShieldGeneration += 1; continuationShield?.orderOut(nil)
         if hasPreservedDraft, let detailWindow {
             detailHidden = false
             if usesRemoteQuery {
@@ -842,6 +859,36 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         }
         add(L10n.text("未知（含来源矛盾）"), key: "unknown")
         if let item = devicePopup.itemArray.first(where: { $0.representedObject as? String == selectedDeviceKey }) { devicePopup.select(item) }
+    }
+
+    /// Keeps the shelf's screen area inert until `uptime` after it hides.
+    func shieldContinuationClicks(until uptime: TimeInterval) {
+        guard let frame = window?.frame, frame.width > 0, frame.height > 0 else { return }
+        let remaining = uptime - ProcessInfo.processInfo.systemUptime
+        guard remaining > 0 else { return }
+        let shield: NSPanel
+        if let existing = continuationShield { shield = existing } else {
+            shield = ContinuationShieldPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+            shield.isReleasedWhenClosed = false
+            shield.level = .floating
+            shield.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
+            shield.isOpaque = false
+            shield.hasShadow = false
+            shield.animationBehavior = .none
+            // Fully clear pixels let clicks through; a near-zero tint keeps them here.
+            shield.backgroundColor = NSColor(white: 0, alpha: 0.01)
+            shield.contentView = ContinuationShieldView()
+            shield.setAccessibilityElement(false)
+            continuationShield = shield
+        }
+        shield.setFrame(frame, display: false)
+        shield.orderFrontRegardless()
+        continuationShieldGeneration += 1
+        let generation = continuationShieldGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + remaining) { [weak self] in
+            guard let self, self.continuationShieldGeneration == generation else { return }
+            self.continuationShield?.orderOut(nil)
+        }
     }
 
     func dismiss() {
@@ -1427,7 +1474,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             self.select(record.id, focusResults: true)
             self.clickPasteReleaseAfter = event.timestamp + NSEvent.doubleClickInterval
             let handoff = PasteClickHandoff(mouseUpTimestamp: event.timestamp, doubleClickInterval: NSEvent.doubleClickInterval,
-                isReleased: { [weak self] in self?.ownsContinuationMouseUp == false })
+                isReleased: { [weak self] in self?.ownsContinuationMouseUp == false },
+                shieldContinuation: { [weak self] until in self?.shieldContinuationClicks(until: until) })
             let plain = ShortcutChord.normalizedModifiers(event.modifierFlags).contains(self.shortcutConfiguration.plainText.eventFlags)
             self.resolve(record, forOutput: true) {
                 if let onClickPaste = self.onClickPaste { onClickPaste($0, self.outputPlainText([$0], requested: plain), handoff) }

@@ -216,46 +216,51 @@ final class PasteCoordinatorTests: XCTestCase {
         XCTAssertEqual(h.outcomes, [.copiedOnly, .failed]); XCTAssertEqual(h.copied, 1)
     }
 
-    @MainActor func testMouseHandoffWaitsBeforeDismissAndOwnsHeldContinuationRelease() async {
-        let h = PasteHarness(); var releaseDelivered = true
-        h.paste(handoff: .init(mouseUpTimestamp: 100, doubleClickInterval: 0.5, isReleased: { releaseDelivered }))
+    @MainActor func testReleasedClickPastesImmediatelyAndShieldsRestOfDoubleClick() async {
+        let h = PasteHarness(); var shields: [TimeInterval] = []
+        h.paste(handoff: .init(mouseUpTimestamp: 100, doubleClickInterval: 0.5, shieldContinuation: { shields.append($0) }))
+        await h.settle()
+        XCTAssertEqual(h.dismissed, 1, "A released single click must not wait for the double-click interval")
+        XCTAssertEqual(shields, [100.5])
+        XCTAssertEqual(h.environment.dispatches, 1); XCTAssertEqual(h.outcomes, [.dispatched])
+        let late = PasteHarness(); var lateShields = 0
+        late.paste(handoff: .init(mouseUpTimestamp: 99, doubleClickInterval: 0.5, shieldContinuation: { _ in lateShields += 1 }))
+        await late.settle()
+        XCTAssertEqual(late.dismissed, 1); XCTAssertEqual(lateShields, 0, "An elapsed interval needs no shield")
+    }
+
+    @MainActor func testHeldPressOrOwnedContinuationWaitsForRelease() async {
+        let h = PasteHarness(); var releaseDelivered = false; var shields = 0
+        h.environment.hasPressedMouseButtons = true
+        h.paste(handoff: .init(mouseUpTimestamp: 100, doubleClickInterval: 0.5, isReleased: { releaseDelivered },
+                               shieldContinuation: { _ in shields += 1 }))
         await h.settle()
         XCTAssertEqual(h.dismissed, 0); XCTAssertEqual(h.environment.activates, 0)
-        releaseDelivered = false; h.environment.hasPressedMouseButtons = true
-        h.environment.advance(0.6); await h.settle()
-        XCTAssertEqual(h.dismissed, 0)
         h.environment.hasPressedMouseButtons = false; h.environment.advance(); await h.settle()
         XCTAssertEqual(h.dismissed, 0, "Physical release alone cannot hide before the queued mouse-up is owned")
         releaseDelivered = true; h.environment.advance(); await h.settle()
-        XCTAssertEqual(h.dismissed, 1); XCTAssertEqual(h.environment.dispatches, 1)
+        XCTAssertEqual(h.dismissed, 1); XCTAssertEqual(shields, 1); XCTAssertEqual(h.environment.dispatches, 1)
         XCTAssertEqual(h.outcomes, [.dispatched])
     }
 
-    @MainActor func testClickReadUsesOriginalTimestampAndCancelCannotDismissLater() async {
-        let resolvedLate = PasteHarness()
-        resolvedLate.paste(handoff: .init(mouseUpTimestamp: 99, doubleClickInterval: 0.5))
-        await resolvedLate.settle()
-        XCTAssertEqual(resolvedLate.dismissed, 1, "A slow read must not add a second double-click delay")
-        let canceled = PasteHarness()
-        canceled.paste(handoff: .init(mouseUpTimestamp: 100, doubleClickInterval: 0.5)); await canceled.settle()
-        canceled.coordinator.cancel(); canceled.environment.advance(0.6); await canceled.settle()
-        XCTAssertEqual(canceled.dismissed, 0); XCTAssertEqual(canceled.outcomes, [.cancelled])
-        canceled.paste(); await canceled.settle()
-        XCTAssertEqual(canceled.outcomes, [.cancelled, .dispatched])
-        XCTAssertEqual(canceled.environment.dispatches, 1)
-    }
-
-    @MainActor func testMouseHandoffCancelsForClipboardOrRealOutsideClickAndHeldMouseDeadline() async {
-        for mode in 0...3 {
+    @MainActor func testWaitingHandoffCancelsForClipboardOrRealOutsideClickAndHeldMouseDeadline() async {
+        for mode in 0...2 {
             let h = PasteHarness()
+            h.environment.hasPressedMouseButtons = true
             h.paste(handoff: .init(mouseUpTimestamp: 100, doubleClickInterval: 0.5)); await h.settle()
             if mode == 0 { h.clipboard.replaceExternally() }
             if mode == 1 { XCTAssertTrue(h.coordinator.cancelForMouseDown(at: 100.2)) }
-            if mode == 2 { h.environment.hasPressedMouseButtons = true }
             h.environment.advance(2); await h.settle()
             XCTAssertEqual(h.outcomes, [.cancelled]); XCTAssertEqual(h.environment.dispatches, 0)
             XCTAssertEqual(h.dismissed, 0)
         }
+        let canceled = PasteHarness(); canceled.environment.hasPressedMouseButtons = true
+        canceled.paste(handoff: .init(mouseUpTimestamp: 100, doubleClickInterval: 0.5)); await canceled.settle()
+        canceled.coordinator.cancel(); canceled.environment.hasPressedMouseButtons = false
+        canceled.environment.advance(0.6); await canceled.settle()
+        XCTAssertEqual(canceled.dismissed, 0); XCTAssertEqual(canceled.outcomes, [.cancelled])
+        canceled.paste(); await canceled.settle()
+        XCTAssertEqual(canceled.outcomes, [.cancelled, .dispatched])
     }
 
     @MainActor func testQueuedMouseDownCannotCancelNewerPasteButNewClickCan() async {
