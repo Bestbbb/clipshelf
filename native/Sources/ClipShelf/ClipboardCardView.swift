@@ -83,6 +83,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     private(set) var dragSelectionID: UUID?
     private(set) var draggedReferences: [ClipboardSelectionReference] = []
     var isSelected = false { didSet { updateAppearance() } }
+    private(set) var isPressed = false { didSet { if oldValue != isPressed { updateAppearance() } } }
 
     static let recordIDType = NSPasteboard.PasteboardType("io.github.bestbbb.clipshelf.record-id")
     private enum DragKind { case ordering, payload }
@@ -424,6 +425,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         resetDragGesture()
         // The first release already activates the card; a second click must not paste twice.
         guard event.clickCount < 2 else { return }
+        isPressed = true
         activeGestureID = UUID()
         mouseDownLocation = event.locationInWindow
         onSelect?()
@@ -601,6 +603,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     }
 
     private func resetDragGesture() {
+        isPressed = false
         activeGestureID = nil
         dragKind = nil
         preparedWriters = []
@@ -630,15 +633,18 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
     private func updateAppearance() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             accent.layer?.backgroundColor = headerColor.cgColor
-            layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+            let baseBackground = NSColor.controlBackgroundColor
+            let pressedBackground = NSColor.controlAccentColor.blended(withFraction: 0.88, of: baseBackground) ?? baseBackground
+            layer?.backgroundColor = (isPressed ? pressedBackground : baseBackground).cgColor
             let idle = NSColor.separatorColor.withAlphaComponent(isHovered ? 1 : 0.55)
-            layer?.borderColor = (isSelected ? NSColor.controlAccentColor : idle).cgColor
-            layer?.borderWidth = isSelected ? 2 : (isHovered ? 1 : 0.5)
+            layer?.borderColor = ((isPressed || isSelected) ? NSColor.controlAccentColor : idle).cgColor
+            layer?.borderWidth = isPressed ? 2.5 : (isSelected ? 2 : (isHovered ? 1 : 0.5))
             previewImage.layer?.borderColor = NSColor.separatorColor.cgColor
             if record.kind == .image {
                 previewImage.layer?.backgroundColor = previewImage.fillsBounds ? nil : NSColor.quaternaryLabelColor.cgColor
             }
         }
+        alphaValue = isPressed ? 0.92 : 1
         setAccessibilityValue(isSelected ? L10n.text("已选中") : "")
     }
 

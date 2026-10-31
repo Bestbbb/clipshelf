@@ -35,7 +35,28 @@ extension HistoryStore {
                                           expectedSharingConfiguration: SyncConfiguration? = nil) throws -> RetainedClipboardRecords {
         guard maximumPayloadBytes >= 0 else { throw HistoryStoreError.invalidSelection }
         return try synchronized {
-            try ownedRetentionTransaction {
+            let resolved: [ClipboardRecord] = try selectionReadTransaction {
+                let sync = try syncConfigurationWithoutLock(), sharing = try sharingConfigurationWithoutLock()
+                if let expectedSyncConfiguration, expectedSyncConfiguration != sync { throw SyncError.accountChanged }
+                if let expectedSharingConfiguration, expectedSharingConfiguration != sharing { throw SyncError.accountChanged }
+                let records = try resolveSelectionWithoutLock(references, maximumPayloadBytes: maximumPayloadBytes)
+                for record in records {
+                    _ = try requireFileRepairAccess(record, sync: sync, sharing: sharing, write: false)
+                    for binding in try ownedFileBindingsWithoutLock(recordID: record.id) {
+                        guard try ownedBindingMatches(binding, record: record),
+                              ownedFileStorage.projectionAvailability(try ownedFileAssetWithoutLock(id: binding.assetID)) == .available else {
+                            throw ClipboardFileRepairError.unavailableOutput
+                        }
+                    }
+                }
+                return records
+            }
+            // Skip the IMMEDIATE write transaction and quota check when no file URLs exist.
+            guard containsFileURLRepresentations(resolved) else {
+                return RetainedClipboardRecords(records: resolved,
+                    lease: OwnedAssetLease(id: UUID(), storeIdentity: selectionStoreIdentity, assetIDs: [], descriptor: -1))
+            }
+            return try ownedRetentionTransaction {
                 let sync = try syncConfigurationWithoutLock(), sharing = try sharingConfigurationWithoutLock()
                 if let expectedSyncConfiguration, expectedSyncConfiguration != sync { throw SyncError.accountChanged }
                 if let expectedSharingConfiguration, expectedSharingConfiguration != sharing { throw SyncError.accountChanged }
@@ -58,6 +79,7 @@ extension HistoryStore {
     /// Matching a URL here grants no ownership: it only applies the registered asset's stricter
     /// output checks to that immutable capture snapshot. Registry assets outlive history bindings.
     public func validateCapturedFileOutput(_ records: [ClipboardRecord]) throws {
+        guard containsFileURLRepresentations(records) else { return }
         try synchronized {
             try selectionReadTransaction {
                 for record in records {

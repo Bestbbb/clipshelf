@@ -889,7 +889,26 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
     private func reload() {
         guard let store else { refresh(); return }
         requestOCRCleanup(store: store)
-        panel.refreshPage(status: statusText)
+        if panel.isVisible {
+            panel.refreshPage(status: statusText)
+        } else {
+            let boardGeneration = pinboardReadGeneration
+            Task { @MainActor [weak self] in
+                guard let prewarmed = await Task.detached(priority: .utility, operation: {
+                    guard let page = try? store.metadataPage(HistoryQuery(limit: PanelPageWindow.size), offset: 0),
+                          let boards = try? store.pinboards() else {
+                        return Optional<([ClipboardRecordMetadata], [Pinboard], [String])>.none
+                    }
+                    return (page.records, boards, page.records.compactMap(\.sourceBundleID))
+                }).value else { return }
+                guard let self, !self.panel.isVisible else { return }
+                self.metadata = prewarmed.0
+                if !self.pinboardReorderInProgress, self.pinboardReadGeneration == boardGeneration {
+                    self.panel.setPinboards(prewarmed.1)
+                }
+                ClipboardCardView.prewarmSourceIcons(prewarmed.2)
+            }
+        }
         refresh()
     }
 
@@ -921,7 +940,11 @@ final class ClipShelfApplication: NSObject, NSApplicationDelegate, NSMenuItemVal
             guard let self else { return }
             switch result {
             case .success(let result):
-                self.metadata = result.page.records
+                let q = request.query
+                if request.offset == 0, q.text.isEmpty, q.kind == nil, q.sourceBundleID == nil,
+                   q.copiedAfter == nil, q.copiedBefore == nil, q.pinboardIDs.isEmpty, q.deviceFilter == .all {
+                    self.metadata = result.page.records
+                }
                 // A list-order write does not invalidate the content page. Finish its
                 // callback, but never let an older list read undo the saved tab order.
                 if !self.pinboardReorderInProgress, self.pinboardReadGeneration == boardGeneration {

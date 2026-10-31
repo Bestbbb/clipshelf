@@ -123,4 +123,18 @@ final class ClipboardCardDragTests: XCTestCase {
         XCTAssertNil(card.activeGestureID)
         XCTAssertFalse(card.providePreparedPayload(records: [record], gestureID: gestureID))
     }
+
+    @MainActor func testPressFeedbackActivatesOnMouseDownAndClearsOnReleaseOrCancel() {
+        let record = ClipboardRecord(text: "synthetic")
+        let card = ClipboardCardView(record: ClipboardCardContent(record), position: 0)
+        XCTAssertFalse(card.isPressed)
+        card.mouseDown(with: event(.leftMouseDown))
+        XCTAssertTrue(card.isPressed)
+        card.mouseUp(with: event(.leftMouseUp))
+        XCTAssertFalse(card.isPressed)
+        card.mouseDown(with: event(.leftMouseDown))
+        XCTAssertTrue(card.isPressed)
+        card.cancelOperation(nil)
+        XCTAssertFalse(card.isPressed)
+    }
 }

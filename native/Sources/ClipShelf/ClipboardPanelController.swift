@@ -550,6 +550,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         refreshAfterPageLoad = false
         resultLimit = 300
         self.records = Array(contents.prefix(resultLimit))
+        self.filteredRecords = []
         searchField.stringValue = ""
         selectedBoardID = nil
         manualOrder = false
@@ -1171,7 +1172,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         layout.scrollDirection = .horizontal
         layout.itemSize = NSSize(width: 222, height: 1)
         layout.minimumLineSpacing = 12
-        layout.minimumInteritemSpacing = 0
+        // In a horizontal flow layout, interitem spacing is vertical within one column.
+        // Keep it larger than any shelf height so temporary 1pt heights never stack rows.
+        layout.minimumInteritemSpacing = 10_000
         layout.sectionInset = NSEdgeInsets(top: 2, left: 18, bottom: 10, right: 18)
         resultsView.collectionViewLayout = layout
         resultsView.dataSource = self
@@ -1307,15 +1310,18 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         previousPageButton.isHidden = !(onPageRequest != nil && hasPreviousResults && leading)
         let multiSelected = selection.references.count > 1 || selection.isInvalid
         let attention = !statusLabel.isHidden || !retryLoadingButton.isHidden || !destinationPopup.isHidden
-            || requiresDestinationChoice || !canPasteToDestination || multiSelected || resultPresentation == .loading
-        countLabel.isHidden = !(pageEdge || multiSelected || resultPresentation == .loading)
+            || requiresDestinationChoice || !canPasteToDestination || multiSelected
+        countLabel.isHidden = !(pageEdge || multiSelected)
         let show = attention || pageEdge
         guard !footerConfigured || footerView.isHidden == show else { return }
         footerConfigured = true
         footerView.isHidden = !show
+        if let layout = resultsView.collectionViewLayout as? NSCollectionViewFlowLayout {
+            layout.itemSize = NSSize(width: layout.itemSize.width, height: 1)
+        }
         scrollToFooterConstraint?.isActive = show
         scrollToBottomConstraint?.isActive = !show
-        if window?.isVisible == true { updateCardLayout() }
+        updateCardLayout()
     }
 
     private func setSearchExpanded(_ expanded: Bool) {
@@ -1331,12 +1337,6 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         searchField.focusRingType = isSearchExpanded ? .default : .none
         (searchField.cell as? NSSearchFieldCell)?.cancelButtonCell = isSearchExpanded ? searchCancelCell : nil
         allFiltersButton.isHidden = !isSearchExpanded
-        // Retire the old height before AppKit relayouts the document while the
-        // toolbar changes width. Restore the viewport-sized cards afterwards.
-        if let layout = resultsView.collectionViewLayout as? NSCollectionViewFlowLayout {
-            layout.itemSize = NSSize(width: layout.itemSize.width, height: 1)
-        }
-        updateCardLayout()
         updateSearchCaret()
     }
 
@@ -3291,6 +3291,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
 
     private func updateCardLayout() {
         guard let layout = resultsView.collectionViewLayout as? NSCollectionViewFlowLayout else { return }
+        if layout.itemSize.height > 1 {
+            layout.itemSize = NSSize(width: layout.itemSize.width, height: 1)
+        }
         window?.contentView?.layoutSubtreeIfNeeded()
         // A screen smaller than the preferred minimum still bounds the shelf.
         // Keep the native flow item inside that viewport, including its insets.

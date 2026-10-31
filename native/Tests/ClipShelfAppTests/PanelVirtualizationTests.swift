@@ -61,4 +61,57 @@ import XCTest
         XCTAssertEqual(collection.numberOfItems(inSection: 0), 300)
         print("VIRTUALIZATION records=300 firstViewport=\(firstPage.count) createdAcrossTwoDistantViewports=\(dataSource.requestedItems.count)")
     }
+
+    func testReopenRemotePageCompactToggleAndSearchExpandCreateOnlyViewportCards() throws {
+        let panel = ClipboardPanelController()
+        let window = UnshownTestPanel(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 330),
+            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        window.contentView = panel.window?.contentView
+        window.delegate = panel
+        panel.window = window
+        panel.resolveVisibleScreenFrame = { _ in NSRect(x: 0, y: 0, width: 1180, height: 800) }
+        defer { panel.dismiss() }
+        @MainActor func findCollection(in root: NSView) -> NSCollectionView? {
+            if let view = root as? NSCollectionView { return view }
+            return root.subviews.lazy.compactMap { findCollection(in: $0) }.first
+        }
+        let collection = try XCTUnwrap(window.contentView.flatMap { findCollection(in: $0) })
+        let dataSource = CountingCardDataSource(panel: panel)
+        collection.dataSource = dataSource
+        defer { withExtendedLifetime(dataSource) {} }
+
+        let metadata = (0..<300).map { index in
+            ClipboardRecordMetadata(id: UUID(), text: "Remote record \(index)", sourceApp: "TextEdit",
+                sourceBundleID: "com.apple.TextEdit", copiedAt: Date(), renamedTitle: nil, ocrText: nil,
+                pinboardID: nil, pinboardOrder: nil, isInHistory: true, revision: 1, kind: .text,
+                representationTypes: [["public.utf8-plain-text"]], originDeviceID: nil,
+                originDeviceName: nil, originDeviceConflict: false)
+        }
+        panel.onPageRequest = { _, completion in
+            completion(.success(PanelHistoryPage(records: metadata, offset: 0, hasMore: false, focusID: metadata.first?.id)))
+        }
+
+        panel.show(metadata: [])
+        window.contentView?.layoutSubtreeIfNeeded()
+        window.contentView?.displayIfNeeded()
+        let afterFirstOpen = dataSource.requestedItems.count
+
+        panel.dismiss()
+        dataSource.requestedItems.removeAll()
+        panel.show(metadata: metadata)
+        window.contentView?.layoutSubtreeIfNeeded()
+        window.contentView?.displayIfNeeded()
+        let afterSecondOpen = dataSource.requestedItems.count
+
+        dataSource.requestedItems.removeAll()
+        panel.setCompactMode(true)
+        window.contentView?.layoutSubtreeIfNeeded()
+        window.contentView?.displayIfNeeded()
+        let afterCompact = dataSource.requestedItems.count
+
+        print("VIRTUALIZATION_REOPEN first=\(afterFirstOpen) second=\(afterSecondOpen) compact=\(afterCompact)")
+        XCTAssertLessThanOrEqual(afterFirstOpen, 14)
+        XCTAssertLessThanOrEqual(afterSecondOpen, 14)
+        XCTAssertLessThanOrEqual(afterCompact, 16)
+    }
 }

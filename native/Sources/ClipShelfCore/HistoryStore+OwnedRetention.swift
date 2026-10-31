@@ -81,8 +81,18 @@ extension HistoryStore {
         }
         return ids
     }
+    func containsFileURLRepresentations(_ records: [ClipboardRecord]) -> Bool {
+        records.contains { record in
+            record.parts.contains { part in
+                part.representations.contains { ClipboardFileAccess.isFileURLType($0.typeIdentifier) }
+            }
+        }
+    }
     public func retainCapturedOwnedFiles(_ records: [ClipboardRecord], purpose: OwnedAssetRetentionPurpose) throws -> OwnedAssetLease {
-        try synchronized { try transaction { try retainOwnedAssetsWithoutLock(capturedOwnedIDsWithoutLock(records), purpose: purpose) } }
+        guard containsFileURLRepresentations(records) else {
+            return try synchronized { OwnedAssetLease(id: UUID(), storeIdentity: selectionStoreIdentity, assetIDs: [], descriptor: -1) }
+        }
+        return try synchronized { try transaction { try retainOwnedAssetsWithoutLock(capturedOwnedIDsWithoutLock(records), purpose: purpose) } }
     }
     public func recordRetainingCapturedOwnedFiles(_ candidate: ClipboardRecord, purpose: OwnedAssetRetentionPurpose = .stack) throws -> RetainedClipboardRecords {
         try validate(candidate)
@@ -99,6 +109,9 @@ extension HistoryStore {
     public func publishOwnedFiles(lease: OwnedAssetLease, purpose: OwnedAssetPublicationPurpose) throws -> OwnedAssetPublication {
         try synchronized {
             guard lease.storeIdentity == selectionStoreIdentity else { throw OwnedStorageError.invalidLease }
+            if lease.assetIDs.isEmpty {
+                return OwnedAssetPublication(id: UUID(), purpose: purpose, fileURLs: [], createdAt: Date(), storeIdentity: selectionStoreIdentity)
+            }
             return try transaction {
                 for id in lease.assetIDs {
                     guard ownedFileStorage.projectionAvailability(try ownedFileAssetWithoutLock(id: id)) == .available else { throw ClipboardFileRepairError.unavailableOutput }
