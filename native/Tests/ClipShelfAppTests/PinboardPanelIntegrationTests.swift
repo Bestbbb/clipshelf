@@ -285,7 +285,7 @@ import XCTest
             let h = PinboardPanelHarness(); defer { h.close() }
             h.panel.setPreferredHeights(normal: 430, compact: requested)
             h.panel.setCompactMode(true)
-            try assertLayout(h, width: 1120, height: expected)
+            try assertLayout(h, width: h.visibleFrame.width, height: expected)
         }
     }
 
@@ -293,7 +293,7 @@ import XCTest
         for width: CGFloat in [1120, 720] {
             for compact in [false, true] {
                 let h = PinboardPanelHarness(); defer { h.close() }
-                h.visibleFrame.size.width = width + 40
+                h.visibleFrame.size.width = width
                 h.panel.setPreferredHeights(normal: 330, compact: 240)
                 h.panel.setCompactMode(compact)
                 try h.select(h.ids[1])

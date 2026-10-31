@@ -147,8 +147,11 @@ import ClipShelfLocalization
         h.visibleFrame = NSRect(x: -1400, y: -40, width: 1024, height: 500)
         h.panel.show(records: [])
         let clamped = try XCTUnwrap(h.panel.window?.frame)
-        XCTAssertEqual(clamped.height, 464)
-        XCTAssertTrue(h.visibleFrame.contains(clamped))
+        XCTAssertEqual(clamped.height, 500)
+        // The entrance may begin a few points below the docked frame; it settles flush on the bottom edge.
+        XCTAssertEqual(clamped.minX, h.visibleFrame.minX)
+        XCTAssertEqual(clamped.width, h.visibleFrame.width)
+        XCTAssertLessThanOrEqual(clamped.maxY, h.visibleFrame.maxY)
         XCTAssertEqual(h.savedHeights.count, count, "Moving to a smaller screen must not save the clamped height")
         h.panel.dismiss()
         h.visibleFrame = NSRect(x: 1800, y: 20, width: 1440, height: 870)
@@ -202,8 +205,8 @@ import ClipShelfLocalization
                         NSRect(x: 2400, y: -700, width: 600, height: 390)] {
             let shelf = PanelPresentationGeometry.shelf(in: visible, preferredHeight: 900)
             XCTAssertTrue(visible.contains(shelf))
-            XCTAssertEqual(shelf.midX, visible.midX)
-            XCTAssertEqual(shelf.minY, visible.minY + 18)
+            XCTAssertEqual(shelf.width, visible.width)
+            XCTAssertEqual(shelf.minY, visible.minY)
             XCTAssertTrue(visible.contains(PanelPresentationGeometry.detail(size: NSSize(width: 800, height: 800), in: visible)))
         }
     }

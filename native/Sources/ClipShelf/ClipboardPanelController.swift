@@ -267,6 +267,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         pasteButton.toolTip = requiresChoice ? L10n.text("从应用图标打开时，请先选择接收内容的应用。") : canPasteToDestination
             ? L10n.text("单击粘贴；⌘/Shift 单击多选；回车粘贴，Shift 回车以纯文本粘贴。")
             : L10n.text("内容已复制，请切回目标应用按 ⌘V。")
+        updateFooterVisibility()
     }
 
     func setPasteDestinations(_ choices: [(pid: Int32, name: String)], selectedPID: Int32?) {
@@ -280,6 +281,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         }
         if let selectedPID { destinationPopup.selectItem(withTag: Int(selectedPID)) }
         destinationPopup.isHidden = choices.isEmpty
+        updateFooterVisibility()
     }
 
     func requestPasteDestinationChoice() { destinationPopup.performClick(nil) }
@@ -367,6 +369,11 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
     private var pageMatchesQuery = true
     private var refreshAfterPageLoad = false
     private let scrollView = NSScrollView()
+    private var footerView: NSStackView?
+    private var footerConfigured = false
+    private var scrollToFooterConstraint: NSLayoutConstraint?
+    private var scrollToBottomConstraint: NSLayoutConstraint?
+    private var scrollBoundsObserver: NSObjectProtocol?
     private let resultsView = ResultsFocusView()
     private var records: [ClipboardCardContent] = []
     private var filteredRecords: [ClipboardCardContent] = []
@@ -555,7 +562,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         positionShelf(on: screen)
         reloadResults(resetScroll: true)
         if let window { presentationMotion.present(window: window) }
-        window?.makeFirstResponder(searchField)
+        window?.makeFirstResponder(searchField); updateSearchCaret()
         installEventMonitor()
         issueQuery(resetLimit: true)
     }
@@ -920,7 +927,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         background.blendingMode = .behindWindow
         background.state = .active
         background.wantsLayer = true
-        background.layer?.cornerRadius = 18
+        // Like Paste, the shelf rests on the bottom edge and rounds only its top.
+        background.layer?.cornerRadius = 16
+        background.layer?.maskedCorners = [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]
         background.layer?.masksToBounds = true
         let dragTypes: [NSPasteboard.PasteboardType] = [.string, .rtf, .rtfd, .html, .png, .tiff, .fileURL, .URL, NSPasteboard.PasteboardType("public.jpeg"), NSPasteboard.PasteboardType("io.github.bestbbb.clipshelf.record-id")]
         background.registerForDraggedTypes(dragTypes)
@@ -950,6 +959,8 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         let close = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: L10n.text("收起 ClipShelf")) ?? NSImage(), target: self, action: #selector(closePanel))
         close.bezelStyle = .inline
         close.isBordered = false
+        // Paste has no close control: Esc, the hot key, or clicking elsewhere dismisses the shelf.
+        close.isHidden = true
         compactButton.image = NSImage(systemSymbolName: "rectangle.compress.vertical", accessibilityDescription: L10n.text("切换紧凑卡片"))
         compactButton.imagePosition = .imageOnly
         compactButton.bezelStyle = .inline
@@ -1114,7 +1125,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         layout.itemSize = NSSize(width: 222, height: 1)
         layout.minimumLineSpacing = 12
         layout.minimumInteritemSpacing = 0
-        layout.sectionInset = NSEdgeInsets(top: 2, left: 0, bottom: 10, right: 0)
+        layout.sectionInset = NSEdgeInsets(top: 2, left: 18, bottom: 10, right: 18)
         resultsView.collectionViewLayout = layout
         resultsView.dataSource = self
         resultsView.registerForDraggedTypes(dragTypes)
@@ -1209,10 +1220,9 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             headerActions.heightAnchor.constraint(equalToConstant: 30),
             boardTabs.widthAnchor.constraint(greaterThanOrEqualToConstant: 104),
             boardTabs.heightAnchor.constraint(equalToConstant: 30),
-            scrollView.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 18),
-            scrollView.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -18),
+            scrollView.leadingAnchor.constraint(equalTo: background.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: background.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14),
-            scrollView.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12),
             emptyStack.centerXAnchor.constraint(equalTo: scrollView.centerXAnchor),
             emptyStack.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor),
             footer.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 24),
@@ -1220,8 +1230,45 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             footer.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -9),
             footer.heightAnchor.constraint(equalToConstant: 22)
         ])
+        footerView = footer
+        scrollToFooterConstraint = scrollView.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -10)
+        scrollToBottomConstraint = scrollView.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -16)
+        statusLabel.onVisibilityChange = { [weak self] in self?.updateFooterVisibility() }
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        scrollBoundsObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateFooterVisibility() }
+        }
         InterfaceLayout.apply(to: background, direction: layoutDirection)
+        updateFooterVisibility()
         setSearchExpanded(false)
+    }
+
+    /// Paste keeps the shelf to tabs and cards. The footer appears only for a
+    /// status that needs attention, multi-selection, a pending destination
+    /// choice, or page controls once the user scrolls to the edge of a page.
+    private func updateFooterVisibility() {
+        guard let footerView else { return }
+        let visible = scrollView.documentVisibleRect
+        let nearEnd = visible.maxX >= resultsView.bounds.width - 260
+        let nearStart = visible.minX <= 260
+        let leading = layoutDirection == .rightToLeft ? nearEnd : nearStart
+        let trailing = layoutDirection == .rightToLeft ? nearStart : nearEnd
+        let showsNext = onPageRequest == nil ? usesRemoteQuery && hasMoreResults : hasMoreResults
+        let pageEdge = (showsNext && trailing) || (hasPreviousResults && leading)
+        loadMoreButton.isHidden = !(usesRemoteQuery && hasMoreResults && trailing)
+        previousPageButton.isHidden = !(onPageRequest != nil && hasPreviousResults && leading)
+        let multiSelected = selection.references.count > 1 || selection.isInvalid
+        let attention = !statusLabel.isHidden || !retryLoadingButton.isHidden || !destinationPopup.isHidden
+            || requiresDestinationChoice || !canPasteToDestination || multiSelected || resultPresentation == .loading
+        countLabel.isHidden = !(pageEdge || multiSelected || resultPresentation == .loading)
+        let show = attention || pageEdge
+        guard !footerConfigured || footerView.isHidden == show else { return }
+        footerConfigured = true
+        footerView.isHidden = !show
+        scrollToFooterConstraint?.isActive = show
+        scrollToBottomConstraint?.isActive = !show
+        if window?.isVisible == true { updateCardLayout() }
     }
 
     private func setSearchExpanded(_ expanded: Bool) {
@@ -1243,13 +1290,20 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
             layout.itemSize = NSSize(width: layout.itemSize.width, height: 1)
         }
         updateCardLayout()
+        updateSearchCaret()
+    }
+
+    /// The collapsed search keeps focus so typing searches immediately, as in
+    /// Paste, but its caret stays hidden until the field is expanded.
+    private func updateSearchCaret() {
+        (searchField.currentEditor() as? NSTextView)?.insertionPointColor = isSearchExpanded ? .controlAccentColor : .clear
     }
 
     @objc private func focusSearch() {
         invalidateOutputContext()
         cancelBoundaryNavigation()
         setSearchExpanded(true)
-        window?.makeFirstResponder(searchField)
+        window?.makeFirstResponder(searchField); updateSearchCaret()
         cardViews.forEach(updateShortcutLabel)
     }
 
@@ -1312,6 +1366,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         emptyStack.isHidden = !filteredRecords.isEmpty
         retryLoadingButton.isHidden = resultPresentation != .failed
         retryLoadingButton.isEnabled = !queryPending
+        updateFooterVisibility()
         switch resultPresentation {
         case .loading:
             emptyTitle.stringValue = L10n.text("正在读取条目…")
@@ -1737,6 +1792,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         let count = onPageRequest != nil ? pageWindow.rangeDescription : L10n.text("\(filteredRecords.count) 条")
         let selected = selection.references.count
         countLabel.stringValue = selected > 1 || selection.isInvalid ? L10n.text("\(count) · 已选 \(selected) 条\(selection.isInvalid ? L10n.text("（已变化）") : "")") : count
+        updateFooterVisibility()
     }
 
     private func loadPayload(_ id: UUID, completion: @escaping (ClipboardRecord?) -> Void) {
@@ -1769,6 +1825,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         loadMoreButton.isHidden = !usesRemoteQuery || !hasMoreResults
         loadMoreButton.isEnabled = !queryPending
         loadMoreButton.toolTip = onPageRequest != nil ? L10n.text("读取下一页；每页最多显示 300 条。方向键到边缘会自动读取相邻内容。") : nil
+        updateFooterVisibility()
     }
 
     private func updateFilterControls() {
@@ -1871,7 +1928,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         filterPopover = nil
         popover?.delegate = nil
         popover?.close()
-        if restoreFocus, isVisible { window?.makeFirstResponder(searchField); cardViews.forEach(updateShortcutLabel) }
+        if restoreFocus, isVisible { window?.makeFirstResponder(searchField); updateSearchCaret(); cardViews.forEach(updateShortcutLabel) }
     }
 
     func popoverDidClose(_ notification: Notification) {
@@ -1887,7 +1944,7 @@ final class ClipboardPanelController: NSWindowController, NSSearchFieldDelegate,
         manualOrder = false; pendingRevealID = nil
         [boardPopup, typePopup, sourcePopup, devicePopup, datePopup].forEach { $0.selectItem(at: 0) }
         issueQuery(resetLimit: true)
-        window?.makeFirstResponder(searchField)
+        window?.makeFirstResponder(searchField); updateSearchCaret()
     }
     @objc private func orderChanged() { manualOrder = orderPopup.indexOfSelectedItem == 1 && boardScope.singleBoardID != nil; issueQuery(resetLimit: true) }
     @objc private func moveItemsEarlier() { stepSelectedItems(forward: false) }

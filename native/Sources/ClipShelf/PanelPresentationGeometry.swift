@@ -17,14 +17,11 @@ enum PanelPresentationGeometry {
         return max(minimumHeight, value)
     }
 
+    /// Paste spans the whole usable width and sits flush on the bottom edge.
     static func shelf(in rawFrame: CGRect, preferredHeight: CGFloat) -> CGRect {
         let visible = usable(rawFrame)
-        let horizontalMargin = min(20, visible.width / 8)
-        let verticalMargin = min(18, visible.height / 8)
-        let width = min(1180, visible.width - 2 * horizontalMargin)
-        let height = min(preferredHeight, visible.height - 2 * verticalMargin)
-        return CGRect(x: visible.midX - width / 2, y: visible.minY + verticalMargin,
-                      width: width, height: height)
+        let height = min(preferredHeight, visible.height)
+        return CGRect(x: visible.minX, y: visible.minY, width: visible.width, height: height)
     }
 
     static func detail(size: CGSize, in rawFrame: CGRect) -> CGRect {

@@ -230,7 +230,7 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         case .file:
             // A type icon and file name read faster than a full path, as in Paste.
             let paths = record.text.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
-            let first = URL(fileURLWithPath: paths.first ?? record.text)
+            let first = Self.fileURL(fromDisplayPath: paths.first ?? record.text)
             let type = UTType(filenameExtension: first.pathExtension) ?? (first.hasDirectoryPath ? .folder : .data)
             iconCache.request(.fileType(type.identifier)) { [weak self] icon in
                 guard let image = icon.image else { return }
@@ -256,6 +256,12 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         // The short title uses a bounded frame, so even a one-point viewport
         // never forces an intrinsic text height or a negative image height.
         addSubview(shortTitleLabel)
+        // Images fill the content area edge to edge, as in Paste; icons keep breathing room.
+        let imageInset: CGFloat = record.kind == .image ? 0 : 12
+        if record.kind == .image {
+            previewImage.layer?.cornerRadius = 0
+            previewImage.layer?.borderWidth = 0
+        }
         normalLayoutConstraints = [
             accent.leadingAnchor.constraint(equalTo: leadingAnchor),
             accent.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -277,9 +283,9 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
             bodyLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
             bodyLabel.topAnchor.constraint(equalTo: accent.bottomAnchor, constant: 12),
             bodyLabel.bottomAnchor.constraint(lessThanOrEqualTo: detailLabel.topAnchor, constant: -10),
-            previewImage.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            previewImage.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            previewImage.topAnchor.constraint(equalTo: accent.bottomAnchor, constant: 12),
+            previewImage.leadingAnchor.constraint(equalTo: leadingAnchor, constant: imageInset),
+            previewImage.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -imageInset),
+            previewImage.topAnchor.constraint(equalTo: accent.bottomAnchor, constant: imageInset),
             previewImage.bottomAnchor.constraint(equalTo: detailLabel.topAnchor, constant: -10),
             detailLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: shortcutLabel.leadingAnchor, constant: -8),
@@ -366,6 +372,12 @@ final class ClipboardCardView: NSButton, NSDraggingSource {
         case .file: return L10n.text("文件")
         case .color: return L10n.text("颜色")
         }
+    }
+
+    /// File records may hold `file://` URLs with percent escapes; show the real name.
+    static func fileURL(fromDisplayPath path: String) -> URL {
+        if path.hasPrefix("file://"), let url = URL(string: path), url.isFileURL { return url }
+        return URL(fileURLWithPath: path.removingPercentEncoding ?? path)
     }
 
     static func thumbnail(for record: ClipboardRecord, maxPixelSize: Int = 512) -> NSImage? {
