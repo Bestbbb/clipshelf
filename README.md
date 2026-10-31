@@ -13,9 +13,10 @@ Mac feature set and its smooth cross-app workflow.
 Get the latest build from the [Releases page](https://github.com/Bestbbb/clipshelf/releases).
 
 - Requires macOS 14 or later on an Apple silicon Mac (M1 or later).
-- Preview builds are **not signed with an Apple Developer ID or notarized**. On first
-  launch, right-click `ClipShelf.app` and choose **Open**, or allow it in
-  **System Settings → Privacy & Security**. If macOS reports the app as damaged:
+- Preview builds are signed with a fixed self-signed ClipShelf certificate, but
+  **not with an Apple Developer ID and not notarized**. macOS blocks the first
+  launch: right-click `ClipShelf.app` and choose **Open**, or click **Open Anyway**
+  in **System Settings → Privacy & Security**. If macOS reports the app as damaged:
 
   ```sh
   xattr -dr com.apple.quarantine /Applications/ClipShelf.app
@@ -23,6 +24,9 @@ Get the latest build from the [Releases page](https://github.com/Bestbbb/clipshe
 
 - Grant **Accessibility** permission when asked so ClipShelf can paste back into
   the app you were using. Without it, items are copied and you press ⌘V yourself.
+  From 0.2.0-preview on, the same certificate signs every preview, so replacing
+  the app with a newer preview keeps this permission. Coming from 0.1.0-preview,
+  remove the old ClipShelf entry under Accessibility and grant it once more.
 
 ## Use
 
